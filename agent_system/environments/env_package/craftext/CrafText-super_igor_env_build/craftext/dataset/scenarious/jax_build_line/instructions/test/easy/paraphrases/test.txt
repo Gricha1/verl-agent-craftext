@@ -1,0 +1,115 @@
+{
+    "INSTRUCTION": {
+        "instruction": "Make a line of stone with four blocks.",
+        "instruction_paraphrases":["Construct a streak of rock comprising quartet sections.", 
+"By gathering four disparate blocks, one can assemble a formation of solid stone.", 
+"Through the accumulation of four distinct sections, one can erect an arrangement of unyielding rock.", 
+"In the silent working of hands and the stubborn resolve of the heart, let an array of stone come to being, born of four separate entities, each a testament of the earth's might.", 
+"In the patient dance of construction, four pieces of stone find unity, giving birth to a line of stone, a small but sturdy testament to the foundational elements of our world."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data,ix, BlockType.STONE, 4, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data,ix, BlockType.STONE, 4, check_diagonal=False)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Check if there is a diagonal line of furnace with a size of three on the map.",
+        "instruction_paraphrases":["Verify if a three-unit-long slanting row of stove is evident on the chart.", 
+"Could you examine whether the map carries a depiction of a furnace line running diagonally for three units?", 
+"Inspect whether the chart holds an evidence of a slanting sequence of hearth that notably extends to three units.", 
+"In sooth, make thine inquiry if a diagonal lineage of hearth, measured three in number by a master's hand, be marked upon yon parchment map.", 
+"Within the kindness of the map, canvass the possibility of a diagonally coursing river of three furnaces speaking their own geometric language."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.FURNACE, 3, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.FURNACE, 3, check_diagonal=True)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Check if there's any line of Plants arranged in four.",
+        "instruction_paraphrases":["Inspect whether there exists a row of vegetation set in quartet.", 
+"Could you verify if, perchance, there is a sequence of shrubbery assembled as a quartet?", 
+"Ascertain if, perchance, there exists an arrangement of flora organized in sets of four.", 
+"In the verdant domain, you shall find no rest until you seek out whether, indeed, there exists an orderly row of leaf-bearing life, meticulously placed in counts of four.", 
+"Within the world's breathtaking tapestry of green, seek out truths: might there be an understated pattern woven of flora, assembled as whispering quaternities?"],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.PLANT, 4, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.PLANT, 4, check_diagonal=False)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Check for a line of plants with a length of three",
+        "instruction_paraphrases":["Look for a row of vegetation three units long", "Ensure to verify the existence of a sequence of plants that extends to a distance equivalent to three", "Investigate to ascertain a trail of flora extending a distance of trio units", "Seek thou the string of greenery, thrice segmented in length, deep-rooted beneath the unbroken heavens", "In your search, let your eyes find a path; a vessel inhabited by plants, each connected to the next, forming a string that spans just three of our known units."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.PLANT, 3, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.PLANT, 3, check_diagonal=False)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Form a line of stones of length 3.",
+        "instruction_paraphrases":["Create a row of pebbles spanning three units.", 
+"Assemble the pebbles, standing one next to another, extending to a total of three units in length.", 
+"Constitute a series of rock fragments, standing shoulder to shoulder, stretching across the expanse equal to three units.", 
+"Draw forth a series of stones, thrice counted, in a line as straight as a ranger's arrow, stretching under the ancient sky.", 
+"In the depth of your quiet contemplation, summon into being a row of stones, each a story unto itself, and let this procession extend to the reach of three."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.STONE, 3, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.STONE, 3, check_diagonal=False)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Check if there is a line of Plant blocks of size 2.",
+        "instruction_paraphrases":["Verify if a succession of Plant units of size 2 exists.", 
+"Determine if a continuous sequence, precisely of Plant blocks, amounting to a size of 2 is present.", 
+"Contemplate whether or not there is a steady chain of synonymous Plant entities, specifically of measurement 2.", 
+"Perchance there lies an unbroken lineage, two score in size, of blocks hewn of Plant?", 
+"Question the presence of a seam, woven not of thread but of Plant blocks, each a duo in quantification."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.PLANT, 2, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.PLANT, 2, check_diagonal=False)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Create a diagonal line of crafting tables, each one block apart for a size of three.",
+        "instruction_paraphrases":["Construct a skew series of workshop benches, each separated by a single cube for a dimension of three.", 
+ "In order to form a length of three, set up a lineup of crafting tables, each arranged diagonally and separated by an individual block.", 
+ "For the purpose of creating a dimension of three, fabricate a slanting arrangement of work stations, each segregated by one solitary cube.",
+ "In the realm of the fabricators, compose ye a line skewed in its path, filled with crafting pedestals, every single one distanced by a lone block in semblance of the trio's size.", 
+ "Drawing upon the elements in the crafters’ space, weave together an inclined file of creation tables, each solitary cube held separate, to construct the triple expanse."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.CRAFTING_TABLE, 3, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.CRAFTING_TABLE, 3, check_diagonal=True)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Check on the game map for a diagonal line of Crafting Table blocks that are of length 2.",
+        "instruction_paraphrases":["Inspect the gaming landscape for a skewed array of Crafting Table units of dimension two.", 
+"Look for a line, one that takes a diagonal path across the game map, comprised of Crafting Table blocks and has a length equating to two.", 
+"Scout the virtual terrain, seeking a diverging concatenation of Crafting Table entities, whose magnitude is two.", 
+"Let thine eyes linger upon the parchment of gameplay, there to find an oblique lineage of blocks, called yonder Crafting Table, which extend but by twain in measure.", 
+"In the intricate landscape of the game, search with quiet determination for a line of Crafting Table elements, subtly interrupted, stretching in a manner oblique, and barely extending beyond the count of one to a modest two."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.CRAFTING_TABLE, 2, True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.CRAFTING_TABLE, 2, True)"
+    }
+}
+
+----

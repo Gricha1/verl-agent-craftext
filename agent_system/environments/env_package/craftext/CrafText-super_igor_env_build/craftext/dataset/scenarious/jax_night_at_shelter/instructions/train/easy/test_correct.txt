@@ -1,0 +1,59 @@
+{
+    "INSTRUCTION": {
+        "instruction": "Create a cross shape with crafting tables having each arm seven units long.",
+        "instruction_paraphrases": [
+            "Form a cross using crafting tables with each of its side being seven blocks long.",
+            "Construct a seven units long per arm crafting table cross.",
+            "With a size of seven units per arm, build a cross using only crafting tables.",
+            "Using crafting tables, create a cross shape where each side measures seven units.",
+            "Craft a cross formation, each of its arm must be seven units long, made up of only crafting tables."
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.CRAFTING_TABLE, size=7, radius=5)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.CRAFTING_TABLE, size=7, radius=5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Create a cross from plants with sides measuring seven units. The formation should be combined.",
+        "instruction_paraphrases": [
+            "Form a cross, seven units long on each side, using plants. This should be in a combined style.",
+            "Make a combined configuration in the shape of a cross, utilizing vegetation. Each side should stretch for a total of seven units.",
+            "Construct a floral cross, with each limb being seven units in length. This should be in an intertwined arrangement.",
+            "Generate a combined pattern in the form of a cross employing greenery where the measurement of each side is seven units.",
+            "Develop a synergistic pattern in the shape of a cross using foliage. Make sure each sides extends seven units long."
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.PLANT, size=7, radius=5)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.PLANT, size=7, radius=5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a cross of direct shape using furnaces with each side having 7 blocks.",
+        "instruction_paraphrases": [
+            "Create a direct cross pattern using 7 blocks of furnaces on each side.",
+            "Using the oven block, build a straight cross with seven units on each arm.",
+            "You need to construct a regular cross with sides measuring seven furnace blocks each.",
+            "Assemble a perpendicular cross employing furnace blocks, ensuring that each arm consists of seven units.",
+            "Make sure to arrange the oven blocks in a direct cross formation with each branch comprising a total of seven units."
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.FURNACE, size=7, radius=5)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.FURNACE, size=7, radius=5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a cross using stone blocks with the side size 5 in a combined pattern around your position.",
+        "instruction_paraphrases": [
+            "Create a combined cross made up of rock blocks, each side should have a length of 5.",
+            "Construct a cross in a joined pattern using boulders, with each arm spanning 5 length units.",
+            "Around your current site, prepare a cross using cobblestones, each extending to five units in a matched configuration.",
+            "Use stones to design an interconnected cross shape, with each side extending five units from the center, near your current location.",
+            "Assemble a mixed-style cross composed of pebbles, which will span five units on each side."
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.STONE, size=5, radius=7)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.STONE, size=5, radius=7)"
+    }
+}

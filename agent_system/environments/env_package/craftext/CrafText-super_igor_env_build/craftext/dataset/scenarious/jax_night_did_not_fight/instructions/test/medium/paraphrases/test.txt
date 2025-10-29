@@ -1,0 +1,93 @@
+{
+    "INSTRUCTION": {
+        "instruction": "Form a square of crafting tables with each side having a length of 3",
+        "instruction_paraphrases":["Construct a cube with workbenches, each edge measuring 3", "Visually, envision a configuration, which resembles a square made up of crafting tables, with each side consistently spanning a length equivalent to 3", "Assemble an architectural structure reminiscent of a cube using artisan's desks, ensuring each proportion measures an equal length of 3", "Art thou to fabricate a parallelogram of artificer's stools, each flank, unbending as a blacksmith's will, shall possess the magnitude of three", "In accordance with the universe's sacred geometry, form a square using the planet's finest crafting tables, ensuring each side of this formation extends a distance to the count of three."],
+        'check_lambda': lambda game_data, ix: is_square_formed(game_data, ix, BlockType.CRAFTING_TABLE, 3),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.CRAFTING_TABLE, 3)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Verify if there is a square formed of furnace blocks with a side size of 6.",
+        "instruction_paraphrases":["Confirm the existence of a 6-sided square made from furnace bricks.", 
+"Inquire whether a square, having a dimension of six on each of its sides and composed entirely of furnace blocks, exists or not.", 
+"Ascertain if a cube, built purely from blocks of kiln, flaunting a side length of six, is present or not.",
+"Thou art to find truth in the existence of a square, woven from the hardy blocks of the furnace, each side measuring six in count, under the heavens.", 
+"Pose the question of the presence of a square, a rigid grid formed by furnace blocks, enclosing a trivial universe within its six-unit sides."],
+         'check_lambda': lambda game_data, ix:is_square_formed(game_data, ix, BlockType.FURNACE, 6),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.FURNACE, 6)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Check if there is a square made of furnace blocks with side length of 5.",
+        "instruction_paraphrases":["Verify the presence of a furnace block square with a side measure of five.", 
+"Could you possibly determine whether or not a square formation, entirely composed of furnace blocks, with each side measuring precisely five units, exists?", 
+"Could you confirm if a quadrilateral structure, entirely composed of heater units, each side stretching precisely to five, is in existence?",
+"In the ancient manner of the Dwarves, regard thou and see if amidst the stone there lies a perfect square, born wholly of furnace blocks and spanning five on each of its equal sides.",
+"In the heart of the world, probe for the existence of a perfect square, its form drawn from furnace blocks, its dimensions threefold, betraying an inner geometry of fives."]
+,
+         'check_lambda': lambda game_data, ix:is_square_formed(game_data, ix, BlockType.FURNACE, 5),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.FURNACE, 5)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Check for a distinct square made out of crafting tables with each side having a length of 7 blocks.",
+        "instruction_paraphrases":["Search for a unique square constructed from crafting tables, where each side measures 7 blocks in length.",
+"Confirm the presence of an unusual square, the creation of which exploits crafting tables, and has each side spanning up to 7 blocks.",
+"Verify the existence of a nonstandard square, ingeniously built with crafting tables, and extends 7 blocks for each side.",
+"In the wide expanse of your exploration, look upon with keen eyes for an extraordinary square, hewn elegantly from nurturing crafting tables, each edge of this marvel stretching to a measure of seven sturdy blocks, tall and immovable.",
+"In the weave of this world, seek for a square, singular in its formation, birthed from the essence of crafting tables, each side of it stretching towards seven blocks, marking its silent existence."],
+         'check_lambda': lambda game_data, ix:is_square_formed(game_data, ix, BlockType.CRAFTING_TABLE, 7),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.CRAFTING_TABLE, 7)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Check for a square formation of Enchantment Table Ice with a side of size 3.",
+        "instruction_paraphrases":["Inspect for a cubed arrangement of Enchantment Table Ice with a dimension of three", "Ensure that there exists a formation of Enchantment Table Ice, fashioned as a square, where each side measures three units in length", "Look to see if a three-dimensional configuration of Enchantment Table Ice, having the structure of a cube, can be found", "Seek forth a formation resembling a cube of Enchantment Table Ice, then verify its sides each measure three in their magnitude", "In your observations, seek a metaphysical alignment of the Enchantment Table Ice formed as an equilateral square, each of its sides reaching towards the measure of three."],
+         'check_lambda': lambda game_data, ix:is_square_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, 3),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, 3)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Create an enchantment table of ice shaped into a square with each side size 7.",
+        "instruction_paraphrases":["Construct a charm desk of frost molded in a quadrilateral with each edge being 7 in length",
+"An enchantment table is to be built, which is a cube formed of ice, and each of its sides measures 7.",
+"Fabricate a magic platform of crystallized water, sculpted as a square, with each side assessing to 7.",
+"In the manner of a masterful crafter of yore, bring forth an arcane table hewn from the purest, coldest ice, wrought in the solid figure of a square, each side measures seven.",
+"In the hand of a maker, an icy enchantment table is birthed so, in the form of a square with each boundary stretching to seven, it breathes the essence of winter."],
+         'check_lambda': lambda game_data, ix:is_square_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, size=7),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, size=7)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Build a square using furnaces with each side being 7 blocks long.",
+        "instruction_paraphrases":["Construct a quadrilateral with smelters, with each flank spanning 7 cuboids in length.", "The task involves constructing a square, this square being composed entirely of furnaces, and each side of this square exactly accounts for 7 blocks.", "Fabricate a geometric quadrilateral with kilns, wherein each side extends for precisely seven cuboids.", "For this endeavour, one must form a perfect rhombus, each side of which, as exacted by the standards of this quest, must be composed of seven segments, those segments being made entirely from the sturdy stuff of forges.", "There is a square to be born from these furnaces, each boundary measuring itself in seven elemental blocks, coming into being as if creating a reality of its own."],
+         'check_lambda': lambda game_data, ix:is_square_formed(game_data,ix, BlockType.FURNACE, 7),
+        "str_check_lambda": "is_square_formed(game_data,ix, BlockType.FURNACE, 7)"
+    }
+}
+
+----

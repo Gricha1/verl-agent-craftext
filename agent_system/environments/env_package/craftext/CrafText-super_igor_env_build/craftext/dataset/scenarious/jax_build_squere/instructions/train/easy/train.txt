@@ -1,0 +1,80 @@
+{
+    "INSTRUCTION": {
+        "instruction": "Create a square out of stone, each side of size 4",
+        "instruction_paraphrases": [
+            "Please form a square using rocks, ensuring each side is of length 4",
+            "Using stone blocks, assemble a square structure with side length 4",
+            "Could you construct a square with boulders? Each side should be 4 units long",
+            "I'd like you to put together a square with a side of 4 units using pebbles",
+            "It'd be nice if you could fashion a 4-unit side square using the stones"
+        ],
+        'check_lambda': lambda game_data, ix: is_square_formed(game_data, ix, BlockType.STONE, 4),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.STONE, 4)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a square using crafting tables of side length 2.",
+        "instruction_paraphrases": [
+            "Make a square with side length 2 using crafting tables.",
+            "You need to arrange crafting tables in a square shape with each side being 2 blocks long.",
+            "Build a square from crafting tables, each side should contain 2 blocks.",
+            "Crafting tables should be placed in a way to form a square with each side made of 2 blocks.",
+            "Set crafting tables in a position to produce a square shape having 2 as the length of its each side."
+        ],
+         'check_lambda': lambda game_data, ix: is_square_formed(game_data, ix, BlockType.CRAFTING_TABLE, size=2),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.CRAFTING_TABLE, size=2)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Construct a square using crafting tables, with each side of the square being 4 blocks long",
+        "instruction_paraphrases": [
+            "Create a square with crafting benches in each corner, and each side sizing up to 4 blocks",
+            "Please make a geometrical square using workstations, and let the length of each side be 4 blocks",
+            "I need you to set up a square. Each side should have a length of 4 blocks and it should be formed completely out of crafting tables",
+            "With the utilization of crafting desks, arrange them in a way to form a square structure where the length of each side measures 4 blocks",
+            "Using crafting tables as the building material, construct a square pattern, ensuring that each side measures exactly 4 blocks long"
+        ],
+         'check_lambda': lambda game_data, ix: is_square_formed(game_data, ix, BlockType.CRAFTING_TABLE, 4),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.CRAFTING_TABLE, 4)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Check for a square of plants with a side size of 4.",
+        "instruction_paraphrases": [
+            "Make sure there's a 4x4 square of vegetation.",
+            "Look out for a square that consists of plants and measures 4 blocks on each side.",
+            "Identify a region in the shape of a square with a side length of 4, entirely composed of greenery.",
+            "Probe for the presence of a quadrilateral of botanical elements with each side spanning 4 blocks.",
+            "I need you to verify the existence of a 2D square-shaped arrangement of flora measuring 4 units on all sides."
+        ],
+         'check_lambda': lambda game_data, ix: is_square_formed(game_data, ix, BlockType.PLANT, 4),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.PLANT, 4)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a square with sides of 3 blocks using stones",
+        "instruction_paraphrases": [
+            "Create a square block using 3 stones on each side",
+            "I want you to assemble a square from rocks, 3 units long on each side",
+            "Can you build a 3 by 3 block square using some cobblestones?",
+            "Utilizing stones, shape out a square block with each side being 3 blocks long",
+            "With the use of rocks, I'd like you to construct a square formation where each side is composed of 3 blocks",
+            "Configure a square with a 3-unit side length using stones.",
+            "Create a square using stone blocks, each side should contain 3 blocks.",
+            "With stones, develop a square of three blocks on a side.",
+            "Utilize stones to shape a square that each side contains 3 blocks.",
+            "Make a square configuration using rocks, having three blocks on all sides"
+        ],
+         'check_lambda': lambda game_data, ix: is_square_formed(game_data, ix, BlockType.STONE, 3),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.STONE, 3)"
+    }
+}
+----

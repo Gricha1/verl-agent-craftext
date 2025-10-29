@@ -1,0 +1,95 @@
+{
+    INSTRUCTION_FURNACE_DAY: {
+        instruction: Place a furnace during the day
+        scenario_checker: Scenarios.TIME_CONSTRAINED_PLACEMENT.value
+        instruction_paraphrases: [
+            In the daytime, put down a furnace
+            When it's bright out, install a heating device
+            Set up an oven in the surroundings illuminated by sunlight
+            Position a stovetop when daylight is present
+            During the period of sunshine, establish a heating apparatus
+        ]
+        arguments: create_target_state(BlockType.FURNACE, TimeState.DAY)
+        str_check_lambda: at_time_block_placed(gd, target_state)
+    }
+}
+----
+{
+    INSTRUCTION_STONE_DAY: {
+        instruction: Place a stone during the day
+        scenario_checker: Scenarios.TIME_CONSTRAINED_PLACEMENT.value
+        instruction_paraphrases: [
+            Put down a rock when it's daytime
+            During the sunlight hours, set up a stone
+            Position a pebble when the sun is up
+            As the sun shines, lay a stone
+            At sunrise, insert a boulder in your setting
+        ]
+        arguments: create_target_state(BlockType.STONE, TimeState.DAY)
+        str_check_lambda: at_time_block_placed(gd, target_state)
+    }
+}
+----
+{
+    INSTRUCTION_FURNACE_NIGHT: {
+        instruction: Place a furnace during the night
+        scenario_checker: Scenarios.TIME_CONSTRAINED_PLACEMENT.value
+        instruction_paraphrases: [
+            Set up the furnace at nightfall
+            Establish the kiln during the evening
+            Situate the heating unit when it's dark
+            At dusk, put the stove
+            Position the heat producer under the moonlight
+        ]
+        arguments: create_target_state(block_name=BlockType.FURNACE, TimeState.NIGHT)
+        str_check_lambda: at_time_block_placed(gd, target_state)
+    }
+}
+----
+{
+    INSTRUCTION_PLANT_DAY: {
+        instruction: Place a plant during the day.
+        scenario_checker: Scenarios.TIME_CONSTRAINED_PLACEMENT.value
+        instruction_paraphrases: [
+            During daytime, set a plant.
+            When it's light out, put down a flora.
+            Position a flora in the sunlight.
+            Situate a greenery while it's daytime.
+            At sunrise, position some vegetation.
+        ]
+        arguments: create_target_state(BlockType.PLANT, TimeState.DAY)
+        str_check_lambda: at_time_block_placed(gd, target_state)
+    }
+}
+----
+{
+    INSTRUCTION_PLANT_NIGHT: {
+        instruction: Please place a plant when it's dark outside.
+        scenario_checker: Scenarios.TIME_CONSTRAINED_PLACEMENT.value
+        instruction_paraphrases: [
+            Could you position the herb during the night?
+            At nightfall, I'd like you to set down a flora.
+            When evening comes, make sure you've put a plant in place.
+            I need you to utilize the cover of darkness to locate a shrub.
+            Under the cloak of night, please ensure you've established a greenery.
+        ]
+        arguments: create_target_state(BlockType.PLANT, TimeState.NIGHT)
+        str_check_lambda: at_time_block_placed(gd, target_state)
+    }
+}
+----
+{
+    INSTRUCTION_CRAFTING_TABLE_DAY: {
+        instruction: Place a crafting table during the daytime
+        scenario_checker: Scenarios.TIME_CONSTRAINED_PLACEMENT.value
+        instruction_paraphrases: [
+            Set a workbench when it's daytime
+            Put a carpenter's bench out in the daylight
+            Position a crafting station during the day
+            During the daylight hours, place the crafting desk
+            Set the work table in place at sunrise
+        ]
+        arguments: create_target_state(BlockType.CRAFTING_TABLE, TimeState.DAY)
+        str_check_lambda: at_time_block_placed(gd, target_state)
+    }
+}

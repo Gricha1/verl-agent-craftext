@@ -1,0 +1,383 @@
+{
+    INSTRUCTION_PLACE_RUBY_ENCHANTMENT_TABLE_FIRE_3_3: {
+        instruction: Gather three rubies and place down three Fire Enchantment Tables.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Begin by collecting three red crystals and then lay down three Fire Prayer Desks.
+            First procure a trifecta of luminescent red jewels and subsequently erect three Flame Sorcery Workshops.
+            Ensure you have in your possession three crimson gemstones before situating three Pyro-Magic Altars.
+            Focus on accumulating a triad of ruby stones for your inventory and follow through by situating three tables of fire magic.
+            You are required to obtain an aggregate of three gleaming scarlet stones and then to position three Tables of Fiery Conjuring.
+        ]
+        arguments: create_target_state(MediumInventoryItems.RUBY, BlockType.ENCHANTMENT_TABLE_FIRE, 3, 3)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_RUBY_TORCHES_2_2: {
+        instruction: Collect 2 rubies and place 2 torches on the map.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Grab 2 pieces of ruby and place a pair of lights on the game field.
+            Go find two crimson stones and then put down two luminous torches.
+            Your task is to acquire a duo of rubies and light up the world with two glowing torches.
+            The game requires you to obtain exactly a couple of those sparkling rubies and to brighten up the landscape with two bright torches.
+            Undertake a mission to secure two precious red gems and then illuminate the surroundings by strategically positioning two flaming torches.
+        ]
+        arguments: create_target_state(MediumInventoryItems.RUBY, MediumInventoryItems.TORCHES, 2, 2)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_SAPPHIRE_ENCHANTMENT_TABLE_ICE_5_3: {
+        instruction: Collect 5 sapphires and place 3 ice enchantment tables.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Gather a total of five sapphires and set up three ice magic tables.
+            Amass five sapphires and position three tables of ice enchantment.
+            Assemble a collection of five sapphires and install three ice enchantment stations.
+            Accumulate a count of five sapphires and arrange three icy magic tables.
+            Pick up five sapphires off the ground and deposit three tables for ice enchantment.
+        ]
+        arguments: create_target_state(MediumInventoryItems.SAPPHIRE, BlockType.ENCHANTMENT_TABLE_ICE, 5, 3)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_RUBY_CRAFTING_TABLE_3_5: {
+        instruction: Gather 3 rubies and place 5 crafting tables.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Collect 3 rubies and put down 5 crafting tables.
+            Accumulate 3 pieces of ruby and deploy 5 workbenches.
+            Bring together 3 rubies and construct 5 tables for crafting.
+            Amass a trio of rubies and establish five crafting platforms.
+            Secure a collection of three prized rubies and create a total of five crafting stations on the map.
+        ]
+        arguments: create_target_state(MediumInventoryItems.RUBY, BlockType.CRAFTING_TABLE, 3, 5)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_SAPPHIRE_TORCHES_4_4: {
+        instruction: Collect 4 sapphires and place 4 torches
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Get 4 blue gems and set 4 torches
+            Find and gather 4 pieces of sapphire, then install 4 sources of light
+            Your task is to procure 4 blue stones and then you have to establish 4 light sources
+            I need you to acquire 4 units of the precious stone known as sapphire, afterwards organize 4 illuminating devices appropriately
+            Engage in gathering 4 instances of the azure jewel, following this ensure to deploy 4 flame burning sticks effectively
+        ]
+        arguments: create_target_state(MediumInventoryItems.SAPPHIRE, MediumInventoryItems.TORCHES, 4, 4)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_DIAMOND_ENCHANTMENT_TABLE_FIRE_3_4: {
+        instruction: Get 3 diamonds and place 4 fire enchantment tables
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Collect 3 gemstones of diamond and put down 4 enchantment tables of fire
+            You need to gather a trio of diamonds and then set up four fire enchantment tables
+            I want you to amass 3 diamonds and afterward station 4 fire enchantment workbenches
+            Procure three pieces of diamond and subsequently install four pieces of fire enchantment table
+            Your task is to accumulate a collection of three diamonds and erect four burnished enchantment tables filled with fire magic
+        ]
+        arguments: create_target_state(MediumInventoryItems.DIAMOND, BlockType.ENCHANTMENT_TABLE_FIRE, 3, 4)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_SAPLING_STONE_5_5: {
+        instruction: Collect five saplings and place five stones in the game.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Accumulate five sprouts and set down five rocks on the map.
+            Gather a group of five saplings and position five pebbles in the designated zones.
+            You need to harvest exactly five small trees and then distribute five pieces of stone within the game area.
+            Your mission is to obtain a set of five tree seedlings and locate an equivalent quantity of rocks in the virtual environment.
+            Amass a total of five plant sprigs and succeeding that, deploy a similar count of mineral fragments, specifically stone, in the game field.
+        ]
+        arguments: create_target_state(MediumInventoryItems.SAPLING, BlockType.STONE, 5, 5)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_RUBY_PLANT_3_1: {
+        instruction: Collect 3 ruby and place 1 plant
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Gather 3 pieces of ruby and put 1 plant down
+            Accumulate a total of three ruby gems and set one plant in position
+            Procure trio of rubies and position one flora
+            Amass three precious ruby stones and establish one vegetation
+            Aggregate a triplet of the glistening ruby and institute a singular plant
+        ]
+        arguments: create_target_state(MediumInventoryItems.RUBY, BlockType.PLANT, 3, 1)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_IRON_ENCHANTMENT_TABLE_FIRE_2_5: {
+        instruction: Get 2 iron items in the inventory and put 5 fire enchantment tables on the map.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Procure 2 pieces of iron and put down 5 fire enchantment workbenches.
+            Secure two iron items and place five fire-infused spell tables.
+            Scavenge a pair of iron units and establish five incantation platforms of inferno.
+            Retrieve two objects of metallic iron and station five enchantment apparatus aflame.
+            Accumulate duo cybersecurity objects of iron and lodge a handful of five fire magic altars.
+        ]
+        arguments: create_target_state(MediumInventoryItems.IRON, BlockType.ENCHANTMENT_TABLE_FIRE, 2, 5)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_SAPPHIRE_CRAFTING_TABLE_3_3: {
+        instruction: Fetch three Sapphires and establish three Crafting tables
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Acquire three Sapphires from the game and construct three workbenches
+            Gather three Sapphires and build three assembly tables
+            Collect a trio of Sapphires and set up a trio of benches for crafting
+            Procure three of the finest Sapphires and create three artistry platforms
+            Get your hands on three blue gems commonly known as Sapphires and erect three craft stations
+        ]
+        arguments: create_target_state(MediumInventoryItems.SAPPHIRE, BlockType.CRAFTING_TABLE, 3, 3)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_SAPPHIRE_FURNACE_1_2: {
+        instruction: Collect one Sapphire and place two Furnaces
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Get a Sapphire and set up two Furnaces
+            Pick up a single Sapphire and install a pair of Furnaces
+            Grab one jewel and put down a couple of heating devices
+            Acquire a single blue gem and establish twice coal-burning stoves
+            Procure one azure stone and arrange two Hearth
+        ]
+        arguments: create_target_state(MediumInventoryItems.SAPPHIRE, BlockType.FURNACE, 1, 2)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_SAPPHIRE_FURNACE_1_1: {
+        instruction: Collect one sapphire and place one furnace.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Can you please collect a sapphire and then place a furnace?
+            Please find and pick up a blue gem and then put a heater.
+            I need you to obtain a crystal and subsequently position a stove.
+            Find a single precious stone of blue color and install one smelter.
+            Can you mine one blue jewel and set down a single kiln?
+        ]
+        arguments: create_target_state(MediumInventoryItems.SAPPHIRE, BlockType.FURNACE, 1, 1)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_SAPLING_ENCHANTMENT_TABLE_ICE_3_4: {
+        instruction: I need you to gather 3 saplings and then place 4 Ice Enchantment Tables.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Collect three tree babies and then set down four ice magic benches.
+            Procure a trio of sprouts and then position quartet of frost sorcery tables.
+            Obtain three tree sprouts and then establish four cryoconjuring desks.
+            Amass terna of seedlings and then locate quad of cryomagic platforms.
+            Accumulate triple of young trees and then situate 4 ice enchantment surfaces.
+        ]
+        arguments: create_target_state(MediumInventoryItems.SAPLING, BlockType.ENCHANTMENT_TABLE_ICE, 3, 4)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_SAPLING_PLANT_2_5: {
+        instruction: Collect 2 saplings and place 5 plants.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Gather a pair of saplings and then put down five plants.
+            Acquire two young trees and proceed to situate 5 greenery.
+            Obtain a duo of tree seedlings and deposit quintuple vegetation.
+            Secure a couple of tree offspring and position a handful of plant life.
+            Capture two shrub sprouts and arrange a group of five fauna entities.
+        ]
+        arguments: create_target_state(MediumInventoryItems.SAPLING, BlockType.PLANT, 2, 5)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_SAPPHIRE_CRAFTING_TABLE_1_4: {
+        instruction: Collect one Sapphire and place four Crafting Tables.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Acquire one blue gem, then put up four workbenches.
+            Find and pick up a single gem of Sapphire, then establish four crafting stations in the map.
+            You need to gather a single Sapphire and position four Artifact Crafting Tables around the area.
+            Your mission is to accumulate one piece of the precious blue gem known as Sapphire, then consecutively set up no less than four stations for Crafting your Artifacts.
+            Your task, should you choose to accept it, involves the meticulous accumulation of a lone celestial stone known as Sapphire from your surroundings, paired with the strategically planned placement of quadruple Crafting Tables, cornerstones of civilization and invention, around the current territory.
+        ]
+        arguments: create_target_state(MediumInventoryItems.SAPPHIRE, BlockType.CRAFTING_TABLE, 1, 4)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_COAL_ENCHANTMENT_TABLE_ICE_3_1: {
+        instruction: Collect 3 coal and place 1 enchantment table ice on the field.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Ensure you gather 3 pieces of coal and put down 1 ice enchantment workbench.
+            You need to accrue a total of 3 coals then position 1 ice magic table in the playing area.
+            It's important to harvest 3 chunks of coal and establish 1 ice sorcery workstation.
+            Make sure to obtain a trio of coals then situate an individual icy enchantment console.
+            Your tasks are to amass three coal minerals and to locate one icy spelltable onto the map.
+        ]
+        arguments: create_target_state(MediumInventoryItems.COAL, BlockType.ENCHANTMENT_TABLE_ICE, 3, 1)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_COAL_ENCHANTMENT_TABLE_FIRE_5_1: {
+        instruction: Gather 5 pieces of coal from your inventory and place an Enchantment Fire Table on the map.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Your mission is to retrieve 5 coal items from your inventory and then proceed to set up an Enchantment Fire Table.
+            Make sure to amass 5 coals in your inventory and arrange an Enchantment Fire Table in the gaming field.
+            Aim to accumulate a total of five units of coal in your inventory before installing an Enchantment Fire Table within the map.
+            The objective is to increase your coal count in inventory to five and subsequently, establish an Enchantment Fire Table on the game map.
+            Your prime directive is to accrue five lumps of coal by mining and subsequently integrate an Enchantment Fire Table into the gaming arena.
+        ]
+        arguments: create_target_state(MediumInventoryItems.COAL, BlockType.ENCHANTMENT_TABLE_FIRE, 5, 1)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_COAL_ENCHANTMENT_TABLE_ICE_2_2: {
+        instruction: Collect two COAL and place two ENCHANTMENT TABLE ICE on the field.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Gather a pair of COAL and arrange a duo of the icy enchantment tables on the map.
+            Get hold of two pieces of COAL and put down two frosty enchantment surfaces on the battlefield.
+            Accumulate two bits of COAL and deploy a couple of the enchanting ice tables on the game board.
+            Amass a duet of COAL and situate two spellbinding frost tables within the gaming arena.
+            Procure two units of COAL and establish two pieces of mystic ice platforms on the playing field.
+        ]
+        arguments: create_target_state(MediumInventoryItems.COAL, BlockType.ENCHANTMENT_TABLE_ICE, 2, 2)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_RUBY_FURNACE_1_1: {
+        instruction: Collect one ruby and place one furnace.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            I need you to gather one gem and then put down a heater.
+            Find a single carmine gem and then construct an oven.
+            Forage for just one red precious stone and then establish a heating device.
+            Procure a solitary crimson jewel and subsequently erect an igneous appliance.
+            Secure an individual russet gemstone and later set up a warming mechanism.
+        ]
+        arguments: create_target_state(MediumInventoryItems.RUBY, BlockType.FURNACE, 1, 1)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_STONE_STONE_1_3: {
+        instruction: Collect one stone and place three stones.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Pick up one rock and put down three rocks.
+            Grab one piece of stone and deposit three pieces of stone.
+            Obtain a single stone and then position three stones.
+            Secure one unit of stone and establish three units of the same.
+            Procure a solitary stone and subsequently install trio of stones.
+        ]
+        arguments: create_target_state(MediumInventoryItems.STONE, BlockType.STONE, 1, 3)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_RUBY_ENCHANTMENT_TABLE_ICE_4_5: {
+        instruction: Collect 4 rubies and then place 5 ice enchantment tables in the world.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Gather four rubies and afterwards place down five frost enchantment tables.
+            First, amass a total of four rubies, then position five icy sorcery tables into the environment.
+            The task is to collect at least four of the red gems, you'll then need to make sure five freezing wizardry tables are scattered across the map.
+            Your goal is to accumulate four precious rubies and as a subsequent step, distribute five tables imbued with frost magic throughout our game world.
+            Endeavour to acquire a quartet of radiant rubies, then following that task, diligently situate five tables enchanted by the power of ice magic within our digital landscape.
+        ]
+        arguments: create_target_state(MediumInventoryItems.RUBY, BlockType.ENCHANTMENT_TABLE_ICE, 4, 5)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_RUBY_FURNACE_4_1: {
+        instruction: Collect four rubies and then place one furnace
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Grab four of the rubies and put down a single furnace
+            Find and gather a quartet of rubies, then set a furnace into position
+            You need to pick up four valuable rubies and then set up one heating furnace
+            Obtain four red gemstones and afterwards situate one furnace
+            Secure a total of four rubies and subsequently install a lone furnace
+        ]
+        arguments: create_target_state(MediumInventoryItems.RUBY, BlockType.FURNACE, 4, 1)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_DIAMOND_ENCHANTMENT_TABLE_FIRE_5_2: {
+        instruction: Gather 5 diamonds and put down 2 fire enchantment tables.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Collect five diamonds and place a pair of fire enchantment tables.
+            Your task is to procure a handful of diamonds and subsequently set up two fire enchanting platforms.
+            You need to accumulate five pieces of diamond and erect two fire magic tables.
+            Amass a quintet of diamond gems and establish a duo of tables for fire enchantment.
+            The mission entails the acquisition of five precious diamond rocks followed by the strategic placement of two tables for fire sorcery.
+        ]
+        arguments: create_target_state(MediumInventoryItems.DIAMOND, BlockType.ENCHANTMENT_TABLE_FIRE, 5, 2)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_IRON_TORCHES_4_4: {
+        instruction: Collect 4 pieces of iron and place 4 torches in the game
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Please gather four iron ores and ensure that four torches are set up
+            Four iron blocks need to be collected, and also you need to place four illumination torches
+            Ensure that you have picked up a handful of four iron nuggets and have arranged four burning torches
+            You are required to procure quartet iron items and institute quartet sources of light, namely torches
+            Your task involves the acquisition of four units of the metallic mineral known as iron as well as the arrangement of four light-emitting objects referred to as torches
+        ]
+        arguments: create_target_state(MediumInventoryItems.IRON, MediumInventoryItems.TORCHES, 4, 4)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}

@@ -1,0 +1,90 @@
+{
+    "INSTRUCTION": {
+        "instruction": "Place a furnace in the morning",
+        "instruction_paraphrases": [
+            "During the early hours, set a heater",
+            "At sunrise, position a stove",
+            "Put a kiln when it's sunrise",
+            "Install a heating device as day breaks",
+            "Mount a heater during the dawn"
+        ],
+        "check_lambda": "lambda game_data: at_time_block_placed(game_data, BlockType.FURNACE, radius)",
+        "str_check_lambda": "at_time_block_placed(game_data, BlockType.FURNACE, radius)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place a furnace during the evening.",
+        "instruction_paraphrases": [
+            "Set the furnace when it's nighttime.",
+            "Position the heating appliance as the sun is setting.",
+            "During the evening, ensure the furnace is placed.",
+            "As the day turns into night, fix the smelting device in place.",
+            "When the twilight sets in, manufacture and position the smelter."
+        ],
+        "check_lambda": "lambda game_data: at_time_block_placed(game_data, BlockType.FURNACE, radius)",
+        "str_check_lambda": "at_time_block_placed(game_data, BlockType.FURNACE, radius)"
+    }
+}
+----
+ {
+    "INSTRUCTION": {
+        "instruction": "Place a stone during the morning.",
+        "instruction_paraphrases": [
+            "Set a rock at sunrise.",
+            "Position the pebble when it's daytime.",
+            "In the morning, lay down the stone.",
+            "At daybreak, put a stone in its place.",
+            "When morning arrives, place your piece of rock."
+        ],
+        "check_lambda": "lambda game_data, block_name=BlockType.STONE, radius=1: at_time_block_placed(game_data, block_name, radius)",
+        "str_check_lambda": "at_time_block_placed(game_data, BlockType.STONE, 1)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place a stone in the evening",
+        "instruction_paraphrases": [
+            "During dusk, put a rock down.",
+            "Please set a cobble in the nightfall.",
+            "As the night begins, position a pebble.",
+            "Insert a boulder as the sun is setting.",
+            "Position a chunk of stone in position when it's twilight."
+        ],
+        "check_lambda": 'lambda game_data: at_time_block_placed(game_data, BlockType.STONE, radius)',
+        "str_check_lambda": "at_time_block_placed(game_data, BlockType.STONE, radius)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place a enchantment table of ice during the evening",
+        "instruction_paraphrases": [
+            "At dusk, set down an ice enchantment table",
+            "Position a frosty enchanting bench when the sun goes down",
+            "Put an icy magician's table in place at twilight",
+            "When it's getting dark, install an icy magical workbench",
+            "During the time of sundown, establish a frosty charm desk"
+        ],
+        "check_lambda": "lambda game_data: at_time_block_placed(game_data, BlockType.ENCHANTMENT_TABLE_ICE, radius)",
+        "str_check_lambda": "at_time_block_placed(game_data, BlockType.ENCHANTMENT_TABLE_ICE, radius)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place a Enchantment_Table_Fire during the evening",
+        "instruction_paraphrases": [
+            "During the evening, set an Enchantment Table of Fire.",
+            "When it gets dark, position a Fire Enchantment Table.",
+            "Put down an Enchantment_Table_Fire as the evening falls.",
+            "At dusk, establish an Enchantment Table with Fire attributes.",
+            "In the later part of the day, positioned a fire imbued enchantment table into the game."
+        ],
+        "check_lambda": "lambda game_data: at_time_block_placed(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, radius)",
+        "str_check_lambda": "at_time_block_placed(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, radius)"
+    }
+}
+----

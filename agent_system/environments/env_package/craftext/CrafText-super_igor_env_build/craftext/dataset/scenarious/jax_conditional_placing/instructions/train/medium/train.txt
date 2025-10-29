@@ -1,0 +1,330 @@
+{
+    "INSTRUCTION": {
+        "instruction": "[MEDIUM] COLLECT 3 SAPPHIRE AND PLACE 5 FURNACE",
+        "instruction_paraphrases": [
+            "[MEDIUM] Gather 3 gems and setup 5 heaters",
+            "[MEDIUM] Need you to pick up 3 jewels and put down 5 ovens",
+            "Stash 3 jades, at medium level, and set 5 cooktops in place",
+            "Grab 3 precious stones over a medium difficulty and station 5 stoves",
+            "Recover 3 glistening treasures and erect 5 warming units, bear in mind this isn't easy"
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.SAPPHIRE, BlockType.FURNACE, 3, 5),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.SAPPHIRE, BlockType.FURNACE, 3, 5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 5 iron ores and place down 1 Ice Enchantment Table.",
+        "instruction_paraphrases": [
+            "Gather five pieces of iron, then situate a Frost Conjuration Workbench.",
+            "Pick up five iron minerals and install one Freezing Spell Desk.",
+            "Procure 5 Iron and set up an Icy Charm Table.",
+            "Accumulate a quintet of iron and position a single Frostbound Enchantment Stand.",
+            "Obtain handful of five iron resources and establish singular Glacial Magic Crafting Station."
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.IRON, BlockType.ENCHANTMENT_TABLE_ICE, 5, 1),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.IRON, BlockType.ENCHANTMENT_TABLE_ICE, 5, 1)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect one ruby and place two ice enchantment tables",
+        "instruction_paraphrases": [
+            "Gather one of rubies and put down two ice mage's desks",
+            "Acquire a single precious stone and establish a pair of frost wizard's workbenches",
+            "Obtain a single gemstone and install two tables of icy sorcery",
+            "Accumulate one jewel and arrange two icy magic altars",
+            "Amass an individual gem and position a duo of frosty enchantment stations"
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.RUBY, BlockType.ENCHANTMENT_TABLE_ICE, 1, 2),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.RUBY, BlockType.ENCHANTMENT_TABLE_ICE, 1, 2)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect five saplings and place five torches.",
+        "instruction_paraphrases": [
+            "Gather five saplings and set up five torches.",
+            "You need to obtain a quantity of five saplings and establish five torches.",
+            "Your task is to accrue five saplings and emplace five torches.",
+            "It is your duty to procure five saplings and mount five torches.",
+            "The endeavor requires you to amass five saplings and affix five torches."
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.SAPLING, MediumInventoryItems.TORCHES, 5, 5),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.SAPLING, MediumInventoryItems.TORCHES, 5, 5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 5 rubies from the inventory and then place 2 stones on the map.",
+        "instruction_paraphrases": [
+            "From your inventory, gather 5 gems and subsequently position 2 rocks on the map.",
+            "Secure 5 red stones from your collection and then arrange 2 pebbles on the terrain.",
+            "Acquire 5 pieces of ruby from your existing resources and then settle 2 boulders on the landscape.",
+            "Procure a handful of five precious rubies and then install a couple of stones on the designated map zones.",
+            "Amass quintuple ruby crystals from your reserves and thereafter, anchor duo of stones into mapped demarcation."
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.RUBY, BlockType.STONE, 5, 2),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.RUBY, BlockType.STONE, 5, 2)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect three diamonds and place one stone block.",
+        "instruction_paraphrases": [
+            "Gather a total of three diamond gems and position a single block of stone.",
+            "Accumulate three glittering diamonds and set one solid stone into place.",
+            "Pick up trio of diamonds and carefully lay down just one stone brick.",
+            "Ensure you have three shiny diamonds in your possession and position a single chunk of rock.",
+            "Secure three sparkling diamond gems and meticulously place one piece of stone."
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.DIAMOND, BlockType.STONE, 3, 1),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.DIAMOND, BlockType.STONE, 3, 1)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect two stones and place four Ice Tables.",
+        "instruction_paraphrases": [
+            "Pick up two chunks of rock and then set down four Enchantment Icy Workbenches.",
+            "Secure two pieces of stone and then position four Magic Icy Tables.",
+            "Gather a pair of stones and then put in place four Enchantment Tables of Ice.",
+            "Acquire two units of stone and then establish four Alchemy Ice Tables.",
+            "Obtain a couple of rocks and then lay down four Icy Enchantment Desks."
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.STONE, BlockType.ENCHANTMENT_TABLE_ICE, 2, 4),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.STONE, BlockType.ENCHANTMENT_TABLE_ICE, 2, 4)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 4 pieces of wood and then place 2 ice enchantment tables.",
+        "instruction_paraphrases": [
+            "Gather four logs and subsequently set down two tables of ice enchantment.",
+            "Pick up quartet of wood logs for the purpose to erect duo of ice-enchanted desks afterwards.",
+            "Grab a total of four lumber pieces and then proceed to lay down two icy wizardry stations.",
+            "Securely obtain an accumulation of four timber items and on achieving that, meticulously arrange a pair of enchantment stations made of ice.",
+            "Accumulate a count of four timber units, and when that's done, ensure to station two tables endowed with ice enchantment."
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.WOOD, BlockType.ENCHANTMENT_TABLE_ICE, 4, 2),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.WOOD, BlockType.ENCHANTMENT_TABLE_ICE, 4, 2)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 5 sapphires and place 4 furnaces.",
+        "instruction_paraphrases": [
+            "Please gather 5 of sapphires and then place down 4 furnaces.",
+            "I would like you to acquire 5 sapphires and then, subsequently, install 4 heating systems.",
+            "Accumulate 5 sapphires and deposit 4 heating equipment.",
+            "Procure 5 of blue gemstones and erect 4 stove-like apparatus.",
+            "Can you please generate a pile of 5 sapphires and establish a placement of 4 smelting devices?"
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.SAPPHIRE, BlockType.FURNACE, 5, 4),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.SAPPHIRE, BlockType.FURNACE, 5, 4)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "For your task, gather two rubies and plant a seed.",
+        "instruction_paraphrases": [
+            "I need you to gather a pair of rubies and sow a seed.",
+            "Could you please collect a couple of rubies and place a sprout?",
+            "Your task is to gather two sparkling rubies and cultivate a sapling.",
+            "Kindly obtain two precious red stones and grow a young plant.",
+            "Your assignment is to capture two gleaming gemstones and propagate a vegetation."
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.RUBY, BlockType.PLANT, 2, 1),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.RUBY, BlockType.PLANT, 2, 1)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect four coals and then place three torches.",
+        "instruction_paraphrases": [
+            "The first task for you is to gather four coals, and afterward, put down three lights.",
+            "Begin by picking up four pieces of coal, and once you've done that, place three torches.",
+            "Your mission is to first amass a quartet of coals, following which, you are to put three torches.",
+            "Task yourself with accumulating four chunks of carbon, then fulfil the role of lighting up three torches.",
+            "We would require you to obtain a handful of four coals, post which your duty would be to position three torches strategically."
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.COAL, MediumInventoryItems.TORCHES, 4, 3),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.COAL, MediumInventoryItems.TORCHES, 4, 3)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 3 wood and place 5 furnaces.",
+        "instruction_paraphrases": [
+            "Gather a total of three logs at your disposal and litter the field with five of our best burners.",
+            "Amass three portions of timber then establish five heating systems.",
+            "Accumulate three units of lumber and position five ovens.",
+            "Build your inventory with three materials from the trees and situate five stoves in the playing area.",
+            "I need you to gather three wooden items and successfully set down five kilns."
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.WOOD, BlockType.FURNACE, 3, 5),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.WOOD, BlockType.FURNACE, 3, 5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 1 diamond and place down 2 crafting tables",
+        "instruction_paraphrases": [
+            "Gather 1 gem and set up 2 workbenches",
+            "Procure a single gemstone and install a pair of construction platforms",
+            "Acquire a diamond and establish two artisan tables",
+            "Obtain one shiny stone and organize dual crafting surfaces",
+            "Secure an individual jewel and station two fabrication boards"
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.DIAMOND, BlockType.CRAFTING_TABLE, 1, 2),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.DIAMOND, BlockType.CRAFTING_TABLE, 1, 2)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 2 pieces of coal from the inventory and place 1 stone on the map.",
+        "instruction_paraphrases": [
+            "Fetch two coal items from your storage and put a piece of rock on the map.",
+            "Get a couple of coal items from your inventory and position a single stone in the game map.",
+            "Retrieve two units of coal from your inventory and deposit a rock on the map.",
+            "Obtain two pieces of coal from your storage, then place one stone within the game area.",
+            "From your stockpile, secure two quantities of coal, then locate a rock on the game map."
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.COAL, BlockType.STONE, 2, 1),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.COAL, BlockType.STONE, 2, 1)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 4 sapphires and place 2 enchantment table fire",
+        "instruction_paraphrases": [
+            "Gather four sapphires and put up two fire enchantment tables",
+            "Retrieve four pieces of sapphire and establish two tables with fire enchantments",
+            "Accumulate four blue jewels and erect two enchanting tables aflame",
+            "Amass a quartet of sapphires and install a pair of enchantment platforms on fire",
+            "Secure four sapphire gems and construct two consecration tables with fire elements"
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.SAPPHIRE, BlockType.ENCHANTMENT_TABLE_FIRE, 4, 2),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.SAPPHIRE, BlockType.ENCHANTMENT_TABLE_FIRE, 4, 2)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 4 diamonds and place 2 fire enchantment tables.",
+        "instruction_paraphrases": [
+            "Gather 4 gems and set up 2 fire imbuing stations.",
+            "Amass a total of four diamonds and install a couple of enchantment tables of fire.",
+            "Retrieve four pieces of diamond and lay down two fire enchantment workbenches.",
+            "Accumulate four crystals then establish two fire magical counters.",
+            "Hoard four diamond stones and develop two fiery enchanting platforms."
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.DIAMOND, BlockType.ENCHANTMENT_TABLE_FIRE, 4, 2),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.DIAMOND, BlockType.ENCHANTMENT_TABLE_FIRE, 4, 2)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 3 saplings and place 5 plants.",
+        "instruction_paraphrases": [
+            "You need to gather three saplings and then put down five plants.",
+            "Make sure to amass a total of three small trees and subsequently situate a handful of five green plants.",
+            "Accumulate a trio of little tree sprouts, followed by the placement of five pieces of foliage.",
+            "Your task is to obtain three young trees and afterwards establish a setting of five botanical organisms.",
+            "Procure three samples of saplings and later distribute a quintet of photosynthetic living entities."
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.SAPLING, BlockType.PLANT, 3, 5),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.SAPLING, BlockType.PLANT, 3, 5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 3 coal and place 3 fire enchantment tables.",
+        "instruction_paraphrases": [
+            "Obtain three pieces of coal and set down three fire enchanting tables.",
+            "Harvest trio of coals and establish a trio of enchantment tables of fire.",
+            "Gather three coal items and deploy three fire enchantment workbenches.",
+            "Accumulate three coals and position three fire wizardry tables.",
+            "Amass a set of three coals and erect three flame sorcery stations."
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.COAL, BlockType.ENCHANTMENT_TABLE_FIRE, 3, 3),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.COAL, BlockType.ENCHANTMENT_TABLE_FIRE, 3, 3)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 2 coal pieces and place 1 furnace",
+        "instruction_paraphrases": [
+            "Prepare 2 units of coal and establish 1 hearth",
+            "Retreive two chunks of coal and put down a single furnace",
+            "Assemble 2 lumps of coal then position 1 stove",
+            "Gather a pair of coals and then install one kiln",
+            "Procure two coals and then set up a solitary furnace"
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.COAL, BlockType.FURNACE, 2, 1),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.COAL, BlockType.FURNACE, 2, 1)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 3 rubies and place 4 enchantment fire tables.",
+        "instruction_paraphrases": [
+            "Gather 3 set of rubies and place four fire enchantment stations.",
+            "Accumulate three red gems and install four enchantment desks with fire enchantment.",
+            "Obtain a total of trio of rubies and position quartet of fire enchanting benches.",
+            "Secure three red-colored gemstones and add four workstations with fire-based enchantment.",
+            "Pick up three units of gleaming rubies and set down four magical fire tables."
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.RUBY, BlockType.ENCHANTMENT_TABLE_FIRE, 3, 4),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.RUBY, BlockType.ENCHANTMENT_TABLE_FIRE, 3, 4)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Gather 1 Coal and then place 2 furnaces.",
+        "instruction_paraphrases": [
+            "Pick 1 lump of coal and then build 2 heating furnaces.",
+            "Procure 1 piece of coal and afterwards lay down a pair of furnaces.",
+            "You need to collect 1 bit of coal and subsequently put up two ovens.",
+            "Secure a single coal, following that erect 2 stoves.",
+            "Obtain one unit of coal first, succeedingly assemble a duo of heating apparatus."
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.COAL, BlockType.FURNACE, 1, 2),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.COAL, BlockType.FURNACE, 1, 2)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Collect a sapling and place an enchantment table of fire.",
+        "instruction_paraphrases": [
+            "Find a sapling and then position a fire enchantment table.",
+            "Firstly, acquire a sapling and afterwards, establish a table for fire enchantment.",
+            "Pick up one sapling and then set down an enchantment table with fire abilities.",
+            "Procure one sapling and subsequently position an arcane fire table.",
+            "First, appropriate a sapling and then deposit a table of pyro-enchantment."
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.SAPLING, BlockType.ENCHANTMENT_TABLE_FIRE, 1, 1),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.SAPLING, BlockType.ENCHANTMENT_TABLE_FIRE, 1, 1)"
+    }
+}
+----

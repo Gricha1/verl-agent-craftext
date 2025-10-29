@@ -1,0 +1,314 @@
+{
+    "INSTRUCTION": {
+        "instruction": ["Accumulate three sapphire stones and position five furnaces", "Once you've gathered three of the sapphire gems, proceed then to arrange five furnaces in an ordered manner", "After acquiring a trio of sapphire gems, you must then go on to configure five furnaces", "In the cold brilliance of three sapphires, hard-won and treasured, commence your task. Thereafter, five furnaces must take their stand, their iron hearts awaiting the promise of heat and flame", "After your hands have known the cool weight of three sapphires, in depths of profound blueness, you should then approach the task of situating five vocal furnaces, their silent potential a testament to the work that lies ahead."] COLLECT 3 SAPPHIRE AND PLACE 5 FURNACE",
+        "instruction_paraphrases": [
+            ["Accumulate three sapphire stones and position five furnaces", "Once you've gathered three of the sapphire gems, proceed then to arrange five furnaces in an ordered manner", "After acquiring a trio of sapphire gems, you must then go on to configure five furnaces", "In the cold brilliance of three sapphires, hard-won and treasured, commence your task. Thereafter, five furnaces must take their stand, their iron hearts awaiting the promise of heat and flame", "After your hands have known the cool weight of three sapphires, in depths of profound blueness, you should then approach the task of situating five vocal furnaces, their silent potential a testament to the work that lies ahead."] Gather 3 gems and setup 5 heaters",
+            ["Accumulate three sapphire stones and position five furnaces", "Once you've gathered three of the sapphire gems, proceed then to arrange five furnaces in an ordered manner", "After acquiring a trio of sapphire gems, you must then go on to configure five furnaces", "In the cold brilliance of three sapphires, hard-won and treasured, commence your task. Thereafter, five furnaces must take their stand, their iron hearts awaiting the promise of heat and flame", "After your hands have known the cool weight of three sapphires, in depths of profound blueness, you should then approach the task of situating five vocal furnaces, their silent potential a testament to the work that lies ahead."] Need you to pick up 3 jewels and put down 5 ovens",
+            "Stash 3 jades, at medium level, and set 5 cooktops in place",
+            "Grab 3 precious stones over a medium difficulty and station 5 stoves",
+            "Recover 3 glistening treasures and erect 5 warming units, bear in mind this isn't easy"
+        ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.SAPPHIRE, BlockType.FURNACE, 3, 5),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.SAPPHIRE, BlockType.FURNACE, 3, 5)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 5 iron ores and place down 1 Ice Enchantment Table.",
+        "instruction_paraphrases":Key Elements: Collect, 5, Iron ores, place down, 1, Ice Enchantment Table. 
+
+["Gather 5 ferrous minerals and set 1 Frost Lore Table", "While you attain five elements of iron, it's then necessary to deposit a single Ice Enchantment Table.", "Accumulate five deposits of metallic iron, subsequently, position a singular table of Icy Enchantment", "On thy noble quest, thou art charged to procure five fragments of the stout earth's blood, iron, and hitherto lay down an Elemental Table of the Frost Arcanum", "In the act of gathering five pieces of the earth's hidden strength, iron, one must then create a home for a sole Table of Icy Enchantment."],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.IRON, BlockType.ENCHANTMENT_TABLE_ICE, 5, 1),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.IRON, BlockType.ENCHANTMENT_TABLE_ICE, 5, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect one ruby and place two ice enchantment tables",
+        "instruction_paraphrases":["Gather a single garnet and position two frost spell platforms", 
+"Securing a single precious stone of the ruby variety and setting in place a duo of tables imbued with the power of frost magic",
+"Assemble one singular crimson gem and erect dual arctic wizardly desks",
+"In ancient days, there dwelt one scorned to collect a gem of fervent flame hue, akin to a solitary ruby, and in respectful devotion lay a duo of mystical tablets, their essence frostbitten",
+"In the throes of enchantment, there is one with a task to acquire a stone lit with fire's glow, the solitary ruby, and with two ice-governed tables to set in place, an opera of silent magic begins"],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.RUBY, BlockType.ENCHANTMENT_TABLE_ICE, 1, 2),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.RUBY, BlockType.ENCHANTMENT_TABLE_ICE, 1, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect five saplings and place five torches.",
+        "instruction_paraphrases":["Accumulate five young trees and position five lights.", 
+"Gather five saplings, then proceed to set down five torches.", 
+"Amass five sprigs, subsequently arrange five illuminators in a compound structure.", 
+"Of the younglings of the tree, accumulate five, and in a similar manner, bestow upon your surrounding five beacons that bring forth light.",
+"In the silent dance of collection, let five tender trees join your belongings, and bestow the space with the gentle glow of five pledged flames."],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.SAPLING, MediumInventoryItems.TORCHES, 5, 5),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.SAPLING, MediumInventoryItems.TORCHES, 5, 5)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 5 rubies from the inventory and then place 2 stones on the map.",
+        "instruction_paraphrases":["Procure 5 garnets from the stockpile and subsequently position 2 pebbles on the chart", 
+"Subsequent to obtaining five rubies from our inventory, the next step would be to set two stones on the designated map",
+"Having secured five garnets from the repository, our following task compels us to arrange two pebbles on the specified chart",
+"In yonder satchel of holdings, seek and claim five jewels of ruby's fire, then bestow upon the parchment of territories, two stones of significance", 
+"Emerging from the depths of our shared stock, with five rubies in hand, the next beat of the story calls for a pair of stones to find their home on our crafted world's map."],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.RUBY, BlockType.STONE, 5, 2),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.RUBY, BlockType.STONE, 5, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect three diamonds and place one stone block.",
+        "instruction_paraphrases":["Gather trio gemstones and position one rock unit.",
+ "Procure a triplet of diamonds, following which, a single block of stone must be set in place.",
+ "Secure three precious gems and situate a single rock element, in an intriguing twist of events.",
+ "In the heart of the adamant land, seize three gems of immeasurable worth, then layeth down one block of the most solid stone, as if defining the destiny of a kingdom.",
+ "In the silent whisper of the mountain’s breath, lay claim to three stars of the deep earth, diamonds, and gently set into place, a single echo of the stone heart of the world."],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.DIAMOND, BlockType.STONE, 3, 1),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.DIAMOND, BlockType.STONE, 3, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect two stones and place four Ice Tables.",
+        "instruction_paraphrases":["Gather a pair of pebbles and position four Frost Desks", 
+"Two stones must be collected and then it is required to position four Ice Tables carefully",
+"Procure a duo of rocks and strategically arrange four Glacial Counters",
+"In the manner of the ancient spirits, with sturdiness in thy heart, gather two of earth's children, the stones, and amidst the cold breath of winter, raise four icy altars, those Tables of Ice",
+"In the quietness of the world, let two stones come to join you from the bosom of this vast earth; take courage then, in the chill of the icy winds, to form four icy surfaces, the Ice Tables, in a harmony that befits the silence of your surroundings."],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.STONE, BlockType.ENCHANTMENT_TABLE_ICE, 2, 4),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.STONE, BlockType.ENCHANTMENT_TABLE_ICE, 2, 4)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 4 pieces of wood and then place 2 ice enchantment tables.",
+        "instruction_paraphrases":["Gather four fragments of timber and afterward position two icy allure platforms.", 
+"In the process of compiling four units of timber, one should afterwards arrange two tables enchanted by ice.", 
+"Upon securing four segments of lumber, you are to establish pair of chill charm desks, indeed.", 
+"Procure thou four shards of the forest's bounty, and in the wake thereof, give rightful place to twin devices of frost-imbued incantation.", 
+"Draw together four breaths of the forest's song, and in the quiet after, lay two crafted altars kissed by the winter's touch." ],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.WOOD, BlockType.ENCHANTMENT_TABLE_ICE, 4, 2),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.WOOD, BlockType.ENCHANTMENT_TABLE_ICE, 4, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 5 sapphires and place 4 furnaces.",
+        "instruction_paraphrases":["Acquire five sapphires and situate four kilns.", "After obtaining five sapphires, your task is to position four furnaces.", "Upon securing five sparkling sapphires, the obligation lies in the positioning of four industrious kilns.", "In the heart of the quest, thou art tasked to gathereth five gemstones of sapphire, and position ye four furnaces, belchers of flame and creation.", "In the grand dance of doing and making, direct your steps to first find five vibrant stones of sapphire blue, then lay four furnaces in their designated resting places."],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.SAPPHIRE, BlockType.FURNACE, 5, 4),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.SAPPHIRE, BlockType.FURNACE, 5, 4)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "For your task, gather two rubies and plant a seed.",
+        "instruction_paraphrases":["For your duty, procure a pair of red gems and sow a kernel.", 
+"For your responsibility, you are to accumulate two pieces of ruby and start the life of a seed by planting it.", 
+"To fulfil your employment, amass two precious stones of crimson hue and initialize the existence of a kernel through sowing.", 
+"Upon thine quest, thou art bidden to acquire duo of gems, red as the sun's dying light, and to [begins the life] of a humble seed, embedding it in the bosom of the earth.",
+"In your designated pursuit, seek the twin red stones that hold the hidden fire and boldly engage in the act of birthing new life, by laying a seed in the earth."],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.RUBY, BlockType.PLANT, 2, 1),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.RUBY, BlockType.PLANT, 2, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect four coals and then place three torches.",
+        "instruction_paraphrases":["Gather four pieces of carbon and then position three lamps.", 
+"In the course of your duties, you must first gather four coals before proceeding to position three torches.", 
+"You're obliged to amass four chunks of carbon, after which you need to systematically arrange three luminous devices.", 
+"Bid thee gather, in thy noble pursuit, a quartet of shadowy coals before turning thy hand to rightly placing a trio of effulgent torch-bearers.", 
+"In the task at hand, seek out four hidden fragments of ancient carbon, gleaming black as night, and then, with thought and care, place into existence three humble luminaries."],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.COAL, MediumInventoryItems.TORCHES, 4, 3),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.COAL, MediumInventoryItems.TORCHES, 4, 3)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 3 wood and place 5 furnaces.",
+        "instruction_paraphrases":["Gather three timber and position five ovens.", 
+"So as to achieve your goal, you must first acquire three portions of wood, then you must set down five furnaces in your allocated space.", 
+"Firstly, amass a trio of timber, subsequently, in your designated area, deploy five ovens.", 
+"In the likeness of a patient builder of yore, procure thee a triplet of the kingdom's finest timber and, with great care, position a quintet of sturdy furnaces.", 
+"A quest lies before you; gather from the heart of the forest, three boughs of wood, and with them arrange, with profound intention, five earthly furnaces."],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.WOOD, BlockType.FURNACE, 3, 5),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.WOOD, BlockType.FURNACE, 3, 5)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 1 diamond and place down 2 crafting tables",
+        "instruction_paraphrases":["Amass a single gem and establish a pair of construction platforms", "Once you have successfully obtained a diamond, make sure to set down not one, but two crafting tables", "After procuring a solitary precious stone, proceed to station dual platforms for fabrication", "In your hands lies the task of securing a precious jewel, held aloft as the moon against the night sky, and to lay down upon the earth a duo of crafting tables, sturdy as ancient oaks in their purpose", "In the silence that follows your effort, find a diamond singular in its splendour, and choose a spot to bring forth two crafting benches, instruments integral to the art of creation."],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.DIAMOND, BlockType.CRAFTING_TABLE, 1, 2),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.DIAMOND, BlockType.CRAFTING_TABLE, 1, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 2 pieces of coal from the inventory and place 1 stone on the map.",
+        "instruction_paraphrases":["Accumulate a pair of coal chunks from the stockpile and position a single rock on the terrain.", 
+"Gather two units of coal from your inventory, then turn your attention to setting one stone onto the geographical landscape.", 
+"Amass two fragmentations of coal from the repository, subsequently orchestrate a solitary cobblestone within the cartographical design.", 
+"In the deep recesses of one's hold, rifle through the blackened remnants of ancient Earth until one finds two fragments of coal, then on the yawning expanse of map before you, deposit a single rock, as if marking the last of a forgotten dynasty.", 
+"With quiet reflection, you find your hands moving to your cache, talon-like fingers sifting, selecting two compact fragments of coal. New purpose in mind, they move, guiding one humble stone to its new existence on a map, in a world reborn."]
+,
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.COAL, BlockType.STONE, 2, 1),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.COAL, BlockType.STONE, 2, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 4 sapphires and place 2 enchantment table fire",
+        "instruction_paraphrases":["Gather 4 blue gems and position 2 charm table flame", "In the endeavor to collect four sapphires, it is then necessary to put two upon the enchantment table of fire", "Procure four of the azure jewels and set two upon the mystical pyre of enchantment", "In the depths of the earth, four azure-heart gems be thy quest, and in the flame's breath of enchantment table, two of them must take their rest", "To gather the four sapphires, those pieces of sky turned stone, and bring them into the world of the enchantment flame, twice-placed under the table of mystery"],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.SAPPHIRE, BlockType.ENCHANTMENT_TABLE_FIRE, 4, 2),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.SAPPHIRE, BlockType.ENCHANTMENT_TABLE_FIRE, 4, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 4 diamonds and place 2 fire enchantment tables.",
+        "instruction_paraphrases":["Amass 4 gemstones and position 2 pyro enchantment desks.", 
+"Gather up four gleaming diamonds before setting down two fire enchantment tables.",
+"Gather together four precious gems, and subsequently position two tables enchanted by fire.",
+"In days of yore, one is tasked to muster four luminous precious stones of the hardest substance, and with all due reverence, set aloft two tables imbued by the pyres' mystic charm.",
+"In the quiet solitude, summon unto oneself four stones of unfathomable radiance, and amid their glow, carefully lay down a pair of fire enchantment tables, each exuding an aura of ancient power."],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.DIAMOND, BlockType.ENCHANTMENT_TABLE_FIRE, 4, 2),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.DIAMOND, BlockType.ENCHANTMENT_TABLE_FIRE, 4, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 3 saplings and place 5 plants.",
+        "instruction_paraphrases":["Accumulate 3 seedlings and position 5 vegetations",
+ "Having obtained three saplings, go on to situate fives plants in their appropriate positions",
+ "Having amassed three offspring trees, proceed to station five different flora in their rightful places",
+ "In the spirit of verdant growth, gather ye three youthful trees; then with the harmony of nature, situate five of God's green creations in their chosen soil",
+ "From nature's bounty, draw forth three infant branches. In quiet harmony, settle five sister tendrils from earth's verdant bosom."],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.SAPLING, BlockType.PLANT, 3, 5),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.SAPLING, BlockType.PLANT, 3, 5)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 3 coal and place 3 fire enchantment tables.",
+        "instruction_paraphrases":["Acquire three lumps of coal and position three pyro enchantment tables.", 
+"Gather three pieces of coal, then locate three flame enchantment tables and set them in place.", 
+"Procure triple chunks of carbon, thereafter pinpoint and arrange three blaze enchantment desks.",
+"As if commanded by a power unseen, seek out three black stones born of earth's very heart, named coal, and arrange with great care, three tables imbued with the mystical energy of fire.",
+"With the grace of an ancient ritual, gather three offerings of coal, the raw and unrefined gifts of the earth. Let these sit beside three tables imbued with the essence of fire, repositories of incandescent enchantments."],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.COAL, BlockType.ENCHANTMENT_TABLE_FIRE, 3, 3),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.COAL, BlockType.ENCHANTMENT_TABLE_FIRE, 3, 3)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 2 coal pieces and place 1 furnace",
+        "instruction_paraphrases":["Accumulate two pieces of coal and position one furnace",
+ "After gathering a duo of coal pieces, a single furnace should be set",
+ "Procure two fragments of lignite and in its wake, establish a lone kiln",
+ "In the gathering darkness, something so common as two pieces of the black rock known as coal must be taken, followed by a placement of a furnace - a lone guardian against the encroaching cold",
+ "In soft motions, claim for yourself two small pieces of the earth's dark heart – coal, and then gently give a home to a solitary furnace."],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.COAL, BlockType.FURNACE, 2, 1),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.COAL, BlockType.FURNACE, 2, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect 3 rubies and place 4 enchantment fire tables.",
+        "instruction_paraphrases":["Gather three precious stones and position four magical flame desks", 
+"Secure for yourself three of the crimson jewels and in the right places, set four tables of mystical fire", 
+"Amass three cardinal gems and deploy four bewitched pyre platforms, maintaining the original intent", 
+"In your quest, seek out three stones, radiant as the dawn, and position four tabletops fueled by fires magical and enchanting",
+"Bind yourself to the task of accruing three stones of the deepest red, and with reverent hands, place four tables kindled by the enchanting dance of flame"],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.RUBY, BlockType.ENCHANTMENT_TABLE_FIRE, 3, 4),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.RUBY, BlockType.ENCHANTMENT_TABLE_FIRE, 3, 4)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Gather 1 Coal and then place 2 furnaces.",
+        "instruction_paraphrases":["Amass a chunk of coal and subsequently position two stoves.", 
+ "Once you have procured a single piece of coal, your next course of action should be to situate a pair of furnaces.",
+ "After securing a solitary unit of coal, proceed to the arrangement of a duo of heating systems.", 
+ "In the bleak emptiness, seek out and secure a lonely lump of carbon's offspring – coal, and thereafter, in the shadows’ embrace, erect the pair of humble abodes of flame and cinder – the furnaces.", 
+ "Upon procurement of a solitary fragment of aged earth's heart - coal, gently initiate the placement of two quiet guardians of warmth - the furnaces."],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.COAL, BlockType.FURNACE, 1, 2),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.COAL, BlockType.FURNACE, 1, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect a sapling and place an enchantment table of fire.",
+        "instruction_paraphrases":["Acquire a young tree and set a magical pedestal of flame.", "Take on the job of gathering a tree sprout and then station an enchantment desk that is imbued with fire.", "Secure a seedling, then proceed to station a bewitching dais of conflagration.", "Procure thou a sprig and bequeath upon an arcana desk of the fiery abyss.", "Claim a whisper-thin life of treekind and guide toward rest an enigmatic bearer of heat's magic."],
+         'check_lambda': lambda game_data, ix: conditional_placing(game_data, MediumInventoryItems.SAPLING, BlockType.ENCHANTMENT_TABLE_FIRE, 1, 1),
+        "str_check_lambda": "conditional_placing(game_data, MediumInventoryItems.SAPLING, BlockType.ENCHANTMENT_TABLE_FIRE, 1, 1)"
+    }
+}
+
+----

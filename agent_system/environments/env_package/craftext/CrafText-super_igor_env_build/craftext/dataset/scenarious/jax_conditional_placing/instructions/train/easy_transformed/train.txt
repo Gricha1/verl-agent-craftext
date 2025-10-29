@@ -1,0 +1,334 @@
+{
+    INSTRUCTION_PLACE_IRON_FURNACE_4_3: {
+        instruction: Collect 4 iron and place 3 furnace
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Gather four pieces of iron and set down three furnaces
+            Acquire and hold onto four irons, then create three heating places.
+            Find four iron ores and afterwards put down three pieces of furnace.
+            Procure a quantity of four irons and subsequently arrange three units of furnace.
+            Accumulate four iron units in your possession and thereafter install three furnace structures
+        ]
+        arguments: create_target_state(InventoryItems.IRON, BlockType.FURNACE, 4, 3)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_DIAMOND_STONE_3_1: {
+        instruction: Collect three diamonds and place one rock on the map.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Procure a trio of diamonds and subsequently install a single stone on the terrain.
+            Accumulate enough diamonds to number three and deposit a lone boulder on the landscape.
+            Acquire three gems of the diamond variety and then position a solitary piece of rock within the game map.
+            Amass an aggregate of three diamonds and place one instance of stone upon the mapped terrain.
+            Secure three diamonds in your inventory and plant one fragment of rock on our strategic planning map.
+        ]
+        arguments: create_target_state(InventoryItems.DIAMOND, BlockType.STONE, 3, 1)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_WOOD_CRAFTING_TABLE_3_1: {
+        instruction: Collect 3 pieces of wood and then place 1 crafting table.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Gather three logs and place a single workbench.
+            Procure a trio of timber and set down one builder's desk.
+            Amass three units of lumber and establish a single artisan table.
+            Accumulate three fragments of wood and then construct one crafting station.
+            Assemble a collection of three wooden pieces and situate one carpentry table.
+        ]
+        arguments: create_target_state(InventoryItems.WOOD, BlockType.CRAFTING_TABLE, 3, 1)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_STONE_CRAFTING_TABLE_2_5: {
+        instruction: Collect 2 stones and place 5 crafting tables.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Acquire two rocks and set up five workstations.
+            Obtain a duo of pebbles and establish quintuple functioning desks.
+            Secure two fragments of stone and position five craft stations.
+            Procure a pair of boulders and install five engineering surfaces.
+            Get hold of two cobblestones and lay down five fabrication benches. 
+        ]
+        arguments: create_target_state(InventoryItems.STONE, BlockType.CRAFTING_TABLE, 2, 5)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_COAL_FURNACE_4_3: {
+        instruction: Pick up 4 pieces of coal and place down 3 furnaces
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Grab 4 coal blocks and deploy 3 heating furnaces
+            Collect 4 amounts of coal and put down 3 of those furnaces
+            Get your hands on 4 fragments of coal and install 3 furnace units
+            You have to harvest 4 coals and lay down 3 cooking furnaces
+            Ensure to grab 4 pieces of coal and firmly place 3 units of the furnace
+        ]
+        arguments: create_target_state(InventoryItems.COAL, BlockType.FURNACE, 4, 3)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_IRON_STONE_4_3: {
+        instruction: Gather four pieces of iron and place three stones in your environment
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Please collect four iron objects and then put three stones in place
+            Secure four units of iron and lay down three units of stone
+            Could you obtain, please, quartet of iron resources and deploy a trio of stones?
+            Your task is to acquire a collection of four iron items and properly locate three rock objects
+            You should seek to accumulate an amount of iron which totals to four and subsequently install three parts of rock within the game
+        ]
+        arguments: create_target_state(InventoryItems.IRON, BlockType.STONE, 4, 3)
+        str_check_lambda: \"str_check_lambda\": \"\\\"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_STONE_STONE_1_4: {
+        instruction: Collect one piece of stone and then place four of them.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Gather a single rock and then position four rocks.
+            Scavenge for a single piece of stone, afterwards, lay four of them.
+            Acquire one piece of rock, then proceed to arrange four accordingly.
+            Discover one rock, followed by setting up four of them.
+            Obtain one lump of stone, succeeding which, position four such pieces.
+        ]
+        arguments: create_target_state(InventoryItems.STONE, BlockType.STONE, 1, 4)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_STONE_FURNACE_1_4: {
+        instruction: Collect one rock and place four furnaces.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Get a hold of one stone and put down four ovens.
+            Accumulate a single piece of rock and establish four furnaces.
+            Gather one piece of stone and install a quartet of ovens.
+            Obtain a unit of a stone and locate four pieces of heating equipment.Secure for yourself a solitary rock and then, in turn, position on the map four furnaces.
+        ]
+        arguments: create_target_state(InventoryItems.STONE, BlockType.FURNACE, 1, 4)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_WOOD_PLANT_5_1: {
+        instruction: Collect 5 pieces of wood and place 1 plant
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Gather 5 logs and put down 1 vegetation
+            You need to collect five wooden logs and then place a single shrub
+            Accumulate a total of 5 wood items and proceed to situate one greenery
+            The task requires the procurement of quintuple pieces of timber followed by the installation of a solitary undergrowth
+            Your mission is to amass a quintet of lumber elements and subsequently establish one form of flora
+        ]
+        arguments: create_target_state(InventoryItems.WOOD, BlockType.PLANT, 5, 1)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_COAL_FURNACE_2_1: {
+        instruction: Collect 2 pieces of coal and place 1 furnace.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Find and pick up 2 coals then put down 1 furnace.
+            Acquire a couple of coal then put a furnace in place.
+            Gather two pieces of black stone and build one stove.
+            Retrieve two chunks of fossil fuel and position one oven.
+            Accumulate two units of carbon-rich rock and construct a single forge.
+        ]
+        arguments: create_target_state(InventoryItems.COAL, BlockType.FURNACE, 2, 1)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_DIAMOND_STONE_5_1: {
+        instruction: Collect 5 diamonds and place 1 stone
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Gather a group of five diamonds and position a stone
+            Amass five sparklers and set one rock
+            Grab five treasures of the earth and situate a single boulder
+            Procure a handful of these precious gems, exactly five diamonds and establish one solid element, a stone to be exact
+            Your primary mission is to acquire an exact quantity of five of the most desirable gems known as diamonds, and following that, position one fundamental element on the field which refers to as 'stone'
+        ]
+        arguments: create_target_state(InventoryItems.DIAMOND, BlockType.STONE, 5, 1)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_COAL_PLANT_4_4: {
+        instruction: Collect 4 pieces of coal and place 4 plants down.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Gather 4 units of coal and deploy 4 shrubs.
+            Acquire four lumps of coal and carefully position four flora.
+            Procure a quartet of pieces of coal and settle four greenery in suitable spots.
+            Your mission is to hoard four chunks of this black mineral we call coal and subsequently make four vegetation items find their roots in the soil.
+            The expectations are upon you to amass an exact four count of the dark, carbon-rich mineral, much precious for the realm, and to follow it up by establishing, steadily, four saplings in the earth.
+        ]
+        arguments: create_target_state(InventoryItems.COAL, BlockType.PLANT, 4, 4)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_COAL_STONE_2_3: {
+        instruction: Collect 2 units of coal and place 3 stone blocks on the field.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Ensure you gather a pair of coal items and subsequently locate 3 pieces of stone on the terrain.
+            Grab 2 elements of coal and then put down three distinct pieces of rock on the map.
+            Accumulate two coal items and subsequent to this action, erect a trio of stone blocks on the playing field.
+            Procure a couple of items made of coal, followed by setting down triple stone units within the game’s landscape.
+            Garner two distinct coal pieces and later, within the game, organize three units of the foundational stone.
+        ]
+        arguments: create_target_state(InventoryItems.COAL, BlockType.STONE, 2, 3)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_WOOD_PLANT_4_5: {
+        instruction: Gather 4 timber pieces and place 5 plants
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Collect 4 logs of woods and then put 5 flora
+            Hoard 4 chunks of wood and then dispose 5 greenery
+            Amass 4 pieces of timber and install 5 foliage
+            Accumulate 4 sections of lumber and set up 5 vegetation
+            Round up 4 blocks of wood and position 5 plantation
+        ]
+        arguments: create_target_state(InventoryItems.WOOD, BlockType.PLANT, 4, 5)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_IRON_CRAFTING_TABLE_5_5: {
+        instruction: Collect 5 iron and place 5 crafting tables.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Gather 5 pieces of iron and set up 5 crafting tables.
+            Acquire 5 iron ores and put down 5 workbenches.
+            Procure 5 iron items and arrange 5 craft stations.
+            Accumulate 5 blocks of iron and position 5 craft tables.
+            Forage for 5 chunks of iron and lay out 5 artificers' tabletops.
+        ]
+        arguments: create_target_state(InventoryItems.IRON, BlockType.CRAFTING_TABLE, 5, 5)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_IRON_FURNACE_5_4: {
+        instruction: Collect 5 pieces of iron and place 4 furnaces.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Get 5 iron items and set down 4 of the furnaces.
+            Pick up 5 units of iron and then you need to establish 4 heating furnaces.
+            Gather a total of 5 iron minerals and construct 4 stoves.
+            Retrieve 5 chunks of iron and make certain to install 4 warming devices.
+            Amass 5 items made of iron and see to it that you deploy 4 majestic heating units.
+        ]
+        arguments: create_target_state(InventoryItems.IRON, BlockType.FURNACE, 5, 4)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_DIAMOND_PLANT_2_3: {
+        instruction: Collect 2 Diamonds and place 3 Plants
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Gather a pair of Diamonds and position three Plants
+            Assemble two units of Diamond and establish a trio of Vegetation
+            Retrieve two Diamonds and install three kinds of Plants
+            Get hold of two precious Diamonds and lay down three Green Plants
+            Accumulate a couple of luminous Diamonds and put in place three natural Plants
+        ]
+        arguments: create_target_state(InventoryItems.DIAMOND, BlockType.PLANT, 2, 3)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_STONE_CRAFTING_TABLE_4_4: {
+        instruction: Collect 4 stones and use them to build 4 crafting tables.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Gather four units of rock and construct four workbenches with them.
+            Secure a collection of 4 pieces of stones and then put together 4 crafting stations.
+            Amass a total of four rocks and with them erect four production tables.
+            Accumulate four quantities of piles of stones and utilize them in setting up four manufacture boards.
+            Procure an assembly of quadruple boulders and fabricate quadruple craft bases with the materials.
+        ]
+        arguments: create_target_state(InventoryItems.STONE, BlockType.CRAFTING_TABLE, 4, 4)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_COAL_CRAFTING_TABLE_3_3: {
+        instruction: Gather 3 pieces of coal and set up 3 crafting tables.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Collect 3 units of coal and place 3 workbenches.
+            Pick up a trio of coals and establish 3 craft stations.
+            Accumulate three pieces of carbon and install 3 stations for crafting.
+            Amass 3 chunks of coal and erect three tables for artisanal tasks.
+            Procure triple units of dark matter and build a trio of surfaces dedicated to crafting.
+        ]
+        arguments: create_target_state(InventoryItems.COAL, BlockType.CRAFTING_TABLE, 3, 3)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_DIAMOND_PLANT_5_3: {
+        instruction: Collect five diamonds and plant three saplings.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Gather five pieces of diamond and put three saplings into the ground.
+            Go and find five diamonds, then ensure you plant three seedlings.
+            Your task is to accumulate a stock of five diamonds and establish three young trees in the soil.
+            Retrieve five precious diamonds from your surroundings, after which you are to embed three offspring of a tree into the earth.
+            Procure a quintet of shimmering diamonds, subsequent to which you should ensure that a trio of tree progenies is securely situated in the ground.
+        ]
+        arguments: create_target_state(InventoryItems.DIAMOND, BlockType.PLANT, 5, 3)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_SAPLING_PLANT_3_1: {
+        instruction: Collect 3 saplings and place 1 plant.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Pick up three small trees and then place a plant.
+            Gather three saplings and place one vegetation.
+            You need to secure three young trees and position a piece of greenery.
+            Your task is to accumulate three seedlings and then situate a single flora.
+            It is required of you to amass a trio of sprouts and subsequently localize one botanical entity.
+        ]
+        arguments: create_target_state(InventoryItems.SAPLING, BlockType.PLANT, 3, 1)
+        str_check_lambda: \"str_check_lambda\": \"conditional_placing(gd, ix)))
+    }
+}

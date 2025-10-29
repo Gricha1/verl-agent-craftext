@@ -1,0 +1,58 @@
+{
+    "INSTRUCTION": {
+        "instruction": "Create a square out of stone, each side of size 4",
+        "instruction_paraphrases":["Form a cube from rock with each boundary being of magnitude 4", "Taking stone as the material, establish a geometrical figure that is square in shape in such a way that each of its sides measures 4", "Fabricate, using the medium of rock, a geometric entity that remains quadrate while all its borders maintain a dimension of 4", "Carve ye a square from the bedrock, every flank of which hath the breadth of four, mirroring the steadfastness of the earth", "Shape from the rough, unyielding stone, a square, its sides measuring four each, echoing the world's generous symmetry and laws of form."],
+        'check_lambda': lambda game_data, ix: is_square_formed(game_data, ix, BlockType.STONE, 4),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.STONE, 4)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Form a square using crafting tables of side length 2.",
+        "instruction_paraphrases":["Construct a quadrilateral with crafting benches of side span 2", "Using crafting tables that have a side length of 2, form a geometric square", "Create a four-sided shape using crafting platforms that have a side measurement of 2", "Using crafting tables of old, build thee a square with sides of even measure", "Construct a precise cube-space with crafting surfaces, each one no more, no less, than two units in its side length"],
+         'check_lambda': lambda game_data, ix: is_square_formed(game_data, ix, BlockType.CRAFTING_TABLE, size=2),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.CRAFTING_TABLE, size=2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Construct a square using crafting tables, with each side of the square being 4 blocks long",
+        "instruction_paraphrases":["Build a square using assembly platforms, each side measuring 4 units in length",
+ "With each side being 4 blocks in length, you should use crafting tables to put together a square",
+ "Employ assembly platforms to establish a square, a geometric entity wherein each side measures exactly 4 units",
+ "In the hands of a master craftsman, lay the foundations of a square, forged from the unyielding surfaces of crafting tables, each side a testament to symmetry, embodied in four steadfast blocks",
+ "As if creating a world within a world, use your crafting tables to shape a square, each side a steady four blocks, mirroring the constancy of the four cardinal directions amidst the infinite realm of possibilities"],
+         'check_lambda': lambda game_data, ix: is_square_formed(game_data, ix, BlockType.CRAFTING_TABLE, 4),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.CRAFTING_TABLE, 4)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Check for a square of plants with a side size of 4.",
+        "instruction_paraphrases":["Inspect a plot of vegetation with a boundary length of 4.", "Verify if there exists a quadrate formation of flora whose dimensions on one side equals 4.", "Scrutinize if there is a parcel of foliage whose edge measure matches 4, shaping a square pattern.", "In the kingdom of green foliage, cast thine eyes upon a checkered battlefield, four strides' length each way forming its boundary.", "In the whispers of the green world, seek the plant-formed square whose sides, four measures long, sing a quiet geometry song."],
+         'check_lambda': lambda game_data, ix: is_square_formed(game_data, ix, BlockType.PLANT, 4),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.PLANT, 4)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Form a square with sides of 3 blocks using stones",
+        "instruction_paraphrases":["Develop a quadrilateral utilizing stones whose sides measure 3 block units", "Using stones to structure, there must be a creation of a square which has sides of a length equivalent to 3 blocks", "Construct a polygon with stones, ensuring that each side stretches to a span of 3 block units", "Assemble thou a four-sided figure akin to a chessboard, using the sturdy fabric of earth, carved and chiseled into stones, each side bearing the length of three uniform blocks, revealing the ancient symmetry of the square", "With stones, forge a space that defies the shapelessness of nature, crafting a square honorably holding a steadiness, with each side grounding the concept of balance and measuring the length of three worthy blocks."],
+         'check_lambda': lambda game_data, ix: is_square_formed(game_data, ix, BlockType.STONE, 3),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.STONE, 3)"
+    }
+}
+
+----

@@ -1,0 +1,60 @@
+[project]
+  name = "CrafText"
+  version = "0.1.5"
+  dependencies = [
+      "absl-py",
+      "anyio",
+      "argon2-cffi",
+      "black",
+      "chex",
+      "craftax==1.4.3",
+      "distrax",
+      "dm-tree",
+      "etils",
+      "flax",
+      "gym",
+      "gymnax",
+      "jax[cuda12]==0.4.30",
+      "jaxlib==0.4.30",
+      "numpy",
+      "optax",
+      "pandas",
+      "scikit-learn",
+      "scipy",
+      "sentence-transformers",
+      "stable-baselines3",
+      "transformers",
+      "clu",
+  ]
+
+  authors = [
+    { name="ZoyaV" },
+  ]
+  description = "A text processing package with various scenarios and checkers."
+  readme = {file="README.md", content-type="text/markdown"}
+
+  requires-python = ">=3.9"
+  classifiers = [
+      "Programming Language :: Python :: 3",
+      "Operating System :: OS Independent",
+  ]
+
+
+
+[project.urls]
+  Homepage = "https://github.com/ZoyaV/CrafText"
+  Issues = "https://github.com/ZoyaV/CrafText/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["craftext*"]
+
+[tool.setuptools.package-data]
+"craftext" = [
+    "dataset/scenarious/**/*",
+    "dataset/configs/**/*"
+]
+
+[build-system]
+  requires = ["setuptools >= 60.0"]
+  build-backend = "setuptools.build_meta"

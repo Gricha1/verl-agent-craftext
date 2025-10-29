@@ -1,0 +1,239 @@
+{
+    INSTRUCTION_PLACE_STONE_FURNACE_1_2: {
+        instruction: Place the stone two blocks to the left of the furnace.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Two blocks to the left of the furnace, place the stone.
+            Locate the furnace, then move two blocks to the left and place the stone.
+            Starting at the furnace, move two spaces to the left and deposit the stone.
+            At a two blocks distance leftward from the furnace, install the stone.
+            Identify the furnace, then shift two blocks to left side and set the stone there.
+        ]
+        arguments: create_target_state(BlockType.STONE, BlockType.FURNACE, 1, 2)
+        str_check_lambda: \"str_check_lambda\": \"place_object_relevant_to(gd, ix)
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_FURNACE_RUBY_2_2: {
+        instruction: Place the furnace two blocks above the ruby.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Position the furnace with two blocks of space directly over the ruby.
+            Situate the furnace a couple of blocks higher than the ruby.
+            You should find a ruby and locate the furnace two blocks higher than its position.
+            Look for a ruby and ensure that a furnace is set two blocks above it.
+            The furnace needs to be placed in a location that is specifically two blocks higher than the ruby.
+        ]
+        arguments: create_target_state(BlockType.FURNACE, BlockType.RUBY, 2, 2)
+        str_check_lambda: \"str_check_lambda\": \"place_object_relevant_to(gd, ix)
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_ENCHANTMENT_TABLE_FIRE_WATER_2_2: {
+        instruction: Place the Fire Enchantment table two blocks above the water source.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Two blocks above the water source, position a Fire Enchantment table.
+            Set the Fire Enchantment table up exactly two spots to the top from the water source.
+            Establish the Fire Enchantment table two blocks upwards from the water point.
+            Situate the Fire Enchantment table precisely two spaces north from the water body.
+            The Fire Enchantment table needs to be situated two blocks higher in relation to the point of water.
+        ]
+        arguments: create_target_state(BlockType.ENCHANTMENT_TABLE_FIRE, BlockType.WATER, 2, 2)
+        str_check_lambda: \"str_check_lambda\": \"place_object_relevant_to(gd, ix)
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_STONE_RIPE_PLANT_0_4: {
+        instruction: Place the stone 4 squares to the right side of the ripe plant
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Move the rock to the right side of the ripe plant, making sure it's 4 steps away from it
+            Ensure the stone is four blocks to the right side of the fully grown plant
+            Situate the stone four spaces to the right direction from the ripened plant
+            Put the rock at a distance of four squares towards the right from the matured vegetation
+            Position the stone four steps in the direction of right from the grown plant
+        ]
+        arguments: create_target_state(BlockType.STONE, BlockType.RIPE_PLANT, 0, 4)
+        str_check_lambda: \"str_check_lambda\": \"place_object_relevant_to(gd, ix)
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_FURNACE_FOUNTAIN_0_1: {
+        instruction: Place a furnace one block to the right of the fountain
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Situate the furnace a single block to the right side of the water feature.
+            Position the heating unit one square to the right of the fountain.
+            Orient the furnace to be a unit distance east side of the water fountain.
+            Locate the furnace one block starboard of the fountain.
+            Install the furnace a block's space to the eastward direction of the fountain.
+        ]
+        arguments: create_target_state(BlockType.FURNACE, BlockType.FOUNTAIN, 0, 1)
+        str_check_lambda: \"str_check_lambda\": \"place_object_relevant_to(gd, ix)
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_STONE_FIRE_GRASS_1_4: {
+        instruction: Place the stone four blocks to the left of the fire grass.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            To the left of fire grass, place the stone four blocks away.
+            Arrange the stone leftwards from the fire grass, maintaining a distance of four blocks.
+            Position the stone four blocks towards the left side of the fire grass.
+            On the left side of the fire grass, station the stone four blocks apart.
+            Keep the stone four blocks to the west of the fire grass.
+        ]
+        arguments: create_target_state(BlockType.STONE, BlockType.FIRE_GRASS, 1, 4)
+        str_check_lambda: \"str_check_lambda\": \"place_object_relevant_to(gd, ix)
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_ENCHANTMENT_TABLE_FIRE_TREE_0_1: {
+        instruction: Place the enchantment table fire one block to the right of the tree
+        scenario_checker: 3
+        instruction_paraphrases: [
+            On the tree's right side, leave a space of one block, then put the enchantment table fire.
+            To the immediate right of the tree, the enchantment fire table should be positioned.
+            Set the enchantment table fire just one block rightward from the tree.
+            Establish the enchantment table fire exactly a block to the right of the tree.
+            Situate the enchantment table fire precisely one block right to the tree.
+        ]
+        arguments: create_target_state(BlockType.ENCHANTMENT_TABLE_FIRE, BlockType.TREE, 0, 1)
+        str_check_lambda: \"str_check_lambda\": \"place_object_relevant_to(gd, ix)
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_STONE_FIRE_GRASS_1_3: {
+        instruction: Put the stone 3 blocks to the left of the fire grass.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Position the rock three spaces left from the fire grass.
+            Place the stone at a distance of three blocks to the left from the fire grass.
+            From the fire grass, move three steps to the left and put the stone there.
+            You should locate the stone three blocks away on the left side of the fire grass.
+            Set the stone in the location three blocks left to the fire grass.
+        ]
+        arguments: create_target_state(BlockType.STONE, BlockType.FIRE_GRASS, 1, 3)
+        str_check_lambda: \"str_check_lambda\": \"place_object_relevant_to(gd, ix)
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_FURNACE_PLANT_0_1: {
+        instruction: Place the furnace one block to the right of the plant
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Place the oven one block to the plant's right
+            To the right of the vegetation, position the furnace one block away
+            Position the kiln a block to the right of the flora
+            Position the heating device to the right of the plant, leaving a block in between
+            Set the furnace a block away due east of the plant
+        ]
+        arguments: create_target_state(BlockType.FURNACE, BlockType.PLANT, 0, 1)
+        str_check_lambda: \"str_check_lambda\": \"place_object_relevant_to(gd, ix)
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_CRAFTING_TABLE_ENCHANTMENT_TABLE_FIRE_2_5: {
+        instruction: Place a crafting table 5 blocks above the fire enchantment table
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Set the workbench five steps north of fire enhancement block
+            Identify the fire spell table, then put your crafting desk five blocks on top of it
+            Five blocks to the top of the fire magic table, place your crafting table
+            Spot the fire enchantment block, then proceed to install your workstation five blocks above it
+            Locate the fire spell workbench and situate your crafting table five blocks overhead.
+        ]
+        arguments: create_target_state(BlockType.CRAFTING_TABLE, BlockType.ENCHANTMENT_TABLE_FIRE, 2, 5)
+        str_check_lambda: \"str_check_lambda\": \"place_object_relevant_to(gd, ix)
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_FURNACE_FIRE_GRASS_2_4: {
+        instruction: Place the furnace four blocks directly above the fire grass.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Position the furnace on top of the fire grass, leaving a gap of four blocks.
+            Situate the furnace four blocks overhead of the fire grass.
+            Erect the furnace four blocks upward from the fire grass.
+            Install the furnace vertically up to the fire grass, ensuring there's a distance of four blocks.
+            Arrange for the furnace to be settled four blocks skyward from the fire grass.
+        ]
+        arguments: create_target_state(BlockType.FURNACE, BlockType.FIRE_GRASS, 2, 4)
+        str_check_lambda: \"str_check_lambda\": \"place_object_relevant_to(gd, ix)
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_PLANT_DARKNESS_3_3: {
+        instruction: Place a plant three blocks below the area of darkness
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Position a plant three blocks south of the dark zone
+            Situate a plant exactly three blocks beneath the shadowy region
+            Set a plant to the direct downside of the dark realm, three blocks away
+            Establish a plant's location at a distance of three blocks on the downside of the obscure area
+            Install a plant at a gap of three blocks underneath the shady territory
+        ]
+        arguments: create_target_state(BlockType.PLANT, BlockType.DARKNESS, 3, 3)
+        str_check_lambda: \"str_check_lambda\": \"place_object_relevant_to(gd, ix)
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_ENCHANTMENT_TABLE_FIRE_INVALID_3_2: {
+        instruction: Place the fire enchantment table two blocks below the invalid block
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Aim to put the fire enchanting table exactly two blocks under the invalid block
+            Ensure the fire enchantment table is situated two blocks beneath the invalid block
+            You need to position the fire enchantment table two spaces down from the invalid block
+            Can you put the fire enchantment table two blocks underneath the invalid block?
+            How about installing the fire enchantment table two blocks straight down from the invalid block?
+        ]
+        arguments: create_target_state(BlockType.ENCHANTMENT_TABLE_FIRE, BlockType.INVALID, 3, 2)
+        str_check_lambda: \"str_check_lambda\": \"place_object_relevant_to(gd, ix)
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_CRAFTING_TABLE_WATER_0_1: {
+        instruction: Place Crafting Table right 1 block away from the water body
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Position the workbench exactly one block to the right, adjacent to the water source
+            Near the water, allocate the manufacturing table a single block towards the right side
+            Locate the assembly platform to the right, with a single block space from the water
+            Position the water on your left and then, place the crafting table a block away towards your right
+            Starting from the water source, measure one block towards your right and put down the crafting table there
+        ]
+        arguments: create_target_state(BlockType.CRAFTING_TABLE, BlockType.WATER, 0, 1)
+        str_check_lambda: \"str_check_lambda\": \"place_object_relevant_to(gd, ix)
+    }
+}
+----
+{
+    INSTRUCTION_PLACE_ENCHANTMENT_TABLE_ICE_RUBY_3_5: {
+        instruction: Place the enchantment table of ice five blocks below the ruby.
+        scenario_checker: 3
+        instruction_paraphrases: [
+            Can you position the ice enchantment station five squares beneath the red crystal?
+            Could you put the icy spellcasting table five grids down from the crimson gem?
+            Please set the frosty sorcery workstation five units under the ruby jewel.
+            Would you mind placing the frozen magic crafting station five blocks southward from the scarlet stone?
+            Could you kindly draw five units downwards from the ruby treasure and put the glaciated wizardry table there?
+        ]
+        arguments: create_target_state(BlockType.ENCHANTMENT_TABLE_ICE, BlockType.RUBY, 3, 5)
+        str_check_lambda: \"str_check_lambda\": \"place_object_relevant_to(gd, ix)
+    }
+}

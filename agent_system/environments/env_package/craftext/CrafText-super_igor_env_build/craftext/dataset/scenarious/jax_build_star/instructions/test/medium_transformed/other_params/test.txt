@@ -1,0 +1,319 @@
+{
+    INSTRUCTION_PLANT_size=5: {
+        instruction: Create a cross of plants on the terrain with each side being of 5 blocks,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            I want you to form a cross on the ground using vegetation that is 5 blocks long on each side,
+            Make a plant cross formation on the map; make sure each side consists of 5 blocks,
+            Construct a cross using plants where each arm stretches out for 5 blocks,
+            Establish a cross on the ground using flora which extends 5 blocks in each direction,
+            Could you configure a cross using vegetation on the terrain, with each branch extending for 5 blocks?
+        ],
+        arguments: create_target_state(BlockType.PLANT, size=5, radius=10, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLANT_size=3: {
+        instruction: Form a cross with the plant blocks, each side should have a length of 3 blocks and arranged in a diagonal pattern.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Make a diagonal cross in an area with plant blocks, each cross length should consist of three blocks.,
+            I want you to arrange plant units into a cross shape. Keep in mind that the cross should be diagonal and each side should consist of three blocks.,
+            You need to create a cross with plant units, laid out in a diagonal way. Importantly, each side of this cross should contain three blocks.,
+            Please arrange the plant blocks in the form of a cross where each side length is 3 and it has a diagonal layout.,
+            The task is to form a diagonal cross with plant blocks. Each side of this cross should be made up of three blocks.
+        ],
+        arguments: create_target_state(BlockType.PLANT, size=3, radius=5, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_ENCHANTMENT_TABLE_FIRE_size=3: {
+        instruction: Form a diagonal cross made up of the Fire Enchantment Table blocks. The sides of the cross should measure three blocks each.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Use the Fire Enchantment desk blocks to construct a cross. Make sure that the cross has diagonaly placed sides that total three blocks each.,
+            Arrange the blocks of Fire Enchantment platform into a cross with a diagonal placement, assure each side is composed of three blocks.,
+            Generate a diagonal cross pattern using three blocks on each side from Fire Enchantment workbench units.,
+            Assemble a cross figure that has diagonal orientation. Use Fire Enchantment stand blocks and create sides measuring three blocks long.,
+            Craft a diagonally laid out cross configuration using Fire Enchantment Table elements. Guarantee each side has a total of three units.
+        ],
+        arguments: create_target_state(BlockType.ENCHANTMENT_TABLE_FIRE, size=3, radius=7, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_ENCHANTMENT_TABLE_FIRE_size=7: {
+        instruction: Check for a direct cross of enchantment fire tables with each side having a size of seven.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Verify a straight cross made up of fire enchantment tables and each side being seven units long.,
+            Look for a direct cross configuration created from enchantment tables of fire, where each wing is made up of seven units.,
+            Please confirm the presence of a fire enchantment bench cross with a total of seven units on every branch.,
+            Can you ascertain the existence of a seven units long straight cross made from fire wizard tables?,
+            Inspect to locate a straightforward cross made of fire magic desks, each arm being seven units in length.
+        ],
+        arguments: create_target_state(BlockType.ENCHANTMENT_TABLE_FIRE, size=7, radius=7, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLANT_size=3: {
+        instruction: Create a cross shape using plants with a side size of 3 directly.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Directly build a cross using plants, ensuring each side consists of 3 units.,
+            Form a direct cross shape with greenery, making each side 3 units long directly.,
+            Using foliage, directly construct a cross where each side measures 3 units.,
+            Directly arrange the vegetation in the shape of a cross, with each arm being 3 units long.,
+            Make certain to directly assemble the flora into a cross design, with each side totaling 3 units in length.
+        ],
+        arguments: create_target_state(BlockType.PLANT, size=3, radius=5, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_FURNACE_size=7: {
+        instruction: Form a crucifix with furnaces each side measuring 7 units with diagonal arrangement,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Construct a cross shape with furnaces, each arm should have a length of 7 and it should form diagonally,
+            With diagonally aligned furnaces, make a cross structure and each arm should be 7 units long,
+            Can you please create a diagonally situated, crucifix shaped formation with smelters with each side being 7 units long?,
+            Would you kindly build a 7-unit long, each leg, crucifix-shaped pattern using furnaces and do so on the diagonal?,
+            Construct a cross configuration with each arm extending to a length of seven units, using furnaces, configuring them in a diagonal fashion if you may
+        ],
+        arguments: create_target_state(BlockType.FURNACE, size=7, radius=5, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_ENCHANTMENT_TABLE_ICE_size=5: {
+        instruction: Find a cross formation of ice enchantment table with a side size of 5 units.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Try to spot a cross arrangement of icy spellcasting benches that spans 5 blocks in each direction,
+            Seek out a frosty magic desk structured in a cross shape with a side size of 5 blocks,
+            Look for an ice powered incantation station arranged in a cross layout with an arm length of 5,
+            Hunt for a cold thaumaturgy platform in a cross formation with five blocks on each arm,
+            Scour for a criss-cross pattern of enchantment tables of ice variety with each arm extending up to 5 blocks
+        ],
+        arguments: create_target_state(BlockType.ENCHANTMENT_TABLE_ICE, size=5, radius=5, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_ENCHANTMENT_TABLE_ICE_size=7: {
+        instruction: Form a seven-sided cross shape using the enchanting ice table.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Create a cross, each arm measuring seven blocks, with blocks of the ice enchantment table.,
+            Using the enchanting ice desk, form a cross having a total of seven units on each side.,
+            Arrange blocks of the icy enchantment workstation into a diagonal cross, with each line consisting of seven elements.,
+            Ensure that the frost enchantment podium is organized into a cross shape, where each limb comprises seven blocks in a direct line.,
+            Piece together a cross, directly and diagonally, involving seven segments on each arm, utilizing the ice-enchanted crafting surface.
+        ],
+        arguments: create_target_state(BlockType.ENCHANTMENT_TABLE_ICE, size=7, radius=35, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_PLANT_size=7: {
+        instruction: Check if there's a cross formed by plants of size 7 units in a direct shape.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Kindly confirm if a straight cross made up of 7 individual plants exists.,
+            Can you see a cross with a side length of seven, which is directly formed by plants?,
+            Is there a corresponding layout in a direct shaped cross with seven plants forming each arm of the cross?,
+            Validate if there's a straight-shaped cross with a total of seven units on each arm, made entirely of plants.,
+            Would you mind verifying if a straightforward cross is formed, having each arm consisting of seven plants?
+        ],
+        arguments: create_target_state(BlockType.PLANT, size=7, radius=5, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_STONE_size=3: {
+        instruction: Form a cross with sides measuring 3 units each, using stones.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Create a cross shape from rock with each limb having a length of three pixels.,
+            I need you to arrange stones in a straight cross pattern, each arm should be three units long.,
+            Lay out rocks in a form of a cross, ensure that each arm of the cross is three units in length.,
+            Using stones, construct a cross configuration where each branch measures three units in length.,
+            Create a diagonal cross design from stones with every branch extending three units long.
+        ],
+        arguments: create_target_state(BlockType.STONE, size=3, radius=5, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_ENCHANTMENT_TABLE_FIRE_size=7: {
+        instruction: Form a cross using the ENCHANTMENT_TABLE_FIRE with a side size of 7 in a diagonal shape.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Compose a cross in a diagonal orientation using the Fire Enchantment Tablet, with all sides being 7 blocks long.,
+            Construct a cross shape with seven units for each arm using the Magic Fire Alter, and lay it out diagonally.,
+            Using the Fire Enchantment Stand, arrange a cross with each arm composed of seven blocks, ensuring it is set out on a diagonal axis.,
+            Assemble a direct cross, making each branch from seven pieces of the Enchantment Fire Table, make sure it's diagonally laid out.,
+            Configure the Fire Enchantment Counter to form a diagonal layout of a cross, with the size of seven blocks for each direction.
+        ],
+        arguments: create_target_state(BlockType.ENCHANTMENT_TABLE_FIRE, size=7, radius=5, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_ENCHANTMENT_TABLE_ICE_size=3: {
+        instruction: Create a cross shape with the enchantment ice table of side size 3 in a diagonal pattern.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Make a diagonal cross shape with the ice enchantment workstation that has a side size of three.,
+            I need you to form a diagonal cross with the frost enchanting bench of a three-unit side size.,
+            Use the icy enchantment desk to form a cross of three units per side in a diagonal layout.,
+            Set up the icy sorcery table in a three-by-three diagonal cross formation.,
+            Can you arrange the frosty magic stand in a diagonal cross pattern, with each side comprising of three units?
+        ],
+        arguments: create_target_state(BlockType.ENCHANTMENT_TABLE_ICE, size=3, radius=5, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_ENCHANTMENT_TABLE_FIRE_size=5: {
+        instruction: Make a cross shape of Enchantment Table Fire with a side size of 5 units and the structure should be combined.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Formulate a cross configuration with the Enchantment Table Fire blocks with each arm having a total of 5 units, ensure that the shape is a unified whole.,
+            Create a combined formation of Enchantment Table Fire in a cross layout, each line should contain 5 units.,
+            I need you to configure an Enchantment Table Fire in a cross shape where each line consists of 5 units, and make sure the whole pattern is interconnected.,
+            Construct a cross pattern with Enchantment Table Fire blocks, each line comprising 5 units, and the whole structure should be harmonized.,
+            Please arrange a total of 5 units of Enchantment Table Fire in a cross pattern and form a unified structure.
+        ],
+        arguments: create_target_state(BlockType.ENCHANTMENT_TABLE_FIRE, size=5, radius=7, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_TORCH_size=5: {
+        instruction: Form a cross with the torches that has a side length of five and combined shape within a radius of 5 blocks from you.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Construct a combined shape cross from torches, with each arm measuring five units, within a five-block radius of your location.,
+            In your five-block radius, erect a torch cross of combined shape where each side measures five units.,
+            Put together a combined shape cross of torches that spans five units on each side. Make sure this is within a radius of five blocks from you.,
+            Create a five-unit cross, in a combined shape, using torches within a reach of five blocks.,
+            Within a five-block perimeter around you, manufacture a combined contour cross using torches, each arm should be five units long.
+        ],
+        arguments: create_target_state(BlockType.TORCH, size=5, radius=5, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_CRAFTING_TABLE_size=3: {
+        instruction: Create a cross form from a crafting table with a side size of 3 units. The cross pattern should have direct shape.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Formulate a cross from the crafting bench, each side should contain exactly 3 blocks. Follow a straight outline for the cross shape.,
+            You need to construct a cross using the workbench and each arm of the cross should be 3 blocks long. The shape of the cross should be straight.,
+            Can you make a cross figure with the crafting station? The length of each side should be 3 blocks and the overall outline needs to be direct.,
+            I'd like you to arrange a cross using the work table, ensuring each branch to be of 3 units. Keep in mind the cross should obey a direct format.,
+            Could you establish a cross pattern using the artisan's table, making sure each branch of the cross is 3 blocks in length? The cross shape should be direct.
+        ],
+        arguments: create_target_state(BlockType.CRAFTING_TABLE, size=3, radius=5, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_ENCHANTMENT_TABLE_FIRE_size=3: {
+        instruction: Please make sure there are crosses consisting of Fire Enchantment Tables with a side length of 3, positioned diagonally within a radius of 5 blocks.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Kindly form diagonal crosses using Fire Enchantment Tables as blocks, each cross should consist of 3 units on each side and the crosses should be within a 5 block radius.,
+            Could you arrange the Fire Enchantment Tables in a diagonal cross pattern with each side being 3 blocks long? And keep these crosses within a 5 block radius.,
+            I would like to see diagonally placed crosses made of Fire Enchantment Tables within a 5 blocks radius, each side of the cross should be three blocks.,
+            Please ensure that within a five blocks radius we have crosses composed of Fire Enchantment Tables placed diagonally where each arm of the cross measures three blocks.,
+            Within a radius of 5 blocks, I need you to arrange Fire Enchantment Tables in a diagonal cross shape with a length of 3 blocks for each arm of the cross.
+        ],
+        arguments: create_target_state(BlockType.ENCHANTMENT_TABLE_FIRE, size=3, radius=5, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_TORCH_size=7: {
+        instruction: Form a cross of torch with a side size of 7 in a diagonal pattern.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Create a cross pattern with a torch having a side length of seven in a diagonal arrangement.,
+            In a diagonal formation, construct a cross composed of torches, each side being seven units long.,
+            Make a cross using torches where the side length is seven in a formation that's diagonal.,
+            A cross made of torches with each side being seven units in length has to be assembled in a diagonal layout.,
+            Arrange a torch in a cross configuration with a side size of seven, in a diagonal pattern.
+        ],
+        arguments: create_target_state(BlockType.TORCH, size=7, radius=9, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_FURNACE_size=3: {
+        instruction: Create a direct cross of furnaces with each arm having a size of 3.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Construct a straight cross shape using the stove, wherein each arm is comprised of 3 units.,
+            With the heating device, make a direct cross where each path consists of three blocks.,
+            Shape a direct cross with the smelting machine wherein each arm has three units.,
+            Create a straightforward cross using the kiln, each of its arm should be composed of three blocks.,
+            With the smelter, construct a cross that's direct and has three blocks per arm.
+        ],
+        arguments: create_target_state(BlockType.FURNACE, size=3, radius=5, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_ENCHANTMENT_TABLE_FIRE_size=5: {
+        instruction: Check for a cross formation of enchantment table of fire with side size 5 and having a diagonal shape.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Verify if there's a diagonal cross pattern with enchantment fire tables. Each side must be 5 in length.,
+            Make sure you observe a fire enchantment table, it should form a cross with a diagonal shape where each side measures 5 units.,
+            Can you confirm there's a diagonally shaped cross made of fire enchantment tables that has a side size of 5?,
+            Affirm the presence of a diagonal cross formation, precisely made of enchantment fire tables, each side measuring 5 units long.,
+            Unequivocally identify a diagonal cross configuration using enchantment fire tables with each side length equal to 5 units.
+        ],
+        arguments: create_target_state(BlockType.ENCHANTMENT_TABLE_FIRE, size=5, radius=5, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}
+----
+{
+    INSTRUCTION_STONE_size=7: {
+        instruction: Form a cross composed of stone blocks, with the sides each spanning seven units, in a diagonal arrangement.,
+        scenario_checker: 5,
+        instruction_paraphrases: [
+            Create a diagonal cross shape, each side having seven stone units.,
+            I need you to construct a diagonal cross using seven blocks of rock on each side.,
+            Can you put together a seven-block long cross, taking on a diagonal alignment, using stone blocks?,
+            Your task is to organize stone blocks in a cross formation, each side consisting of seven units, laid out diagonally.,
+            It is required of you to construct a cross figure using blocks of stone. Each side should contain seven blocks, and the arrangement should be diagonal.
+        ],
+        arguments: create_target_state(BlockType.STONE, size=7, radius=5, crossType.STRAIGHT),
+        str_check_lambda: \"str_check_lambda\": \"is_cross_formed(gd, ix)))
+    }
+}

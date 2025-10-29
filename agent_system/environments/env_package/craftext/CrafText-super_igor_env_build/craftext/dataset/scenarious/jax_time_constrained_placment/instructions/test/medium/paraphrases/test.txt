@@ -1,0 +1,65 @@
+{
+    "INSTRUCTION": {
+        "instruction": "Place a furnace in the morning",
+        "instruction_paraphrases":["Install a heater in the early hours", "When dawn breaks, it is then that a furnace must be positioned", "When the sun starts its climb, the task is to situate a warming device", "At the birth of dawn, in the delicate span of morning, set a flame-bearer in its rightful place", "In the gentleness of peep down, we give a home to a silent, warm creature"],
+        "check_lambda": "lambda game_data: at_time_block_placed(game_data, BlockType.FURNACE, radius)",
+        "str_check_lambda": "at_time_block_placed(game_data, BlockType.FURNACE, radius)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a furnace during the evening.",
+        "instruction_paraphrases":["Install a heater in the twilight.", "A task to be done when the sun is setting is setting up a furnace.", "Position a heating system at the time of dusk, a mundane task to be performed as evening falls.", "Amidst the sacred quietude of eve's embrace, position thou a hearth.", "As darkness weaves itself across the day, establishing its own rule, one might find themselves laying down a furnace."],
+        "check_lambda": "lambda game_data: at_time_block_placed(game_data, BlockType.FURNACE, radius)",
+        "str_check_lambda": "at_time_block_placed(game_data, BlockType.FURNACE, radius)"
+    }
+}
+
+----
+
+ {
+    "INSTRUCTION": {
+        "instruction": "Place a stone during the morning.",
+        "instruction_paraphrases":["Deposit a rock at the dawn.", "In the early hours of the day, one should position a pebble.", "In the inception of daylight, one ought to situate a boulder.", "At the earliest beginnings of day, under the feebly breaking light, it is necessary to set down an unyielding stone.", "Lay a relic of earth where the world is kissed by morning, in subtle tribute to the continuum of time."],
+        "check_lambda": "lambda game_data, block_name=BlockType.STONE, radius=1: at_time_block_placed(game_data, block_name, radius)",
+        "str_check_lambda": "at_time_block_placed(game_data, BlockType.STONE, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a stone in the evening",
+        "instruction_paraphrases":["Set a rock in the dusk", "When the night begins to fall, position a stone", "When the twilight descends, locate a rock", "As the setting sun paints the sky with fading hues, lay a solid rock amidst the quiet of the emerging night", "In the soft murmur of an approaching night, place a stone, solitary and strong."],
+        "check_lambda": 'lambda game_data: at_time_block_placed(game_data, BlockType.STONE, radius)',
+        "str_check_lambda": "at_time_block_placed(game_data, BlockType.STONE, radius)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a enchantment table of ice during the evening",
+        "instruction_paraphrases":["Situate a bewitchment platform of frost in the twilight", "During the fall of night, there comes the moment to position a bewitchment platform made of chilling crystal", "In the approaching nightfall, consider locating a hexing station crafted from icy shards", "In the passing eventide, let there rest a witching board of rime, as though poised, awaiting the secret rite", "As the fading embers of day give way to the encroaching night, where does one lay a wizard's platform carved from winter's breath?"],
+        "check_lambda": "lambda game_data: at_time_block_placed(game_data, BlockType.ENCHANTMENT_TABLE_ICE, radius)",
+        "str_check_lambda": "at_time_block_placed(game_data, BlockType.ENCHANTMENT_TABLE_ICE, radius)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a Enchantment_Table_Fire during the evening",
+        "instruction_paraphrases":["Put a Spell_Table_Flame at twilight", "During the twilight hours, one must situate a Enchantment_Table_Fire", "When the sun has retreated, position your Spell_Table_Flame", "At the fall of the dusk, set thou an Enchantment_Table_Fire, as the stars reveal themselves", "As the world folds into evening's embrace, a Spell_Table_Flame finds its spot under the darkening sky"],
+        "check_lambda": "lambda game_data: at_time_block_placed(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, radius)",
+        "str_check_lambda": "at_time_block_placed(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, radius)"
+    }
+}
+
+----

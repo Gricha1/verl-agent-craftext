@@ -1,0 +1,254 @@
+{
+    "INSTRUCTION": {
+        "instruction": "Can you verify if there is a cross made up of plants with a side length of 3 and forms a diagonal shape?",
+        "instruction_paraphrases": [
+            "Confirm if you can find a plant cross of side length 3 arranged diagonally",
+            "Do see a diagonal cross structure made up of flora, each side having 3 units?",
+            "Look around to see if there is a cross pattern with plant blocks of 3 units along each side, placed diagonally",
+            "Is there a diagonal cross made from botanical units, each of its arms measuring 3 lengths?",
+            "Check to see if a diagonal cross-form of vegetation exists, with each side spanning 3 units in length"
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.PLANT, size=3, radius=5)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.PLANT, size=3, radius=5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Arrange a cross of Enchantment Table Ice blocks with a side size of 5 in a combined shape.",
+        "instruction_paraphrases": [
+            "In a combined layout, fashion a cross with Enchantment Table Ice blocks, each side being five units long",
+            "Create a combined cross from Enchantment Table Ice cubes with all sides measuring five units",
+            "Shape Enchantment Table Ice blocks into a combined shape of a cross where every side has a length of five",
+            "Five units on each side, form a combined type cross with blocks of Enchantment Table Ice",
+            "Using five units for each arm, construct a combined cross with blocks of Frost Magic Table"
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.ENCHANTMENT_TABLE_ICE, size=5)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.ENCHANTMENT_TABLE_ICE, size=5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a cross with the stone, where the side is of size five and the total shape itself stands combined.",
+        "instruction_paraphrases": [
+            "Can you devise a cross constructed of rock, where each side has five units and the complete sketch amalgamates?",
+            "Could you fashion a cross with a pebble ensuring that every side has a total of five units and the general design is comprehensive?",
+            "Can you shape a cross by employing the cobblestones, having each side measuring five units and the complete pattern is unified?",
+            "Please structure a cross composed of boulders, maintaining that every arm expands to five units and the holistic structure as conjoined?",
+            "Would you be able to generate a cross using the gravel, where each arm is five units in length and the whole configuration is integrated?"
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.STONE, size=5, radius=7)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.STONE, size=5, radius=7)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a cross of crafting tables, each side should be 3 blocks long and it should be directly shaped",
+        "instruction_paraphrases": [
+            "Make a straight cross using crafting tables, each arm should be 3 blocks long",
+            "Create a cross shape directly with crafting benches, each one containing 3 blocks",
+            "Build a directly shaped cross with a length of 3 units per side using workbenches",
+            "Craft a direct cross with worktables, ensuring each side measures 3 blocks",
+            "Assemble a direct-design cross using 3-block long sides made of workstations"
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.CRAFTING_TABLE, size=3, radius=5)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.CRAFTING_TABLE, size=3, radius=5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Make a cross of furnace blocks, each side should contains 3 blocks.",
+        "instruction_paraphrases": [
+            "Create a cross-structure using forge like blocks, with each stem having a length of 3 units.",
+            "Construct a cross form, where each side has 3 units, using blocks of furnace.",
+            "Using heating system blocks in the game, arrange them in the shape of a cross with every arm having an extent of 3 units.",
+            "In a four-pronged configuration shaped like a cross, place three stove blocks along each prong.",
+            "Form an evenly balanced cross, where each branch is represented by three blocks of the kiln."
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.FURNACE, size=3, radius=5)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.FURNACE, size=3, radius=5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a cross shape with rocks, each side should have a length of 5",
+        "instruction_paraphrases": [
+            "Create a diagonal cross using stones, each arm of the cross should have 5 units length",
+            "Shape an arrangement in the form of a cross made up of boulders, with every side being 5 units long",
+            "Create a cross design with pebbles ensuring that each side has 5 units",
+            "Construct a cross figure using stones, every side of the cross should have a length of 5 units",
+            "Using rocks, fashion out a cross shape where every side measures up to 5 units length"
+        ],
+        "check_lambda": lambda game_data: is_cross_formed(game_data, BlockType.STONE, size=5, radius=5),
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.STONE, size=5, radius=5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Create a cross composed of Fire Enchantment Tables with a side length of 5.",
+        "instruction_paraphrases": [
+            "Build a cross shape using Fire Enchant Spruce Boards, and ensure each arm of the cross is 5 units in length.",
+            "Start crafting a Fire Magic Desk in a cross pattern where each branch of the cross measures 5 units long.",
+            "Using The Fiery Sorcery Platform, construct a cross where each segment is a total of 5 units in distance.",
+            "Craft a combined shape resembling a cross with Ignite Spell Tables, making sure each line extends up to 5 units.",
+            "I want you to shape a Fire Wizard's Bench into a cross structure with each side measuring a total of five units."
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, size=5, radius=7)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, size=5, radius=7)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Create a cross structure on the map using the Enchantment of Fire table, with each side containing 7 units.",
+        "instruction_paraphrases": [
+            "Make a cross pattern using fire enchantment tables, with each arm consisting of seven units.",
+            "I need you to form a cross with Fire Enchanting Tables, each arm should contain a total of seven pieces.",
+            "Can you arrange seven Fire Enchantment Tables on each arm in a cross shape on the map?",
+            "Please assemble a seven-unit long arm cross shape using the tables of Fire Enchantment on our game map.",
+            "On the game map, erect a cross, each arm of which is crafted from seven Fire Enchantment Tables."
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, size=7, radius=100)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, size=7, radius=100)"
+}
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a combined cross shape with a torch, sides should be 7 units long.",
+        "instruction_paraphrases": [
+            "Make a torch pattern in the shape of a 7 unit per side combined cross.",
+            "Create a aggregate cross pattern using torch, each side should be seven units.",
+            "Utilize a command to position the torch so that it forms an integrated cross pattern, each arm be should 7 units long.",
+            "Shape a torch in such a way that it ends up looking like a mixed cross with each side stretching up to seven units.",
+            "Configure a total of seven units on each side of the torch to produce a compound cross shape."
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.TORCH, size=7, radius=5)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.TORCH, size=7, radius=5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Create a cross design using enchanted ice tables. The cross should have 7 blocks on each limb and it should be a combined shape within a radius of 5 blocks from my position",
+        "instruction_paraphrases": [
+            "Fashion a combined shape cross with enchantment ice tables, each arm should have seven blocks and it should be within a five block distance of me",
+            "I want you to arrange seven enchanted frost workbenches in a cross formation around me, five blocks as the furthest distance within the radius",
+            "In a 5 block radius around me, arrange the frost enchantment desks so it forms a cross shape with each line of the cross containing seven blocks",
+            "Within my immediate vicinity of five blocks, can you create a combined layout in a cross configuration using seven of the enchanted ice tabletops",
+            "Please create an intricate pattern in the shape of a cross around me using the frost charm stations, with each limb of the cross spanning seven blocks and every station positioned within a radius of five blocks from where I am"
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.ENCHANTMENT_TABLE_ICE, size=7, radius=5)",
+        "str_check_lambda": "is_cross_formed(...)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Construct a cross out of vegetation with a side size of 3 in a diagonal pattern.",
+        "instruction_paraphrases": [
+            "Create a cross shape from plants, having each of its side measure 3 units, arranged diagonally.",
+            "Assemble a diagonal plant cross whose sides are 3 blocks long.",
+            "I want you to form a diagonal pattern using plants to create a cross with sides that are 3 units long.",
+            "Utilizing plants, design a cross shape where each side consists of an arrangement of 3 units in a diagonal pattern.",
+            "Form a diagonal cross using a collection of plants which should have a side size of three units."
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.PLANT, size=3, radius=5)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.PLANT, size=3, radius=5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Create a direct cross made of stone blocks, each side should have a length of seven.",
+        "instruction_paraphrases": [
+            "Build a cross of rock, make sure each side has a total of seven units.",
+            "Can you form a seven units long cross with boulders directly?",
+            "I need you to make a direct cross with pebbles, each side should have seven blocks.",
+            "Using cobblestones, construct a cross shape directly with each side consisting of seven units.",
+            "Form a direct cross design using stone blocks, make certain that each side measures seven units in length."
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.STONE, size=7, radius=10)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.STONE, size=7, radius=10)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Make a combined cross pattern of 5x5 blocks using a furnace",
+        "instruction_paraphrases": [
+            "Using furnaces, assemble a merged cross configuration that spans five blocks on each side",
+            "Create a 5x5 cruciform pattern using the furnace object",
+            "I want you to build a combined cross shape with a size of five blocks in each direction using only furnace blocks",
+            "Your task is to arrange furnaces in a combined cross shape, with each arm of the cross spanning five blocks",
+            "Use blocks of the furnace type to fabricate a cross shape design where each prong measures five blocks in length" 
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.FURNACE, size=5, radius=7)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.FURNACE, size=5, radius=7)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Create a cross out of plants with a side size of 7 in the given region.",
+        "instruction_paraphrases": [
+            "Arrange some plants in a cross pattern, making sure each side is 7 units long.",
+            "I want you to construct a cross using vegetation, where each arm extends 7 units.",
+            "Make a cross with the plants, each extending seven units from center.",
+            "Can you build a cross comprised of plants? Each side should span a total of seven units.",
+            "Could you please construct a combined cross with flora extending seven units in every direction?"
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.PLANT, size=7, radius=5)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.PLANT, size=7, radius=5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a cross with the plant having each side of size 3 and it should be in a direct shape.",
+        "instruction_paraphrases": [
+            "Construct a cross using plant-based materials. Make sure each side of the cross is 3 units and it's directly positioned.",
+            "Using the plant, create a cross with each side measuring 3 units and ensure it maintains a direct formation.",
+            "Erect a direct shape of a cross using plant materials. Ensure the cross has a side length of 3 units.",
+            "Go ahead and construct a cross from plant elements. Directly position the cross and make each side measure 3 units.",
+            "Craft a direct shape of the cross, utilizing plant materials as the building block. Each side of this formation should be three units in length."
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.PLANT, size=3, radius=5)",
+        "str_check_lambda": "check_lambda(game_data)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Make sure there is a direct cross made of stone blocks that measures 5 units on each side.",
+        "instruction_paraphrases": [
+            "Ensure there's a straight cross built from rocks, 5 units each side.",
+            "Confirm the presence of a directly formed cross with each arm made up of five units of boulders.",
+            "Kindly ascertain that a straight cross, 5 blocks on each side, constructed from cobblestones exists.",
+            "Verify the existence of a 5-unit-long per side cross made of stoney material in a direct positioning.",
+            "Check to spot a directly shaped cross drawn with pebbles, with all arms equally sized at five units."
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.STONE, size=5, radius=5)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.STONE, size=5, radius=5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a cross pattern with Enchantment Table of Fire with each side measuring up to 3 blocks, and make the pattern diagonal.",
+        "instruction_paraphrases": [
+            "Construct a cross structure with Enchantment Table of Fire blocks in diagonal direction with three blocks on each side.",
+            "In a cross shape, assemble the Enchantment Fire Table blocks, each side should contain three blocks and the form should be diagonal.",
+            "Fabricate a cross configuration using the Enchantment Fire Table blocks each with three units on all sides, keep the shape inclined towards the diagonal axis.",
+            "With the Fire Enchantment Table blocks, erect a cruciform structure reaching up to three blocks each on every side, ensure the structure situates on a diagonal angle.",
+            "Spatially arrange the Enchantment blocks of Fire in a manner that it forms a slanting cross figure with each arm extending up to three units."
+        ],
+        "check_lambda": "lambda game_data: is_cross_formed(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, size=3, radius=5)",
+        "str_check_lambda": "is_cross_formed(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, size=3, radius=5)"
+    }
+}

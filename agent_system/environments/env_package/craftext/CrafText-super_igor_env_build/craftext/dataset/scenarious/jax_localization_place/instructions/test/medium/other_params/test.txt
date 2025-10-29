@@ -1,0 +1,240 @@
+{
+    "INSTRUCTION": {
+        "instruction": "Place furnace two blocks to the left of the furnace.",
+        "instruction_paraphrases": [
+            "Position a furnace two spaces left of the existing furnace.",
+            "Situate a furnace a pair of blocks to the left of any furnace.",
+            "Can you sit the furnace two blocks to the west of the current furnace?",
+            "Fix the furnace two slots to the left of an existing furnace.",
+            "Install a furnace at a distance of two blocks on the left-hand side of the furnace."
+        ],
+         'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.FURNACE, 1, 2),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.FURNACE, 1, 2)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Position the Enchantment Table Ice 4 blocks to the right from the Darkness.",
+        "instruction_paraphrases": [
+            "Put the Enchantment Table Ice four spaces to the right of the Darkness.",
+            "Can you please contract the Enchantment Table Ice four blocks rightwards from the target, Darkness?",
+            "Please, set the Enchantment Table Ice exactly to the right of the Darkness with a distance of four blocks.",
+            "Ensure the alignment of Enchantment Table Ice four blocks east of the Darkness.",
+            "You need to establish a setup where the Enchantment Table Ice is exactly four blocks rightward from the Darkness."
+        ],
+         'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_ICE, BlockType.DARKNESS, 0, 4),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_ICE, BlockType.DARKNESS, 0, 4)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place the crafting table 5 blocks to the left of the wall moss.",
+        "instruction_paraphrases": [
+            "To the left of the wall moss, place the crafting table 5 blocks away.",
+            "Locate the wall moss and count five blocks to the left. Place your crafting table there.",
+            "Identify the wall moss first. To its left, count five blocks and that's where you'll position the crafting table.",
+            "On the left side of the wall moss, ensure to place the crafting table after five blocks.",
+            "Starting from the wall moss, move five blocks to the left and that's where the crafting table should be placed."
+        ],
+         'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.WALL_MOSS, 1, 5),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.WALL_MOSS, 1, 5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place a crafting table two blocks below the chest.",
+        "instruction_paraphrases": [
+            "Set the crafting table exactly two blocks under the storage chest.",
+            "Position the workbench two blocks beneath the treasure chest.",
+            "Put a crafting station two squares lower than the stash box.",
+            "Find the chest and place the crafting bench exactly two blocks below it.",
+            "Locate the locker and position a crafting table straight beneath it, precisely two blocks away."
+        ],
+         'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.CHEST, 3, 2),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.CHEST, 3, 2)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place the Crafting Table five blocks to the left of the Enchantment Table Fire.",
+        "instruction_paraphrases": [
+            "Situate the Crafting Table a distance of five blocks westward from the Enchantment Table Fire.",
+            "Locate the Carpenter's workspot leftwards by five blocks relative to the Fire Enchantment Stand.",
+            "I want you to deploy the Assembly Stand five units to the left of the Fire Sorcery Table.",
+            "Can you position the Crafting Workbench five blocks port of the Pyro-magic Platform?",
+            "Would you fix the Tinkering Table five intervals to the sinistral side of the Conflagration Conjuring Console?"
+        ],
+         'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.ENCHANTMENT_TABLE_FIRE, 1, 5),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.ENCHANTMENT_TABLE_FIRE, 1, 5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place the Enchanment Table Ice two blocks below the Ripe Plant.",
+        "instruction_paraphrases": [
+            "Situate the Ice Enchantment Table two squares beneath the ripe vegetation.",
+            "Underneath the mature plant, please position the Enchanment Table of Ice exactly two blocks down.",
+            "Ensure that the Ice Enchantment Table is situated two segments lower from the Ripe Plant.",
+            "Two blocks beneath the fully-grown plant is where you need to position the Ice Enchantment Table.",
+            "It is required to have the Enchantment Table Ice located two blocks to the bottom of the mature vegetation."
+        ],
+         'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_ICE, BlockType.RIPE_PLANT, 3, 2),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_ICE, BlockType.RIPE_PLANT, 3, 2)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place furnace just 1 block to the right side of the ice shrub",
+        "instruction_paraphrases": [
+            "Install the furnace exactly one block right of the ice plant",
+            "Position the oven a single square to the right of the frosty bush",
+            "Arrange the stove precisely one unit to the right of the icy shrub",
+            "Situate your furnace exactly one tile starboard of the ice-covered bush",
+            "Establish the heating apparatus a stone's throw to the east of the hoarfrost shrub"
+        ],
+         'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.ICE_SHRUB, 0, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.ICE_SHRUB, 0, 1)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place a plant one block to the left of out of bounds.",
+        "instruction_paraphrases": [
+            "Put a greenery just one square on the left side of the unreachable area.",
+            "Position the vegetation only a single cube to the immediate left of the non-playable zone.",
+            "Situate a flora exactly one unit to the leftward direction of the inaccessible territory.",
+            "Set a botany at one block distance to the left-hand side of the off-limits area.",
+            "Locate the shrubbery precisely one measurement to the west of boundaries."
+        ],
+         'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.PLANT, BlockType.OUT_OF_BOUNDS, 1, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.PLANT, BlockType.OUT_OF_BOUNDS, 1, 1)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place the Ice Enchantment Table three blocks above the grass.",
+        "instruction_paraphrases": [
+            "Situate the Ice Enchantment Workbench three blocks over the lawn.",
+            "Establish the Table of Ice Enchantment three cubes atop the tuft of grass.",
+            "Position the Ice Spellbinding Desk a distance of three blocks from the grass upwards.",
+            "Install the Ice Magic Table to the north of the grass, three sections away.",
+            "Lay down the Ice Charm Bureau three measures upward from the grassy area."
+        ],
+         'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_ICE, BlockType.GRASS, 2, 3),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_ICE, BlockType.GRASS, 2, 3)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place the enchantment table of fire one block beneath the fire tree",
+        "instruction_paraphrases": [
+            "Situate the fire enchantment table a single block below the fire tree",
+            "Ensure the fire enchantment table is positioned one block under the fire tree",
+            "Locate the fire enchantment table one block underneath the flaming tree",
+            "Position the fire enchantment platform a single block lower than the fiery tree",
+            "Make sure the enchanting table with fire is established a block under the flaming tree"
+        ],
+         'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, BlockType.FIRE_TREE, 3, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, BlockType.FIRE_TREE, 3, 1)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place the plant 5 blocks above the dark spot.",
+        "instruction_paraphrases": [
+            "Set the flora exactly 5 blocks on top of the darkness.",
+            "Situate the shrub 5 blocks over the shadowy area.",
+            "Position the vegetation five blocks up relative to the black part.",
+            "The greenery should be five blocks higher than the gloomy zone.",
+            "Identify the blackout region and install the flower five blocks above it."
+        ],
+         'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.PLANT, BlockType.DARKNESS, 2, 5),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.PLANT, BlockType.DARKNESS, 2, 5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place a stone four blocks to the right of the darkness.",
+        "instruction_paraphrases": [
+            "Position a rock four units to the right of the blackness.",
+            "Set a stone four steps rightward of the dark area.",
+            "The stone should be placed to the east of the darkness, at a distance of four blocks.",
+            "Four blocks eastward of the darkness, allocate a stone.",
+            "Make sure a rock is situated four blocks immediately to the right of the darkness."
+        ],
+         'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.DARKNESS, 0, 4),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.STONE, BlockType.DARKNESS, 0, 4)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place the Enchantment Ice Table 3 blocks to the left of the ripe plant.",
+        "instruction_paraphrases": [
+            "You need to put the Enchantment Ice Table three units left from the mature plant.",
+            "Situate Enchantment Ice Table at a position that is three blocks left of the ripen plant.",
+            "Ensure the Enchantment Ice Table is located three spaces on the left side of a full-grown plant.",
+            "Adjacently, three blocks to the left of the blooming plant, deposit the Enchantment Ice Table.",
+            "The Enchantment Ice Table needs to occupy a space that is precisely three blocks on the left of a fully ripened plant."
+        ],
+         'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_ICE, BlockType.RIPE_PLANT, 1, 3),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_ICE, BlockType.RIPE_PLANT, 1, 3)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place the crafting table 3 blocks above the path",
+        "instruction_paraphrases": [
+            "Position the workbench three blocks to the north of the trail",
+            "Ensure that the crafting table is set three units above the walkway",
+            "Can you set up the carpentry table 3 blocks to the top of the footpath?",
+            "Doing me a favor, adjust the workshop table a distance of three units to the top of our established route",
+            "Would it be possible for you to arrange our crafting desk three blocks upwards starting from the path?"
+        ],
+         'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.PATH, 2, 3),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.PATH, 2, 3)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place the crafting table four blocks below the sapphire",
+        "instruction_paraphrases": [
+            "Put the crafting table four spaces to the south of the sapphire",
+            "The crafting table needs to be positioned four blocks beneath the sapphire",
+            "Four blocks underneath the sapphire, install the crafting table",
+            "Setup the crafting table exactly four squares southward of the sapphire",
+            "Directly four units below the sapphire is where the crafting table should be placed"
+        ],
+         'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.SAPPHIRE, 3, 4),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.SAPPHIRE, 3, 4)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Place the crafting table 3 blocks below the ruby.",
+        "instruction_paraphrases": [
+            "Set the crafting table three blocks beneath the ruby.",
+            "The crafting table should be positioned three blocks to the south of the ruby.",
+            "Identify a ruby, then move three blocks down and put down a crafting table there.",
+            "You need to position the crafting table three spaces below the ruby.",
+            "Find a ruby and place the crafting table exactly three blocks under it."
+        ],
+         'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.RUBY, 3, 3),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.RUBY, 3, 3)"
+    }
+}
+----

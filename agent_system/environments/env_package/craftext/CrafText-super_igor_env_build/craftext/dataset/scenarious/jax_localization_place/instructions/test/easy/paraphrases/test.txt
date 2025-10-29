@@ -1,0 +1,519 @@
+{
+    "INSTRUCTION": {
+        "instruction": "Place a stone one block to the left of the furnace.",
+        "instruction_paraphrases":["Position a rock a unit to the west of the kiln.", 
+"Should you find yourself in the vicinity of the furnace, it is your duty to move a stone one block to its left.", 
+"In spite of its weight and hardness, your task is to adjust a unit to the left, a rock bearing the vicinity of the kiln.", 
+"In the shadowy realm of the searing furnace, thy charge is to take a stone, sturdy and unyielding, and relocate it a block to the west, under the vigilant watch of the ever-hungry kiln.", 
+"In the relentless dance of stone and fire, a single stone must find itself moved a measure to the left of the ever-watching furnace, a silent testament to the delicate balance of space and flame. "],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.FURNACE, 1, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.STONE, BlockType.FURNACE, 1, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a plant three blocks above the grass",
+        "instruction_paraphrases":["Position a shrub trio of squares over the turf", 
+"While positioning a shrub, ensure that it is precisely three spaces higher in altitude than the adjacent verdant grassland", 
+"While arranging vegetation, ensure to situate the leaves-bearing entity exactly a trio of units above the green carpet of nature", 
+"In the deepest vestige of your mind's eye, envision yourself situating a lush foliage of green, a verdant being of nature, thrice the measure upwards from the tender, unbroken carpet of emerald grounds", 
+"Imagine the quiet choreography of a dance between a plant and the natural world, where the plant makes a leap upwards, precisely three steps above the green, a kind of floating ballet above the simple, clear truth of the grass."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.PLANT, BlockType.GRASS, 2, 3),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.PLANT, BlockType.GRASS, 2, 3)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a stone two blocks above the iron.",
+        "instruction_paraphrases":["Set a rock two squares beyond the metal.", "Where the iron is located, put a stone two blocks higher.", "Set a rock, which is to be placed two squares higher, beyond the metal.", "Beyond the stature of iron, in the realm of the stone, rest it in its dwelling, twice as high as yonder iron.", "In the woven world of iron and stone, set a stone to float two steps closer to the sky than the iron."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.IRON, 2, 2),
+        "str_check_lambda": "place_object_relevant_to(BlockType.STONE, BlockType.IRON, 2, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the stone 4 blocks to the left of the coal.",
+        "instruction_paraphrases":["Set the rock four units left of the charcoal.", 
+"Without faltering, it's critical to arrange the stone precisely four blocks to the side from the coal.", 
+"Ensure that the boulder is correctly stationed a precise four units to the western point of the charcoal.", 
+"In yonder realm, 'tis critical to bestow thine stone four steps to the arms of the left, distanced from the depthless night's coal.", 
+"The stone, its weight tangible and familiar, must find itself a new resting place four blocks distance to the left of the coal, its black heart unseen but always present."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.COAL, 1, 4),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.STONE, BlockType.COAL, 1, 4)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Please place the Crafting Table three blocks north from the Plant.",
+        "instruction_paraphrases":["Kindly position the Workbench trio of cubes upwards from the Flora.",
+"Would you be so kind as to set the Crafting Table, aiming it three blocks to the north, our reference being the Plant?",
+"Could you, with sincerity, locate the Artisan Desk in a trio of cubic spaces towards the zenith, taking the Flora as our reference point?",
+"Upon thy request, prithee, arrange yon Crafting Board in a measure of three stones northwards, as counted from the humble Plant, a token of nature's flourish.",
+"In your hands a task rests: to extend the earth a mere three blocks northwards, and there, as if sprouting like vegetation itself, place our Crafting Table, creating a harmonious link between our work and the Plant."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.PLANT, 2, 3),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.PLANT, 2, 3)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a stone 1 block above the coal",
+        "instruction_paraphrases":["Position a rock 1 unit higher than the carbon", "The operation consists of situating a single stone one stretch elevated from the coal", "In order to execute the task, one would locate a boulder precisely one tier ascending from the carbonaceous compound", "In the realm of ancient miners, your task would be to deposit a fragment of the earth firmament, a lone block above the heart of our energy source, the coveted coal", "In the tapestry of this world measured in blocks, a stone must find its place, not alongside, but rather, one degree above the monochromatic heart that beats coal."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.COAL, 2, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.STONE, BlockType.COAL, 2, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the stone 4 blocks above the tree",
+        "instruction_paraphrases":["Position the rock quartet cubes atop the timber", 
+"The stone shall be positioned in such a manner that it is four blocks higher than the tree", 
+"The mineral, replacing perfectly, must land snugly upon four cubes, superior to the tree's apex", 
+"In the timeless age of old, brought forth was a decree to station yonder rock, a quartet of steps in height, above the elder tree's crown",
+"With thoughtfulness, let the stone find itself four steps towards the heavens, beyond the reach of the tree's outstretched emerald fingers"],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.TREE, 2, 4),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.STONE, BlockType.TREE, 2, 4)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": Key Elements: Place (verb), Stone (object), 4 Blocks to the right (details & direction), of Stone (reference point)
+
+["Position the rock four squares towards the right of another rock", "The desired location of the stone is, if we consider the initial piece of stone as a reference point, measured at an interval of four blocks to its right", "Determine position for the pebble as four units to the starboard side of the initial fragment of rock", "In the vast terrain, with the enduring stone as our waypoint, we are tasked to set forth another rock, steadfastly at a distance of four boulders to the right", "In the grand tapestry of the world, we take a stone, not just any stone but a silent testament of time, and we navigate its journey four steps towards the sunrise from another of its kin"] PLACE STONE 4 BLOCKS TO THE RIGHT OF STONE",
+        "instruction_paraphrases": [
+            "[SIMPLE TASK] POSITION A ROCK FOUR SQUARES TO THE RIGHT OF ANOTHER ROCK",
+            "[BASIC LEVEL] ARRANGE A STONE QUAD TO THE RIGHT SIDE RELATIVE TO STONE",
+            "[ELEMENTARY LEVEL] SETUP A BOULDER JUST FOUR SQUARES RIGHTWARD FROM ANOTHER BOULDER",
+            "[BEGINNER] MAKE A STONE POSITIONING FOUR BLOCKS FROM THE RIGHT SIDE OF AN EXISTING STONE",
+            "[LOW DIFICULTY] ESTABLISH A STONE'S LOCATION FOUR SPACES TO THE RIGHT OF A STONE CURRENTLY IN PLACE"
+        ],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.STONE, 0, 4),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.STONE, BlockType.STONE, 0, 4)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the stone five blocks below the tree.",
+        "instruction_paraphrases":["Position the rock five sections beneath the oak", "It is the tree, under which five blocks down, the stone must be placed", "The rock ought to be situated five segments lower than the tall tree", "Down the length of the quiet path, let the hardy stone rest nobly, hidden five stones under the boughs of the ancient oak", "Let the stone heed the call of the earth's deep belly, journeying five steps down under the comforting shadow of the tree."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.TREE, 3, 5),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.STONE, BlockType.TREE, 3, 5)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a stone, two units to the left of another stone.",
+        "instruction_paraphrases":["Set a pebble, duo steps to the west of a different boulder.", 
+ "A stone is to be positioned, such that it lies two measures to the left of another stone.", 
+ "A pebble is to be situated, ensuring it falls a duo distances westward of a different boulder.", 
+ "Lay ye a stone, in two strides to the left of another, aged as olden times.", 
+ "In the grand tapestry of stone placements, one finds itself a humble two paths to the left of its kindred stone."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.STONE, 1, 2),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.STONE, BlockType.STONE, 1, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a furnace 4 blocks to the left of the stone.",
+        "instruction_paraphrases":["Situate a kiln four units west of the rock", 
+"While the stone remains in its place, move four blocks to the left and position the furnace there", 
+"Preserving the rock's position, move the kiln four units westwards in an orderly fashion", 
+"In the land stretching westward from the enduring stone, place thou the furnace four strides distant", 
+"In the vast expanse that is the world, four measures to the left of the profound, unwavering stone, the crucible finds its place."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.STONE, 1, 4),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.STONE, 1, 4)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a plant one block above the water",
+        "instruction_paraphrases":["Situate a flora one unit higher than the liquid", "When one considers placing a plant, it ought to be precisely one block above the water", "Consider situating a flora exactly one unit higher than the aqua", "Duty calls to set a small living green, just one hewn stone's height above the murmuring cerulean abyss", "In the dance of caretaking, let the plant find its home on a block, gently suspended above the whispering waters"],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.PLANT, BlockType.WATER, 2, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.PLANT, BlockType.WATER, 2, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place crafting table 5 blocks to the left of the path",
+        "instruction_paraphrases":["Set the artisan station 5 cubes to the west of the trail", "The crafting table should be positioned 5 blocks on the left side, relative to the trail's course", "Station the trade block five squares westward, in relation to the direction of the footpath", "Depositing the table of creation, five spans to the left, in accordance to the pathway underfoot, as if the compass command so", "Imagine the crafting table settled comfortably in its new location, five solid steps to the left of the meandering path, in harmony with the surrounding"],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.PATH, 1, 5),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.PATH, 1, 5)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the crafting table one block to the left of the coal",
+        "instruction_paraphrases":["Position the artisan's board a unit to the west of the carbon",
+"Put the workbench exactly a singular space to what we commonly refer to as 'left', when referring to the solid fossil fuel, coal",
+"To plant the worktable, seek a unit in the western direction adjacent to the lignite",
+"In the manner of a thoughtful master craftsman, with careful deliberation, shift thine crafting table, a touch to the west, in relation to the great lump of ancient, dark coal, a fragment of grand eruptions past",
+"In the stream of world-making, where every space holds truths, let the crafting table settle, subtly shifted one pace to the left, standing in gentle opposition to the ancient, silent relic of the earth, the coal."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.COAL, 1, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.COAL, 1, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a crafting table 5 blocks below the wood",
+        "instruction_paraphrases":["Install a workbench five units underneath the timber", "It is required to set a crafting table down, precisely five blocks beneath the wood", "Position a workbench, making sure it's exactly five units below the layer of timber", "A crafting table thou must position, albeit five stone's throw netherwards from the overhead timber, 'tis your quest", "Mother Earth invites you to plant a crafting table, five breaths beneath the anchoring heart of the timber"],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.WOOD, 3, 5),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.WOOD, 3, 5)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the stone two blocks below the crafting table.",
+        "instruction_paraphrases":["Position the rock a couple of units beneath the construction desk.", "The instruction, clear in its simplicity, is to put the stone exactly two blocks underneath the craftsman's table.", "Arrange the pebble precisely a duo of segments under the builder's bench.", "In the deep silence of twilight under the shadows of a looming oak, be thou the one to lay the boulder a pair of measures under the artisan's stand, bearing the wisdom of ancient craft.", "At the heart of a quiet moment, the stone takes a journey two lengths downward, settling beneath the sacred table of creation, holding the strings of imagination and craft."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.CRAFTING_TABLE, 3, 2),
+        "str_check_lambda": "place_object_relevant_to(BlockType.STONE, BlockType.CRAFTING_TABLE, 3, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a plant one block to the right of the coal.",
+        "instruction_paraphrases":["Position a flora one unit to the east of the carbon.", 
+"Although the coal is situated in a given location, one must ensure that the plant is arranged one block to its right.", 
+"While the carbon remains fixed at a certain point, correctly situate the flora one unit to its eastern direction.", 
+"In the land where all things are meticulously placed, abide to set a green living creature, a plant of sorts, one stone's throw to the right of the dark, energy-converting carbon.", 
+"In a delicate dance of placement and alignment, let a plant find its home one exact space to the right of the coal — a silent agreement between the living and the inert."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.PLANT, BlockType.COAL, 0, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.PLANT, BlockType.COAL, 0, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the furnace two units right of the diamond.",
+        "instruction_paraphrases":["Position the kiln two steps to the right of the gemstone.", "The diamond has the furnace, two spaces to its right.", "Put the smelter two paces further to the right, relative to the jewel.", "In the realm where the hard stone of brightness finds its home, behold, two measures hence to the right, resides the fire-holder.", "Within this universe, a furnace dreamily finds its place two instances rightward of the diamond, merging heat with allure."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.DIAMOND, 0, 2),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.DIAMOND, 0, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a furnace one block to the left of the grass",
+        "instruction_paraphrases":["Position a heater a single square leftwards of the turf", "To the left of the grass, precisely one block away, establish your furnace.", "Immediately beside the turf's leftward side, set your heater at a distance of a single square.", "Upon the verdant meadows, askew to the dawn's side by but one span, perform thine task of placing yonder smelter.", "Next to the gentle embrace of the grass, go to the direction of the sunrise retreat, where only a measure of a single block separates; there, settle the furnace."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.GRASS, 1, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.GRASS, 1, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the crafting table four blocks to the top of the water source",
+        "instruction_paraphrases":["Position the creation desk four cubes above the water origin", "At a point four blocks elevated from the water source, that is where the crafting table ought to be located", "At a locale, exceeding the water origin by four cubes, you ought to station the creation desk", "Upon the water's source, ascend a measure of four stone blocks and there, as if ordained, set ye a table of crafting", "In the midst of the water source and its essence, aspire four stone blocks higher, whereupon lies the destiny of the crafting table, that mystical altar of creation."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.WATER, 2, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.WATER, 2, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": ["Position the vegetation four tiles beneath the tree", "Upon moving beneath the tree by four units, one must set the plant in place.", "Upon shifting beneath the arboreal entity by quartet units, the flora must be stationed.", "Upon sojourning four stones downward from the towering bark-clad sentinel, one must bestow the humble, green lifeform unto its destined place.", "Across four measures of space below the quiet whispering of the broad-leafed watcher, one feels the instinct to anchor the living green breath into the solidity of soil."] PLACE PLANT 4 BLOCKS TO THE BOTTOM OF TREE",
+        "instruction_paraphrases": [
+            ["Position the vegetation four tiles beneath the tree", "Upon moving beneath the tree by four units, one must set the plant in place.", "Upon shifting beneath the arboreal entity by quartet units, the flora must be stationed.", "Upon sojourning four stones downward from the towering bark-clad sentinel, one must bestow the humble, green lifeform unto its destined place.", "Across four measures of space below the quiet whispering of the broad-leafed watcher, one feels the instinct to anchor the living green breath into the solidity of soil."] Plant a seed four squares below the wood.",
+            ["Position the vegetation four tiles beneath the tree", "Upon moving beneath the tree by four units, one must set the plant in place.", "Upon shifting beneath the arboreal entity by quartet units, the flora must be stationed.", "Upon sojourning four stones downward from the towering bark-clad sentinel, one must bestow the humble, green lifeform unto its destined place.", "Across four measures of space below the quiet whispering of the broad-leafed watcher, one feels the instinct to anchor the living green breath into the solidity of soil."] Situate a sapling four cells beneath the timber.",
+            ["Position the vegetation four tiles beneath the tree", "Upon moving beneath the tree by four units, one must set the plant in place.", "Upon shifting beneath the arboreal entity by quartet units, the flora must be stationed.", "Upon sojourning four stones downward from the towering bark-clad sentinel, one must bestow the humble, green lifeform unto its destined place.", "Across four measures of space below the quiet whispering of the broad-leafed watcher, one feels the instinct to anchor the living green breath into the solidity of soil."] Position foliage four blocks under the hardwood.",
+            ["Position the vegetation four tiles beneath the tree", "Upon moving beneath the tree by four units, one must set the plant in place.", "Upon shifting beneath the arboreal entity by quartet units, the flora must be stationed.", "Upon sojourning four stones downward from the towering bark-clad sentinel, one must bestow the humble, green lifeform unto its destined place.", "Across four measures of space below the quiet whispering of the broad-leafed watcher, one feels the instinct to anchor the living green breath into the solidity of soil."] Locate a greens four slots below the log.",
+            ["Position the vegetation four tiles beneath the tree", "Upon moving beneath the tree by four units, one must set the plant in place.", "Upon shifting beneath the arboreal entity by quartet units, the flora must be stationed.", "Upon sojourning four stones downward from the towering bark-clad sentinel, one must bestow the humble, green lifeform unto its destined place.", "Across four measures of space below the quiet whispering of the broad-leafed watcher, one feels the instinct to anchor the living green breath into the solidity of soil."] Set the bush fours steps underneath the trunk."
+        ],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.PLANT, BlockType.TREE, 3, 4),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.PLANT, BlockType.TREE, 3, 4)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a stone block 2 squares to the right of the grass block.",
+        "instruction_paraphrases":["Set a rock cube 2 units to the right of the verdant block.", "Establish the stone block in a position that requires two steps to the right from the grass block.", "Arrange a boulder square two measures eastward of the green square.", "Laying a cube crafted from the very bones of Earth, two paces to the orient of the verdant, grassy block.", "As if it were a dance, a piece of the stony earth is moved two steps right, where it comes to rest, echoing the harmony of the world, beside the block of vibrant green grass."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.GRASS, 0, 2),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.STONE, BlockType.GRASS, 0, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the crafting table four blocks to the left of the coal",
+        "instruction_paraphrases":["Set the artisan's bench four units to the port of the carbon", "Situate your crafting bench specifically four blocks away to the left from where the coal is placed", "Locate your artisan table precisely four units to the port side of the carbon storage area", "In the land betwixt the fifth block yonder from the blackened coal, set thine crafting table, sturdy and ready", "In the fabric of space, four steps to the left woven from the heart of coal, lay down the grounding of creation: the crafting table."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.COAL, 1, 4),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.COAL, 1, 4)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Position a Plant exactly one block below a patch of Grass.",
+        "instruction_paraphrases":["Place a flora precisely a square beneath a clump of turf", "While there is a patch of grass, it is crucial that a plant is placed specifically one block beneath it", "Given a clump of turf, it becomes integral that a flora is posited precisely one square underneath", "In the land beneath the verdant emerald of grass, precisely a step of stone down, place thou the children of green with care", "In the underdeep, under a cool and silent spread of grass, a plant must find its home, nestled silently a block's distance away."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.PLANT, BlockType.GRASS, 3, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.PLANT, BlockType.GRASS, 3, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the Plant 5 blocks to the right of the Furnace",
+        "instruction_paraphrases":["Position the flora 5 units to the east of the kiln", 
+"Wherever you find the furnace, make sure to locate the plant five blocks to its right", 
+"Imagine where the kiln stands, then envision setting the flora precisely five units eastward of that point", 
+"Just as one would wander five measured steps to the side of a dwarf's furnace, even so should one settle the sylvan life", 
+"When the world arranges itself so that the kiln stands as a star, extend the world five steps further and let there be a spot for the verdant guest."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.PLANT, BlockType.FURNACE, 0, 5),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.PLANT, BlockType.FURNACE, 0, 5)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the crafting table 5 blocks to the right of the water.",
+        "instruction_paraphrases":["Position the fabrication platform 5 units to the starboard of the liquid.", "While maintaining a distance of 5 blocks away from the water, there you should position the crafting table on the right.", "Keeping a distance from the aqua equivalent to 5 blocks, it is necessary to place the workstation on the right-hand side.", "Situate the artisan's square, five strides to the eastern side of the aqua-vita, in the manner of an expert crafter under the sapphire dome of the sky.", "In the space that is five blocks right of the water, the crafting table finds its place, like a dancer finding her mark on a stage of blocks and water."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.WATER, 0, 5),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.WATER, 0, 5)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the crafting table 4 blocks to the left side of the water",
+        "instruction_paraphrases":["Position the creation platform 4 units to the westward of the liquid", 
+"While considering the expanse of the area, move the crafting table 4 steps towards the left from the body of water", 
+"Taking into account the spatial configuration, the creation platform must be stationed 4 units to the left of the aqueous expanse",
+"In the manner of craftsmen of old in the hallowed halls of stone beneath mountain-root, four measured-lengths westward of the water's gentle brook should thou move thine crafting table",
+"In the nuanced shadow dance of light and water, imagine the crafting table as a satellite, shifting subtly four spaces to the left from the water's lapping edge"],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.WATER, 1, 4),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.WATER, 1, 4)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the furnace 2 blocks to the left of the existing furnace.",
+        "instruction_paraphrases":["Position the heater 2 units west of the current stove", 
+"With a space of two blocks to the left, the furnace must settle just parallel to the old one", 
+"Giving a gap of two units, the heater should be situated west of the present stove, making a sibling pair",
+"In days of yore, 'twas spoken thus: let the searing forge rest two spans to the autumn side of its brethren, the ancient fire-chamber", 
+"With a resolute spirit, position the new heart of fire two paces westward; allowing it to echo a quiet kinship with the already ensconced furnace."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.FURNACE, 1, 2),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.FURNACE, 1, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the plant five blocks beneath the stone.",
+        "instruction_paraphrases":["Position the flora five units under the rock.", 
+"Despite being solid and unyielding, the stone had become a marker, signalling where the plant should be located: five blocks below it.",
+"Despite consisting of the hardened substance, the rock served as a beacon, indicating where the flora should be situated: a distance of five units beneath it.",
+"In a time long past, beneath the stalwart and relentless stone, a space was commanded for the green life, precisely five measures in the depth, in the heart of the earth itself.",
+"In the shadow of the immutable stone, five blocks down its guise, a place was whispered for the plant, a gentle murmur hinting of green life amidst the grey."]
+,
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.PLANT, BlockType.STONE, 3, 5),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.PLANT, BlockType.STONE, 3, 5)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a stone 2 blocks to the right of a tree.",
+        "instruction_paraphrases":["Put a rock two squares to the right of a tree.", 
+"Move a stone precisely to a location that is two blocks to the right of a tree.", 
+"Implement the action of positioning a rock accurately to a spot that is two squares to the right of a tree.", 
+"Wit thy hand place a stony piece, counted as two paces, to the eastward side of a lone tree.", 
+"In the world of blocks and stones, set a stone into existence, two spaces to the right of the rooted being of a tree."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.TREE, 0, 2),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.STONE, BlockType.TREE, 0, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the furnace 1 block top of another furnace.",
+        "instruction_paraphrases":["Position the kiln 1 unit above another kiln.", "The action to be taken involves setting a furnace precisely one block above an existing furnace.", "The action to be executed necessitates positioning a kiln exactly one unit on top of an existing kiln.", "In the ancient depths of any realm, a furnace ought to be stationed precisely one block above its fellow furnace, a site bespoke of the wisdom in structure.", "In the ceaseless dance of making and remaking, a furnace is to find its place in the world exactly a block's height above another furnace, as if whispering the secrets of fire to its kin."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.FURNACE, 2, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.FURNACE, 2, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the crafting table five blocks to the left of the stone.",
+        "instruction_paraphrases":["Situate the assembly platform five cubes to the west of the rock.", "Allocate the crafting table at a distance of five blocks on the left side from the stone.", "Set the fabrication surface, five units to the west, adjacent to the hefty stone.", "Beseech you, position thy artisan's desk a handful of paces to the westward of yonder monumental stone, as firm as the foundation of the Earth.", "With careful deliberation, position the artisan's surface five lengths to the left, where it will find companionship with the stone ancient and immovable."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.STONE, 1, 5),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.STONE, 1, 5)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the crafting table one block to the top of the tree.",
+        "instruction_paraphrases":["Situate the artisan's bench a notch above the arboreal being.",
+"Position the crafting table by moving it upward, at a distance of one block from the tree.",
+"Set up the artisan's surface by shifting it an iota higher, just distanced by a unity from the arboreal entity.",
+"In the tallest boughs of the tree, above where the eye naturally wanders, rests a craftsman's table, perched precariously one step removed from nature's towering sentinel.",
+"In the dance of objects and nature's rhythm, arise a new location for the crafting table, placed in a harmonious balance, a single step elevating it from the arms of the ancient tree."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.TREE, 2, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.TREE, 2, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the furnace one block to the right of the tree.",
+        "instruction_paraphrases":["Position the heater a unit to the east of the wood.", 
+"The tree, standing alone, should have the furnace situated one block to its right.", 
+"While the wood stands in isolation, orient the heater a single unit to its east.", 
+"Let it be so that the foundry finds its home a solitary stride eastward of the lone tree, standing in the quiet solitude.", 
+"In the meticulous design of our world, set the furnace just one step rightwards of the tree, the tree standing, unaccompanied and stoic in its place."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.TREE, 0, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.TREE, 0, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the furnace five blocks to the top of the diamond",
+        "instruction_paraphrases":["Situate the oven five squares above the precious gem", 
+"We must posit the furnace at a length of five blocks in a superior position to the diamond", 
+"Attempting to relocate the oven, one shall find suitable the distance of five squares in a position superior to the valuable jewel", 
+"In fair response to the call of the intrepid adventurer, one ought to station yonder furnace, guided by five paces towards the azure heavens, in grand ascendance above the gleaming diamond, hard-born of Earth's fiery heart.", 
+"In the dance of creation, the furnace will find its place above the diamond, guided there by the deliberate discretion of five blocks, symbols of a measured intention and reflection of an unseen pattern."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.DIAMOND, 2, 5),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.DIAMOND, 2, 5)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Please place the stone 1 block to the right of the pathway.",
+        "instruction_paraphrases":["Kindly put the rock 1 unit to the starboard of the walkway.", "If you would be so kind, relocating the stone 1 block to the right of the pathway would be greatly appreciated.", "It would be of great assistance if you could relocate the rock, just one unit to the starboard of our course.", "May you find in your heart the will to shift yonder stone, a mere stride to the right of the ancient pathway traversed by many.", "Consider moving this particular stone - just a single step to the right of the pathway, a silent participant in countless journeys."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.PATH, 0, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.STONE, BlockType.PATH, 0, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place furnace 3 blocks to the top of the path.",
+        "instruction_paraphrases":["Situate the kiln 3 units above the trail.", 
+"Consider the scenario where you are to position the furnace precisely 3 blocks skyward of the pathway.", 
+"Envision a situation where you are called upon to position the kiln exactly 3 units north of the trek.",
+"In the vein of an epic saga, bestow thine hearthstone a score and thrice steps heavenwards from the trodden course.",
+"In the subtle whisperings of light and shadow, let the furnace find its place three measures away from the pathway, towards the sky."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.PATH, 2, 3),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.PATH, 2, 3)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the stone 2 blocks to the right of the plant.",
+        "instruction_paraphrases":["Position the rock two units to the east of the flora", "After passing the plant, proceed two blocks further and there you would locate the stone", "After meandering beyond the verdant growth, move two spaces further and there you'll find the rock", "In the vicinity where the green being breathes, two paces to the right's direction you must tread to find the stone of earth", "Where the plant whispers to the earth, two steps into the rightward breath of the world lays the stone"],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.PLANT, 0, 2),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.STONE, BlockType.PLANT, 0, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the furnace three blocks to the right of the plant.",
+        "instruction_paraphrases":["Set the heater three units to the east of the factory.",
+"In relation to the factory, the heater needs to be positioned exactly three blocks to the right.",
+"Positioning the heating unit precisely three divisions toward the east of the manufacturing plant is called for.",
+"In the manner of the ancients, thou shouldst position the forge three stones' walk to the true east of the greenery.",
+"In the heart of the industrial landscape, a heater, solitary and warm, to the world three steps eastward from its leafy neighbor, the factory, it should find its resting place."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.PLANT, 0, 3),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.PLANT, 0, 3)"
+    }
+}
+
+----

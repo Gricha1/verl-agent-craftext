@@ -1,0 +1,240 @@
+{
+    "INSTRUCTION": {
+        "instruction": "Create a diagonal line of stones of size two.",
+        "instruction_paraphrases": [
+            "Can you make a diagonal line with two rocks?",
+            "Arrange two stones in a diagonal manner",
+            "Put two stones in a line, but make sure it's slanted",
+            "I want to see two rocks positioned in a slanting line",
+            "Could you please arrange a pair of stones diagonally to form a line?"
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.STONE, 2, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.STONE, 2, check_diagonal=True)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Check if there is a line of Crafting Tables, at least two in size.",
+        "instruction_paraphrases": [
+            "Verify if a sequence of at least two Crafting Tables has formed.",
+            "Could you see if there's a chain of two or more Crafting Tables?",
+            "I need you to ascertain if there is a line up of no less than two Crafting Tables.",
+            "Is there a succession of Crafting Tables in at least a duet formation?",
+            "Would it be possible to identify a progression of Crafting Tables having a minimum length of two?"
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.CRAFTING_TABLE, 2, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.CRAFTING_TABLE, 2, check_diagonal=False)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a diagonal line of furnaces of length 3.",
+        "instruction_paraphrases": [
+            "Arrange furnaces in a slant line with 3 in total.",
+            "Assemble a line of 3 furnaces angled diagonally.",
+            "Construct a three-length diagonal row of furnaces.",
+            "Diagonally, set up a sequence of three furnaces.",
+            "Set about diagonally placing three furnaces in a linear pattern."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.FURNACE, 3, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.FURNACE, 3, check_diagonal=True)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a diagonal line of enchantment ice tables of length 2.",
+        "instruction_paraphrases": [
+            "Create a line of two enchantment ice tables slanted diagonally.",
+            "Arrange two ice enchantment tables in a sloped arrangement.",
+            "Design a diagonal configuration using two ice enchantment tables.",
+            "Establish a slanted sequence of two enchantment tables made of ice.",
+            "Place two ice enchantment tables in an angular line."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, 2, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, 2, check_diagonal=True)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Check a diagonal line of enchantment table fire blocks of size 7",
+        "instruction_paraphrases": [
+            "Make sure there's a diagonal line of 7 fiery enchantment tables.",
+            "Verify the existence of an inclined row consisting of seven blocks of enchantment table on fire.",
+            "Could you check if a continuous diagonal sequence of seven fire enchantment tables is present?",
+            "I need you to ascertain if a slanting linear arrangement of seven fire enchantment tables exists in the given location.",
+            "Confirm whether there exists an unbroken diagonal chain comprising of seven blocks, each comprised of an enchantment table engulfed in flame."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_FIRE, 7, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_FIRE, 7, check_diagonal=True)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Check if there is a line of two furnaces",
+        "instruction_paraphrases": [
+            "Inspect if there are two furnaces in row",
+            "Verify if two furnaces were established in a line",
+            "Guarantee that a line is formed with a couple of furnaces",
+            "Affirm the existence of a linear arrangement of two furnaces",
+            "Ascertain the alignment of pair of furnaces into a straight pattern"
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.FURNACE, 2, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.FURNACE, 2, check_diagonal=False)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Create a diagonal line of plants that is seven units long.",
+        "instruction_paraphrases": [
+            "Please, make a seven unit long diagonal line with flora.",
+            "Can you construct a slanted line using plants that measures seven units?",
+            "I need you to form a diagonal row of vegetation that is seven units in length.",
+            "You need to arrange a span of seven plants in a diagonal layout.",
+            "Could you design a sequence of vegetation displayed diagonally that extends for seven units?"
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.PLANT, 7, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.PLANT, 7, check_diagonal=True)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Create a diagonal line of Furnace with 7 blocks.",
+        "instruction_paraphrases": [
+            "Construct a diagonal row of seven Furnaces.",
+            "Put together a sequence of Furnace blocks in a bent line, make sure this sequence is 7 blocks long.",
+            "Build a series of Furnaces diagonally, and it should consist of 7 Furnaces.",
+            "In a diagonal manner, set up a line of 7 Furnace blocks.",
+            "Establish a line at an angle using Furnace blocks and ensure this line includes exactly 7 blocks."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.FURNACE, 7, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.FURNACE, 7, check_diagonal=True)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Verify a 2-block line of stone arranged linearly in the game space.",
+        "instruction_paraphrases": [
+            "Confirm if there is a linear alignment of stone blocks, each of size two, in the current game area.",
+            "Check the game for a straight line configuration of two blocks of rocks.",
+            "Establish the existence of a two-piece series of stones positioned in a line within the game environment.",
+            "Authenticate if a pair of stone blocks are found in a direct line sequence in the game domain.",
+            "Can you substantiate whether a duo of boulders exist in a line formation within the gaming zone?"
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data,ix, BlockType.STONE, 2, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data,ix, BlockType.STONE, 2, check_diagonal=False)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a line containing six Enchantment Fire Tables arranged diagonally.",
+        "instruction_paraphrases": [
+            "Compose a diagonal sequence incorporating six Enchantment Fire Tables.",
+            "Creatively arrange six Enchantment Fire Tables in a straight line at an angle.",
+            "Set up a diagonal pattern of six Enchantment Fire Tables.",
+            "Organize six Enchantment Fire Tables into a diagonal row.",
+            "Construct a diagonal line by using six Fire Enchantment Tables."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_FIRE, 6, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_FIRE, 6, check_diagonal=True)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a diagonal line of stone blocks with length 6.",
+        "instruction_paraphrases": [
+            "Make a diagonal sequence of 6 rock blocks.",
+            "I need you to construct a line, on the diagonal axis, using 6 blocks of stone.",
+            "Create a slanted line using 6 stone blocks.",
+            "Place 6 blocks of rock in a diagonal direction, forming a straight line.",
+            "Arrange a line with 6 stones diagonally."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.STONE, 6, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.STONE, 6, check_diagonal=True)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Make a diagonal line of enchantment table ice blocks with a size of four.",
+        "instruction_paraphrases": [
+            "Can you create a line of enchantment table ice with four blocks diagonally?",
+            "Can you place four enchantment table ice blocks in a diagonal arrangement?",
+            "Arrange four blocks of enchantment table ice in a diagonal line.",
+            "Could you diagonally organize four blocks of enchantment table ice in a row?",
+            "Craft a diagonal chain using four pieces of ice enchantment table."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data,ix, BlockType.ENCHANTMENT_TABLE_ICE, 4, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data,ix, BlockType.ENCHANTMENT_TABLE_ICE, 4, check_diagonal=True)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a line of furnace blocks, 3 blocks in length.",
+        "instruction_paraphrases": [
+            "Arrange three furnace blocks in a straight line.",
+            "Position a series of three furnace blocks linearly.",
+            "I need you to line up three furnace blocks, one after the other.",
+            "Sequentially place three furnace units in a row.",
+            "Erect a horizontally straight sequence of three furnace blocks."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data,ix, BlockType.FURNACE, 3, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data,ix, BlockType.FURNACE, 3, check_diagonal=False)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Create a line of plants with a length of 7 blocks.",
+        "instruction_paraphrases": [
+            "Form a sequence of vegetation with a span of seven units.",
+            "Make a linear progression of foliage that spans over seven blocks.",
+            "Put together a row of greenery extending to seven sections.",
+            "Establish a succession of botanical items that provides a stretch of seven blocks.",
+            "Set up an arrangement of flora, creating a steady line of seven constituents."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data,ix, BlockType.PLANT, 7, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data,ix, BlockType.PLANT, 7, check_diagonal=False)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a diagonal line of four rocks.",
+        "instruction_paraphrases": [
+            "Draw a line of four stones at an angle.",
+            "llace four stones so that they make a diagonal line.",
+            "Produce a slanted line using four rocks.",
+            "Construct a diagonal arrangement of four stones.",
+            "Fabricate a tilted line composed of four rocks."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.STONE, 4, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.STONE, 4, check_diagonal=True)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Check if there is a diagonal line of Crafting Tables of size 7.",
+        "instruction_paraphrases": [
+            "Verify the presence of a diagonal sequence of Workbenches of length 7.",
+            "Investigate if there exists a diagonal row of Crafting Stations that is 7 units long.",
+            "Can you find a diagonal line of BlockType.CRAFTING_TABLE with a size of 7?",
+            "Confirm if a diagonal line made up of the BlockType.CRAFTING_TABLE and with a length of 7 units can be found.",
+            "Check for the existence of a Crafting Desk diagonal series with seven items in its sequence."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data,ix, BlockType.CRAFTING_TABLE, 7, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data,ix, BlockType.CRAFTING_TABLE, 7, check_diagonal=True)"
+    }
+}
+----
