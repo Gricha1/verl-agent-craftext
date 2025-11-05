@@ -9,34 +9,22 @@ import ray
 
 from .utility import render_craftax_text
 
-# --- ШАГ 1: ВЫНОСИМ ВСЮ JAX-ЛОГИКУ В "ЧИСТЫЕ" ФУНКЦИИ ---
 
+# --- Чистые функции (как у тебя) ---
 def _pure_reset_func(wrapper, rng, env_params, instruction_idx):
     """Чистая функция для сброса. Никаких 'self'."""
     return wrapper.reset(rng, env_params, instruction_idx=instruction_idx)
+
 
 def _pure_step_func(wrapper, rng, env_state, action, env_params):
     """Чистая функция для шага. Никаких 'self'."""
     return wrapper.step(rng, env_state, action, env_params)
 
-# --- ШАГ 2: КОМПИЛИРУЕМ ЭТИ ФУНКЦИИ ОДИН РАЗ НА УРОВНЕ МОДУЛЯ ---
-
-# Эти скомпилированные функции не знают о существовании CraftextWorker.
-# Они полностью независимы.
-JITTED_RESET = jax.jit(
-    _pure_reset_func, 
-    static_argnames=('wrapper', 'env_params', 'instruction_idx')
-)
-JITTED_STEP = jax.jit(
-    _pure_step_func, 
-    static_argnames=('wrapper', 'env_params', 'action')
-)
-
 
 class CraftextWorker:
     """
-    Теперь этот класс - просто "тупой" контейнер для состояния и вызова
-    чистых, скомпилированных функций.
+    Этот класс компилирует JIT-функции на уровне экземпляра (одна компиляция на воркер).
+    Также добавлен отладочный вывод форм, чтобы увидеть, какие части env_state меняют shape.
     """
     def __init__(self, seed: int, env_kwargs: dict):
         from craftax.craftax_env import make_craftax_env_from_name
@@ -49,7 +37,7 @@ class CraftextWorker:
         env = make_craftax_env_from_name("Craftax-Classic-Pixels-v1", auto_reset=False)
         self.wrapper = InstructionWrapper(
             env=env,
-            config_name=env_kwargs.get('config_name', 'achievements_collect_sapling'),
+            config_name=env_kwargs.get('config_name', 'achievements_wood'),
             sample_range=[0, 10_000],
             scenario_handler_class=ScenariosNoLambda,
             encode_model_class=DistilBertEncode,
@@ -58,8 +46,30 @@ class CraftextWorker:
         self.env_params = self.wrapper.env.default_params
         self.key = jax.random.PRNGKey(seed)
         self.state = None
-        
-        # JIT-компиляция больше не происходит здесь!
+
+        # debug counters
+        self._debug_step_count = 0
+        self._debug_reset_count = 0
+
+        # --- Компиляция на уровне экземпляра ---
+        # Компилируем bound-функции, не делая wrapper/env_params static_arg.
+        # Это означает, что closure захватит wrapper/env_params и компиляция произойдет один раз.
+        def _inst_reset(rng, instruction_idx):
+            return _pure_reset_func(self.wrapper, rng, self.env_params, instruction_idx)
+
+        def _inst_step(rng, env_state, action):
+            return _pure_step_func(self.wrapper, rng, env_state, action, self.env_params)
+
+        # НЕ указываем action/instruction_idx в static_argnames, если они меняются
+        self._jitted_reset = jax.jit(_inst_reset)
+        self._jitted_step = jax.jit(_inst_step)
+
+    def _shape_or_type(self, x):
+        # helper for debug: return shape if array-like, else type
+        try:
+            return getattr(x, 'shape', type(x))
+        except Exception:
+            return type(x)
 
     def step(self, action: int):
         if self.state is None:
@@ -67,23 +77,31 @@ class CraftextWorker:
 
         self.key, step_key = jax.random.split(self.key)
 
-        # Вызываем глобальную, скомпилированную функцию, передавая все как аргументы
-        obs_jax, new_state_jax, reward_jax, done_jax, info_jax = JITTED_STEP(
-            wrapper=self.wrapper,
-            rng=step_key, 
-            env_state=self.state, 
-            action=action,
-            env_params=self.env_params
+        # --- DEBUG: лог форм для первых N шагов ---
+        if self._debug_step_count < 5:
+            try:
+                shapes = jax.tree_util.tree_map(self._shape_or_type, self.state)
+            except Exception:
+                shapes = str(type(self.state))
+            print(f"[DEBUG] Calling _jitted_step. action={action}, state_shapes={shapes}")
+            self._debug_step_count += 1
+
+        # Вызываем скомпилированную функцию, передавая только числовой env_state
+        obs_jax, new_state_jax, reward_jax, done_jax, info_jax = self._jitted_step(
+            step_key,
+            self.state,
+            action,
         )
 
+        # Заметь: если ты хочешь хранить состояние на host, можно делать jax.device_get здесь
+        # self.state = jax.device_get(new_state_jax)
         self.state = new_state_jax
-        
-        # Остальная часть - просто конвертация и формирование словаря info
+
         obs = np.asarray(obs_jax)
         reward = float(reward_jax)
         done = bool(done_jax)
-        
-        info = {} # Создаем пустой info, так как info_jax может быть None
+
+        info = {}  # Создаем пустой info, так как info_jax может быть None
         info['won'] = done and reward > 0
 
         text_render = render_craftax_text(new_state_jax.env_state)
@@ -96,25 +114,27 @@ class CraftextWorker:
 
     def reset(self, scenario_idx: int):
         self.key, reset_key = jax.random.split(self.key)
-        
-        # Вызываем глобальную, скомпилированную функцию
-        obs_jax, new_state_jax = JITTED_RESET(
-            wrapper=self.wrapper,
-            rng=reset_key, 
-            env_params=self.env_params, 
-            instruction_idx=scenario_idx
+
+        # --- DEBUG: лог форм для первых N reset'ов ---
+        if self._debug_reset_count < 5:
+            print(f"[DEBUG] Calling _jitted_reset. instruction_idx={scenario_idx}")
+            self._debug_reset_count += 1
+
+        obs_jax, new_state_jax = self._jitted_reset(
+            reset_key,
+            scenario_idx,
         )
-        
+
         self.state = new_state_jax
-        
+
         obs = np.asarray(obs_jax)
         info = {'won': False}
-        
+
         text_render = render_craftax_text(new_state_jax.env_state)
         instruction_text = self.wrapper.scenario_handler.scenario_data.instructions_list[scenario_idx]
         info['text_render'] = text_render
         info['instruction'] = instruction_text
-        
+
         return obs, info
 
     def get_scenarios(self):

@@ -773,7 +773,7 @@ def make_envs(config):
 
         # 2. Указываем параметры для среды Craftext (если нужны)
         env_kwargs = {
-            'config_name': 'achievements_collect_sapling', # Пример
+            'config_name': 'achievements_wood', # Пример
             'encode_form': 'embedding'   # Пример
         }
         

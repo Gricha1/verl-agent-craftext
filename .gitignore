@@ -135,5 +135,4 @@ data/
 *models--distilbert-base-uncased
 *hub
 *xet
-tensorboard_log
-alfworld_grpo_tensorboard_log
+runs

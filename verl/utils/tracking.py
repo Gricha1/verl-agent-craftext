@@ -195,10 +195,11 @@ class ClearMLLogger:
 class _TensorboardAdapter:
     def __init__(self):
         import os
+        import time
 
         from torch.utils.tensorboard import SummaryWriter
 
-        tensorboard_dir = os.environ.get("TENSORBOARD_DIR", "tensorboard_log")
+        tensorboard_dir = os.environ.get("TENSORBOARD_DIR", f"runs/run_{time.strftime('%Y%m%d-%H%M%S')}")
         os.makedirs(tensorboard_dir, exist_ok=True)
         print(f"Saving tensorboard log to {tensorboard_dir}.")
         self.writer = SummaryWriter(tensorboard_dir)

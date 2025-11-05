@@ -106,8 +106,8 @@ def render_craftax_text(state) -> str:
         table += "\n"
 
     # text_obs += "\n" + tabulate(table, tablefmt="github") + "\n\n"
-    # text_obs += str(table) + "\n"
-    text_obs += "To gather a sapling execute 'do' action" + "\n"
+    text_obs += str(table) + "\n"
+    # text_obs += "To gather a sapling execute 'do' action" + "\n"
 
     text_obs += "Inventory: "
     for field in state.inventory.__class__.__dataclass_fields__:
