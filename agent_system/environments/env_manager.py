@@ -602,7 +602,7 @@ class AppWorldEnvironmentManager(EnvironmentManagerBase):
                 postprocess_text_obs.append(obs)
         return postprocess_text_obs
 
-from agent_system.environments.env_package.craftext.projection import CRAFTEXT_TEMPLATE, CRAFTEXT_TEMPLATE_NO_HIS
+from agent_system.environments.env_package.craftext.projection import CRAFTEXT_TEMPLATE, CRAFTEXT_TEMPLATE_NO_HIS, CRAFTEXT_VL_TEMPLATE_NO_HIS
 
 
 class CraftextEnvironmentManager(EnvironmentManagerBase):
@@ -614,12 +614,21 @@ class CraftextEnvironmentManager(EnvironmentManagerBase):
         obs, infos = self.envs.reset()
         self.tasks = [info.get('instruction', 'No instruction found') for info in infos]
         text_renders = [info.get('text_render', 'The world is empty.') for info in infos]
-        
-        observations = {
-            'text': self.build_text_obs(text_renders, infos, init=True), 
-            # 'image': obs,
-            'anchor': text_renders.copy()
-        }
+                
+        if self.config.env.env_name == "craftext/CraftextEnv":
+            observations = {
+                'text': self.build_text_obs(text_renders, infos, init=True), 
+                # 'image': obs,
+                'anchor': text_renders.copy()
+            }
+
+        if self.config.env.env_name == "craftext/CraftextVLEnv":
+            observations = {
+                'text': self.build_text_obs(text_renders, infos, init=True), 
+                'image': obs,
+                'anchor': text_renders.copy()
+            }
+
         self.pre_text_obs = text_renders
         self.memory.reset(batch_size=len(infos))
         return observations, infos
@@ -632,11 +641,19 @@ class CraftextEnvironmentManager(EnvironmentManagerBase):
         self.memory.store({'text_obs': self.pre_text_obs, 'action': text_actions})
         self.pre_text_obs = next_text_renders
 
-        next_observations = {
-            'text': self.build_text_obs(next_text_renders, infos),
-            # 'image': next_obs,
-            'anchor': next_text_renders.copy()
-        }
+        if self.config.env.env_name == "craftext/CraftextEnv":
+            next_observations = {
+                'text': self.build_text_obs(next_text_renders, infos),
+                # 'image': next_obs,
+                'anchor': next_text_renders.copy()
+            }
+
+        if self.config.env.env_name == "craftext/CraftextVLEnv":
+            next_observations = {
+                'text': self.build_text_obs(next_text_renders, infos),
+                'image': next_obs,
+                'anchor': next_text_renders.copy()
+            }
         
         for i, info in enumerate(infos):
             info['is_action_valid'] = to_numpy(valids[i])
@@ -655,21 +672,28 @@ class CraftextEnvironmentManager(EnvironmentManagerBase):
         
         for i in range(len(text_renders)):
             # <--- ИЗМЕНЕНО: Шаблоны теперь самодостаточны, просто форматируем их
-            if init or self.config.env.history_length <= 0:
-                prompt = CRAFTEXT_TEMPLATE_NO_HIS.format(
+            if self.config.env.env_name == "craftext/CraftextVLEnv":
+                prompt = CRAFTEXT_VL_TEMPLATE_NO_HIS.format(
                     task_description=self.tasks[i],
                     current_observation=text_renders[i]
                 )
             else:
-                prompt = CRAFTEXT_TEMPLATE.format(
-                    task_description=self.tasks[i],
-                    step_count=len(self.memory[i]),
-                    action_history=memory_contexts[i],
-                    current_step=len(self.memory[i]) + 1,
-                    current_observation=text_renders[i]
-                )
+                if init or self.config.env.history_length <= 0:
+                    prompt = CRAFTEXT_TEMPLATE_NO_HIS.format(
+                        task_description=self.tasks[i],
+                        current_observation=text_renders[i]
+                    )
+                else:
+                    prompt = CRAFTEXT_TEMPLATE.format(
+                        task_description=self.tasks[i],
+                        step_count=len(self.memory[i]),
+                        action_history=memory_contexts[i],
+                        current_step=len(self.memory[i]) + 1,
+                        current_observation=text_renders[i]
+                    )
+
             final_prompts.append(prompt)
-            
+
         return final_prompts
 
 def make_envs(config):
@@ -773,7 +797,7 @@ def make_envs(config):
 
         # 2. Указываем параметры для среды Craftext (если нужны)
         env_kwargs = {
-            'config_name': 'achievements_wood', # Пример
+            'config_name': config.env.craftext_settings, # Пример
             'encode_form': 'embedding'   # Пример
         }
         

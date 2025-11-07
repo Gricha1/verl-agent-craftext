@@ -14,32 +14,33 @@ export CUDA_VISIBLE_DEVICES=1
 ENGINE=${1:-vllm}
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
-num_cpus_per_env_worker=0.05
+num_cpus_per_env_worker=0.01
 
-train_data_size=2
+train_data_size=1
 val_data_size=1
-group_size=8
+group_size=4
 
 # Подготовка данных остается той же, так как мы используем текстовый режим
 python3 -m examples.data_preprocess.prepare \
-    --mode 'text' \
+    --mode 'visual' \
     --train_data_size $train_data_size \
     --val_data_size $val_data_size
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
-    data.train_files=$HOME/data/verl-agent/text/train.parquet \
-    data.val_files=$HOME/data/verl-agent/text/test.parquet \
+    data.train_files=$HOME/data/verl-agent/visual/train.parquet \
+    data.val_files=$HOME/data/verl-agent/visual/test.parquet \
     data.train_batch_size=$train_data_size \
     data.val_batch_size=$val_data_size \
     data.max_prompt_length=2048 \
     data.max_response_length=512 \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
+    data.image_key=images \
     data.return_raw_chat=True \
-    actor_rollout_ref.model.path=Qwen/Qwen2.5-1.5B-Instruct \
-    actor_rollout_ref.model.lora_rank=64 \
-    actor_rollout_ref.model.lora_alpha=64 \
+    actor_rollout_ref.rollout.max_model_len=16384 \
+    actor_rollout_ref.rollout.max_num_batched_tokens=16384 \
+    actor_rollout_ref.model.path=Qwen/Qwen2-VL-2B-Instruct \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=16 \
@@ -48,8 +49,8 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.kl_loss_coef=0.01 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
-    actor_rollout_ref.actor.fsdp_config.param_offload=False \
-    actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+    actor_rollout_ref.actor.fsdp_config.param_offload=True \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=$ENGINE \
@@ -64,17 +65,16 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.use_invalid_action_penalty=True \
     actor_rollout_ref.actor.invalid_action_penalty_coef=0.1 \
     algorithm.use_kl_in_reward=False \
-    env.env_name='craftext/CraftextEnv' \
-    +env.craftext_settings='achievements_collect_wood' \
+    env.env_name='craftext/CraftextVLEnv' \
     env.seed=0 \
     env.max_steps=50 \
     env.rollout.n=$group_size \
-    env.history_length=1 \
+    env.history_length=0 \
     env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
     trainer.critic_warmup=0 \
     trainer.logger=['console','tensorboard'] \
-    trainer.project_name='verl_agent_craftext' \
-    trainer.experiment_name="grpo_qwen2.5_1.5b_run_$(date +%Y%m%d-%H%M%S)" \
+    trainer.project_name='verl_agent_craftext_vl' \
+    trainer.experiment_name="grpo_qwen2.5_vl_3b_run_$(date +%Y%m%d-%H%M%S)" \
     trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
     trainer.save_freq=100 \

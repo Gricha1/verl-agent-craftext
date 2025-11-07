@@ -60,6 +60,18 @@ First, think about what to do next. Then, choose one of the available actions an
 Your available actions are: {AVAILABLE_ACTIONS_STR}
 """
 
+CRAFTEXT_VL_TEMPLATE_NO_HIS = f"""
+Your goal is to complete the following task:
+**TASK:** {{task_description}}
+
+You currently see visual observation:
+
+Picture 1: <image>
+
+First, think about what to do next. Then, choose one of the available actions and write it in the <action> tag.
+Your available actions are: {AVAILABLE_ACTIONS_STR}
+"""
+
 # Невалидное действие, которое среда точно не примет.
 # Оно будет использоваться, если LLM сгенерирует что-то непонятное.
 INVALID_ACTION_ID = -1

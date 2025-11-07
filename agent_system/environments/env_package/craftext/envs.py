@@ -7,7 +7,7 @@ import jax.tree_util
 import numpy as np
 import ray
 
-from .utility import render_craftax_text
+from .utility import render_craftax_text, render_craftax_text_relative
 
 
 # --- Чистые функции (как у тебя) ---
@@ -37,7 +37,7 @@ class CraftextWorker:
         env = make_craftax_env_from_name("Craftax-Classic-Pixels-v1", auto_reset=False)
         self.wrapper = InstructionWrapper(
             env=env,
-            config_name=env_kwargs.get('config_name', 'achievements_wood'),
+            config_name=env_kwargs.get('config_name', 'achievements_collect_wood'),
             sample_range=[0, 10_000],
             scenario_handler_class=ScenariosNoLambda,
             encode_model_class=DistilBertEncode,
