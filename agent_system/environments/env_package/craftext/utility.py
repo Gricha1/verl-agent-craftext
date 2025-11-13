@@ -2,109 +2,226 @@ import jax
 import jax.numpy as jnp
 from craftax.craftax.constants import MAX_OBS_DIM
 from craftax.craftax_classic.constants import OBS_DIM, BlockType
+import numpy as np
 
 ACTION_TO_DIRECTION = {"1": "Left", "2": "Right", "3": "Up", "4": "Down"}
 
+# def render_craftax_text(state) -> str:
+#     text_obs = ""
+#     obs_dim_array = jnp.array([OBS_DIM[0], OBS_DIM[1]], dtype=jnp.int32)
+
+#     padded_grid = jnp.pad(
+#         state.map,
+#         (MAX_OBS_DIM + 2, MAX_OBS_DIM + 2),
+#         constant_values=BlockType.OUT_OF_BOUNDS.value,
+#     )
+
+#     tl_corner = state.player_position - obs_dim_array // 2 + MAX_OBS_DIM + 2
+#     map_view = jax.lax.dynamic_slice(padded_grid, tl_corner, OBS_DIM)
+
+#     def block_name(val):
+#         try:
+#             return BlockType(int(val)).name.lower()
+#         except Exception:
+#             return "unknown"
+
+#     mob_map = jnp.zeros((*OBS_DIM, 4), dtype=jnp.uint8)  # 4 types of mobs
+
+    
+#     def _add_mob_to_map(carry, mob_index):
+#         mob_map, mobs, mob_type_index = carry
+
+#         local_position = mobs.position[mob_index] - state.player_position + jnp.array([OBS_DIM[0], OBS_DIM[1]]) // 2
+#         on_screen = jnp.logical_and(local_position >= 0, local_position < jnp.array([OBS_DIM[0], OBS_DIM[1]])).all()
+#         on_screen *= mobs.mask[mob_index]
+
+#         mob_map = mob_map.at[local_position[0], local_position[1], mob_type_index].set(on_screen.astype(jnp.uint8))
+
+#         return (mob_map, mobs, mob_type_index), None
+
+#     (mob_map, _, _), _ = jax.lax.scan(
+#         _add_mob_to_map,
+#         (mob_map, state.zombies, 0),
+#         jnp.arange(state.zombies.mask.shape[0]),
+#     )
+#     (mob_map, _, _), _ = jax.lax.scan(_add_mob_to_map, (mob_map, state.cows, 1), jnp.arange(state.cows.mask.shape[0]))
+#     (mob_map, _, _), _ = jax.lax.scan(
+#         _add_mob_to_map,
+#         (mob_map, state.skeletons, 2),
+#         jnp.arange(state.skeletons.mask.shape[0]),
+#     )
+#     (mob_map, _, _), _ = jax.lax.scan(
+#         _add_mob_to_map,
+#         (mob_map, state.arrows, 3),
+#         jnp.arange(state.arrows.mask.shape[0]),
+#     )
+
+#     def mob_id_to_name(id):
+#         if id == 0:
+#             return "zombie"
+#         elif id == 1:
+#             return "cow"
+#         elif id == 2:
+#             return "skeleton"
+#         elif id == 3:
+#             return "arrow"
+
+#     text_obs += "Map: \n"
+
+#     table = ""
+#     for x in range(OBS_DIM[0]):
+#         row = ""
+#         for y in range(OBS_DIM[1]):
+#             tx, ty = x - OBS_DIM[0] // 2, y - OBS_DIM[1] // 2
+
+#             if tx == 0 and ty == 0:
+#                 description = f"agent {(y - OBS_DIM[1] // 2)}, {-1 * (x - OBS_DIM[0] // 2)}"
+#             elif mob_map[x, y].max() > 0.5:
+#                 mob_name = mob_id_to_name(mob_map[x, y].argmax())
+#                 description = f"{mob_name} {(y - OBS_DIM[1] // 2)}, {-1 * (x - OBS_DIM[0] // 2)}"
+#             else:
+#                 block = block_name(map_view[x, y])
+#                 description = f"{block} {(y - OBS_DIM[1] // 2)}, {-1 * (x - OBS_DIM[0] // 2)}"
+
+#             row += description + " "
+#         table += row
+#         table += "\n"
+
+#     # text_obs += "\n" + tabulate(table, tablefmt="github") + "\n\n"
+#     text_obs += str(table) + "\n"
+#     # text_obs += "To gather a sapling execute 'do' action" + "\n"
+
+#     text_obs += "Inventory: "
+#     for field in state.inventory.__class__.__dataclass_fields__:
+#         value = getattr(state.inventory, field)
+#         formatted_name = field.replace("_", " ").title()
+
+#         text_obs += f"{formatted_name}: {value}; "
+
+#     text_obs += "\n \n" + "Player Direction: "
+
+#     direction = ACTION_TO_DIRECTION[str(state.player_direction)]
+#     text_obs += direction
+
+#     return text_obs
 
 def render_craftax_text(state) -> str:
+    """
+    CPU-only, numpy-based renderer. Input `state` must be host-converted (e.g. via jax.device_get).
+    """
     text_obs = ""
-    obs_dim_array = jnp.array([OBS_DIM[0], OBS_DIM[1]], dtype=jnp.int32)
+    H, W = OBS_DIM
 
-    padded_grid = jnp.pad(
+    # --- 1. Map view (numpy padding + slicing) ---
+    pad_width = MAX_OBS_DIM + 2
+    padded_grid = np.pad(
         state.map,
-        (MAX_OBS_DIM + 2, MAX_OBS_DIM + 2),
+        pad_width=pad_width,
+        mode='constant',
         constant_values=BlockType.OUT_OF_BOUNDS.value,
     )
+    
+    # tl_corner = player_pos - [H//2, W//2] + pad_width → top-left of view in padded grid
+    tl_x = int(state.player_position[0] - H // 2 + pad_width)
+    tl_y = int(state.player_position[1] - W // 2 + pad_width)
+    
+    # Extract view: [tl_x : tl_x+H, tl_y : tl_y+W]
+    map_view = padded_grid[tl_x : tl_x + H, tl_y : tl_y + W]  # shape (H, W)
 
-    tl_corner = state.player_position - obs_dim_array // 2 + MAX_OBS_DIM + 2
-    map_view = jax.lax.dynamic_slice(padded_grid, tl_corner, OBS_DIM)
-
+    # --- 2. Block name helper ---
     def block_name(val):
         try:
             return BlockType(int(val)).name.lower()
-        except Exception:
+        except (ValueError, KeyError):
             return "unknown"
 
-    mob_map = jnp.zeros((*OBS_DIM, 4), dtype=jnp.uint8)  # 4 types of mobs
+    # --- 3. Build mob_map (H, W, 4) on CPU ---
+    mob_map = np.zeros((H, W, 4), dtype=np.uint8)
 
-    def _add_mob_to_map(carry, mob_index):
-        mob_map, mobs, mob_type_index = carry
+    def add_mobs(mobs, mob_type_idx):
+        # mobs: has .position (N, 2), .mask (N,)
+        if not hasattr(mobs, 'position') or len(mobs.position) == 0:
+            return
+        positions = np.asarray(mobs.position)
+        masks = np.asarray(mobs.mask)
+        N = len(masks)
 
-        local_position = mobs.position[mob_index] - state.player_position + jnp.array([OBS_DIM[0], OBS_DIM[1]]) // 2
-        on_screen = jnp.logical_and(local_position >= 0, local_position < jnp.array([OBS_DIM[0], OBS_DIM[1]])).all()
-        on_screen *= mobs.mask[mob_index]
+        # Compute local positions relative to player
+        # local = mob_pos - player_pos + [H//2, W//2]
+        local_positions = positions - state.player_position + np.array([H // 2, W // 2])
 
-        mob_map = mob_map.at[local_position[0], local_position[1], mob_type_index].set(on_screen.astype(jnp.uint8))
+        for i in range(N):
+            if not masks[i]:
+                continue
+            lx, ly = local_positions[i]
+            # Check bounds: 0 <= lx < H, 0 <= ly < W
+            if 0 <= lx < H and 0 <= ly < W:
+                mob_map[int(lx), int(ly), mob_type_idx] = 1
 
-        return (mob_map, mobs, mob_type_index), None
+    # Add all mob types
+    add_mobs(state.zombies, 0)
+    add_mobs(state.cows, 1)
+    add_mobs(state.skeletons, 2)
+    add_mobs(state.arrows, 3)
 
-    (mob_map, _, _), _ = jax.lax.scan(
-        _add_mob_to_map,
-        (mob_map, state.zombies, 0),
-        jnp.arange(state.zombies.mask.shape[0]),
-    )
-    (mob_map, _, _), _ = jax.lax.scan(_add_mob_to_map, (mob_map, state.cows, 1), jnp.arange(state.cows.mask.shape[0]))
-    (mob_map, _, _), _ = jax.lax.scan(
-        _add_mob_to_map,
-        (mob_map, state.skeletons, 2),
-        jnp.arange(state.skeletons.mask.shape[0]),
-    )
-    (mob_map, _, _), _ = jax.lax.scan(
-        _add_mob_to_map,
-        (mob_map, state.arrows, 3),
-        jnp.arange(state.arrows.mask.shape[0]),
-    )
+    # --- 4. Mob name helper ---
+    def mob_id_to_name(idx):
+        names = ["zombie", "cow", "skeleton", "arrow"]
+        return names[idx] if 0 <= idx < len(names) else "unknown"
 
-    def mob_id_to_name(id):
-        if id == 0:
-            return "zombie"
-        elif id == 1:
-            return "cow"
-        elif id == 2:
-            return "skeleton"
-        elif id == 3:
-            return "arrow"
-
+    # --- 5. Build text table ---
     text_obs += "Map: \n"
+    rows = []
 
-    table = ""
-    for x in range(OBS_DIM[0]):
-        row = ""
-        for y in range(OBS_DIM[1]):
-            tx, ty = x - OBS_DIM[0] // 2, y - OBS_DIM[1] // 2
+    for x in range(H):
+        row_parts = []
+        for y in range(W):
+            tx = x - H // 2
+            ty = y - W // 2
 
             if tx == 0 and ty == 0:
-                description = f"agent {(y - OBS_DIM[1] // 2)}, {-1 * (x - OBS_DIM[0] // 2)}"
-            elif mob_map[x, y].max() > 0.5:
-                mob_name = mob_id_to_name(mob_map[x, y].argmax())
-                description = f"{mob_name} {(y - OBS_DIM[1] // 2)}, {-1 * (x - OBS_DIM[0] // 2)}"
+                # Agent position
+                desc = f"agent {ty}, {-tx}"
+            elif mob_map[x, y].max() > 0:  # uint8 — достаточно > 0
+                mob_idx = int(mob_map[x, y].argmax())
+                mob_name = mob_id_to_name(mob_idx)
+                desc = f"{mob_name} {ty}, {-tx}"
             else:
-                block = block_name(map_view[x, y])
-                description = f"{block} {(y - OBS_DIM[1] // 2)}, {-1 * (x - OBS_DIM[0] // 2)}"
+                block_val = int(map_view[x, y])
+                block = block_name(block_val)
+                desc = f"{block} {ty}, {-tx}"
+            row_parts.append(desc)
+        rows.append(" ".join(row_parts))
 
-            row += description + " "
-        table += row
-        table += "\n"
+    table = "\n".join(rows)
+    text_obs += table + "\n"
 
-    # text_obs += "\n" + tabulate(table, tablefmt="github") + "\n\n"
-    text_obs += str(table) + "\n"
-    # text_obs += "To gather a sapling execute 'do' action" + "\n"
-
+    # --- 6. Inventory ---
     text_obs += "Inventory: "
+    inventory_items = []
     for field in state.inventory.__class__.__dataclass_fields__:
         value = getattr(state.inventory, field)
-        formatted_name = field.replace("_", " ").title()
+        # Convert to int if numpy scalar
+        if hasattr(value, 'item'):
+            value = value.item()
+        elif isinstance(value, (np.integer, np.floating)):
+            value = int(value)
+        # Skip zero or empty
+        if value:
+            name = field.replace("_", " ").title()
+            inventory_items.append(f"{name}: {value}")
+    text_obs += "; ".join(inventory_items) + "; "
 
-        text_obs += f"{formatted_name}: {value}; "
-
-    text_obs += "\n \n" + "Player Direction: "
-
-    direction = ACTION_TO_DIRECTION[str(state.player_direction)]
+    # --- 7. Player direction ---
+    text_obs += "\n \nPlayer Direction: "
+    try:
+        dir_key = str(int(state.player_direction))
+        direction = ACTION_TO_DIRECTION.get(dir_key, "Unknown")
+    except (ValueError, TypeError):
+        direction = "Unknown"
     text_obs += direction
 
     return text_obs
-
-
 # --- Вспомогательные константы и функции (без изменений) ---
 
 BORING_BLOCKS = {
