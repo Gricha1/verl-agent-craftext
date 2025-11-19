@@ -822,9 +822,20 @@ def make_envs(config):
         # 4. Создаем функцию проекции
         projection_f = partial(craftext_projection)
         
-        # 5. Оборачиваем все в наш новый менеджер
-        envs = CraftextEnvironmentManager(_envs, projection_f, config)
-        val_envs = CraftextEnvironmentManager(_val_envs, projection_f, config)
+        # 5. Выбираем менеджер: используем CraftextSubtaskEnvironmentManager если указано в конфиге
+        # Import here to avoid circular import
+        from agent_system.environments.craftext_subtask_manager import CraftextSubtaskEnvironmentManager
+        
+        use_subtask_manager = config.env.get('use_subtask_gigpo', False)
+        
+        if use_subtask_manager:
+            # Используем менеджер с поддержкой subtask-based GiGPO
+            envs = CraftextSubtaskEnvironmentManager(_envs, projection_f, config)
+            val_envs = CraftextSubtaskEnvironmentManager(_val_envs, projection_f, config)
+        else:
+            # Используем стандартный менеджер
+            envs = CraftextEnvironmentManager(_envs, projection_f, config)
+            val_envs = CraftextEnvironmentManager(_val_envs, projection_f, config)
 
         return envs, val_envs
         

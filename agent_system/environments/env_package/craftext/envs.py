@@ -7,6 +7,8 @@ import jax.tree_util
 import numpy as np
 import ray
 from .utility import render_craftax_text, render_craftax_text_relative
+from craftax.craftax_classic.renderer import render_craftax_pixels as render_classic
+from craftax.craftax.constants import BLOCK_PIXEL_SIZE_HUMAN
 
 
 class CraftextWorker:
@@ -79,7 +81,10 @@ class CraftextWorker:
         # Заметь: если ты хочешь хранить состояние на host, можно делать jax.device_get здесь
         self.state = new_state_jax
 
-        obs = np.asarray(obs_jax)
+        # Render the observation using render_classic and convert to numpy
+        obs_jax_rendered = render_classic(new_state_jax.env_state, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
+        obs = np.asarray(obs_jax_rendered)
+
         reward = float(reward_jax)
         done = bool(done_jax)
 
@@ -109,7 +114,9 @@ class CraftextWorker:
 
         self.state = new_state_jax
 
-        obs = np.asarray(obs_jax)
+        # Render the observation using render_classic and convert to numpy
+        obs_jax_rendered = render_classic(new_state_jax.env_state, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
+        obs = np.asarray(obs_jax_rendered)
         info = {'won': False}
         env_state_cpu = jax.device_get(new_state_jax.env_state)
         text_render = render_craftax_text(env_state_cpu)

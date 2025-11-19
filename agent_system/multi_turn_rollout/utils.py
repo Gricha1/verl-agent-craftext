@@ -61,6 +61,10 @@ def numpy_to_torch(array, device):
 def process_image(image, max_pixels: int = 2048 * 2048, min_pixels: int = 256 * 256):
     if isinstance(image, torch.Tensor):
         image = torch_to_numpy(image)
+    # Handle JAX arrays (jaxlib.xla_extension.ArrayImpl)
+    elif hasattr(image, '__array__') and not isinstance(image, np.ndarray):
+        # Convert JAX array or other array-like objects to numpy
+        image = np.array(image)
     if image.max() < 1:
         image = image * 255.0
     if image.dtype != np.uint8:

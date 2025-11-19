@@ -72,6 +72,52 @@ First, think about what to do next. Then, choose one of the available actions an
 Your available actions are: {AVAILABLE_ACTIONS_STR}
 """
 
+# Subtask-aware templates for subtask-based GiGPO
+VALID_SUBTASKS_STR = "collect_wood, place_table, make_wood_pickaxe, make_wood_sword"
+
+CRAFTEXT_SUBTASK_TEMPLATE_NO_HIS = f"""
+Your goal is to complete the following task:
+**TASK:** {{task_description}}
+
+This is what you currently see:
+{{current_observation}}
+
+**IMPORTANT:** For each action, you must:
+1. First, predict which subtask you are trying to complete at this moment
+2. Then, choose and execute an action
+
+**Valid subtasks:** {VALID_SUBTASKS_STR}
+
+**Response format:**
+<subtask>subtask_name</subtask>
+<action>your_action_here</action>
+
+First, think about what subtask you're working on, then choose one of the available actions.
+Your available actions are: {AVAILABLE_ACTIONS_STR}
+"""
+
+CRAFTEXT_SUBTASK_VL_TEMPLATE_NO_HIS = f"""
+Your goal is to complete the following task:
+**TASK:** {{task_description}}
+
+You currently see visual observation:
+
+Picture 1: <image>
+
+**IMPORTANT:** For each action, you must:
+1. First, predict which subtask you are trying to complete at this moment
+2. Then, choose and execute an action
+
+**Valid subtasks:** {VALID_SUBTASKS_STR}
+
+**Response format:**
+<subtask>subtask_name</subtask>
+<action>your_action_here</action>
+
+First, think about what subtask you're working on, then choose one of the available actions.
+Your available actions are: {AVAILABLE_ACTIONS_STR}
+"""
+
 # Невалидное действие, которое среда точно не примет.
 # Оно будет использоваться, если LLM сгенерирует что-то непонятное.
 INVALID_ACTION_ID = -1

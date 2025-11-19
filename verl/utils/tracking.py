@@ -199,7 +199,12 @@ class _TensorboardAdapter:
 
         from torch.utils.tensorboard import SummaryWriter
 
-        tensorboard_dir = os.environ.get("TENSORBOARD_DIR", f"runs/run_{time.strftime('%Y%m%d-%H%M%S')}")
+        run_name = os.environ.get("RUN_NAME")
+        if run_name is None:
+            tensorboard_dir = f"runs/run_{time.strftime('%Y%m%d-%H%M%S')}"
+        else:
+            tensorboard_dir = "runs/" + run_name
+
         os.makedirs(tensorboard_dir, exist_ok=True)
         print(f"Saving tensorboard log to {tensorboard_dir}.")
         self.writer = SummaryWriter(tensorboard_dir)

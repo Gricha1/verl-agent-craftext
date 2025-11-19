@@ -14,11 +14,11 @@ export CUDA_VISIBLE_DEVICES=1
 ENGINE=${1:-vllm}
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
-num_cpus_per_env_worker=0.05
+num_cpus_per_env_worker=0.01
 
-train_data_size=2
+train_data_size=1
 val_data_size=1
-group_size=8
+group_size=4
 
 # Подготовка данных остается той же, так как мы используем текстовый режим
 python3 -m examples.data_preprocess.prepare \
