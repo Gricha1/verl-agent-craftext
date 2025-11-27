@@ -33,7 +33,7 @@ class Tracking:
         logger: Dictionary of initialized logger instances for each backend.
     """
 
-    supported_backend = ["wandb", "mlflow", "swanlab", "vemlp_wandb", "tensorboard", "console", "clearml"]
+    supported_backend = ["wandb", "mlflow", "swanlab", "vemlp_wandb", "tensorboard", "console", "clearml", "comet"]
 
     def __init__(self, project_name, experiment_name, default_backend: Union[str, List[str]] = "console", config=None):
         if isinstance(default_backend, str):
@@ -124,6 +124,9 @@ class Tracking:
         if "clearml" in default_backend:
             self.logger["clearml"] = ClearMLLogger(project_name, experiment_name, config)
 
+        if "comet" in default_backend:
+            self.logger["comet"] = CometMLLogger(project_name, experiment_name, config)
+
     def log(self, data, step, backend=None):
         for default_backend, logger_instance in self.logger.items():
             if backend is None or default_backend in backend:
@@ -141,6 +144,8 @@ class Tracking:
 
         if "clearnml" in self.logger:
             self.logger["clearnml"].finish()
+        if "comet" in self.logger:
+            self.logger["comet"].finish()
 
 
 class ClearMLLogger:
@@ -190,6 +195,71 @@ class ClearMLLogger:
 
     def finish(self):
         self._task.mark_completed()
+
+
+class CometMLLogger:
+    def __init__(self, project_name: str, experiment_name: str, config):
+        import os
+
+        from comet_ml import Experiment
+
+        # Get API key from environment or use default
+        api_key = os.environ.get("COMET_API_KEY", None)
+        workspace = os.environ.get("COMET_WORKSPACE", None)
+        
+        # Prefer RUN_NAME environment variable if available, otherwise use experiment_name parameter
+        # This ensures the experiment name matches the RUN_NAME from the training script
+        run_name = os.environ.get("RUN_NAME", None)
+        final_experiment_name = run_name if run_name else experiment_name
+        
+        # Initialize Comet experiment
+        # Set display_summary_level=0 to reduce console output
+        self.experiment = Experiment(
+            api_key=api_key,
+            workspace=workspace,
+            project_name=project_name,
+            experiment_name=final_experiment_name,
+            auto_param_logging=False,  # We'll log params manually
+            auto_metric_logging=False,  # We'll log metrics manually
+            display_summary_level=0,
+        )
+        
+        # Explicitly set the experiment name to ensure it's used
+        # This is a safeguard in case the constructor parameter doesn't work as expected
+        self.experiment.set_name(final_experiment_name)
+        
+        # Store experiment reference for validation logging
+        # Comet ML automatically sets this as the global experiment
+        self._experiment_name = final_experiment_name
+        
+        # Log hyperparameters if config is provided
+        if config is not None:
+            self._log_config(config)
+
+    def _log_config(self, config):
+        """Log configuration parameters to Comet ML"""
+        params = _flatten_dict(
+            _transform_params_to_json_serializable(config, convert_list_to_dict=True),
+            sep="/"
+        )
+        self.experiment.log_parameters(params)
+
+    def log(self, data, step):
+        """Log metrics to Comet ML"""
+        for key, value in data.items():
+            # Comet ML expects numeric values for metrics
+            if isinstance(value, (int, float)):
+                self.experiment.log_metric(key, value, step=step)
+            # Handle other types if needed
+            elif hasattr(value, 'item'):  # For torch tensors, numpy scalars, etc.
+                try:
+                    self.experiment.log_metric(key, value.item(), step=step)
+                except (AttributeError, ValueError):
+                    pass  # Skip if conversion fails
+
+    def finish(self):
+        """End the Comet ML experiment"""
+        self.experiment.end()
 
 
 class _TensorboardAdapter:
@@ -272,6 +342,8 @@ class ValidationGenerationsLogger:
 
         if "clearml" in loggers:
             self.log_generation_to_clearml(samples, step)
+        if "comet" in loggers:
+            self.log_generations_to_comet(samples, step)
 
     def log_generations_to_wandb(self, samples, step):
         """Log samples to wandb as a table"""
@@ -371,3 +443,56 @@ class ValidationGenerationsLogger:
             table_plot=pd.DataFrame.from_records(table),
             iteration=step,
         )
+
+    def log_generations_to_comet(self, samples, step):
+        """Log validation generation to Comet ML as a table"""
+        import json
+        import tempfile
+        from pathlib import Path
+
+        try:
+            from comet_ml import Experiment
+
+            # Try to get the current experiment
+            # Comet ML sets the experiment as global when initialized
+            experiment = Experiment.get_global_experiment()
+            if experiment is None:
+                # If no global experiment, try to find it by name
+                # This is a fallback and may not always work
+                return
+
+            # Create a table-like structure for Comet ML
+            # Comet ML supports logging HTML tables or JSON artifacts
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                validation_gen_step_file = Path(tmp_dir, f"val_step{step}.json")
+                row_data = []
+                for i, sample in enumerate(samples):
+                    data = {
+                        "sample_id": i + 1,
+                        "step": step,
+                        "input": sample[0],
+                        "output": sample[1],
+                        "score": sample[2],
+                    }
+                    row_data.append(data)
+                
+                with open(validation_gen_step_file, "w") as file:
+                    json.dump(row_data, file, indent=2)
+                
+                # Log as asset (artifact)
+                experiment.log_asset(
+                    validation_gen_step_file,
+                    file_name=f"validation_generations_step_{step}.json",
+                    step=step,
+                )
+                
+                # Also log as text for easy viewing in Comet UI
+                summary_text = "\n\n".join(
+                    [
+                        f"Sample {i+1}:\nInput: {sample[0]}\nOutput: {sample[1]}\nScore: {sample[2]}"
+                        for i, sample in enumerate(samples)
+                    ]
+                )
+                experiment.log_text(summary_text, step=step, metadata={"type": "validation_generations"})
+        except Exception as e:
+            print(f"WARNING: save validation generation file to Comet ML failed with error {e}")
