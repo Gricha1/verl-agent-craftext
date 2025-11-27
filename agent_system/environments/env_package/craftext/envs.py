@@ -35,11 +35,13 @@ class CraftextWorker:
         )
         self.env_params = self.wrapper.env.default_params
         self.key = jax.random.PRNGKey(seed)
+        self.base_seed = seed
         self.state = None
 
         # debug counters
         self._debug_step_count = 0
         self._debug_reset_count = 0
+        self._reset_counter = 0  # Счетчик для добавления случайности при каждом reset
 
         # --- Компиляция на уровне экземпляра ---
         # Компилируем bound-функции, не делая wrapper/env_params static_arg.
@@ -100,11 +102,23 @@ class CraftextWorker:
         return obs, reward, done, info
     
     def reset(self, scenario_idx: int):
-        self.key, reset_key = jax.random.split(self.key)
+        # Увеличиваем счетчик reset'ов для добавления случайности
+        self._reset_counter += 1
+        
+        # Создаем уникальный ключ для каждого reset, комбинируя:
+        # - базовый seed воркера
+        # - scenario_idx (инструкция)
+        # - счетчик reset'ов (для разных миров при одинаковой инструкции)
+        # Это гарантирует, что для одного scenario_idx будут разные миры при каждом reset
+        reset_seed = self.base_seed + scenario_idx * 1000000 + self._reset_counter * 1000
+        reset_key = jax.random.PRNGKey(reset_seed)
+        
+        # Также обновляем основной ключ для step()
+        self.key, _ = jax.random.split(self.key)
 
         # --- DEBUG: лог форм для первых N reset'ов ---
         if self._debug_reset_count < 5:
-            print(f"[DEBUG] Calling _jitted_reset. instruction_idx={scenario_idx}")
+            print(f"[DEBUG] Calling _jitted_reset. instruction_idx={scenario_idx}, reset_counter={self._reset_counter}")
             self._debug_reset_count += 1
         obs_jax, new_state_jax = self._jitted_reset(
             reset_key,
@@ -128,6 +142,13 @@ class CraftextWorker:
 
     def get_scenarios(self):
         return len(self.wrapper.scenario_handler.scenario_data.instructions_list)
+
+    def get_state(self):
+        """Get the current state of the environment. Returns None if reset() hasn't been called yet."""
+        if self.state is None:
+            return None
+        # Convert JAX arrays to CPU/numpy for serialization
+        return jax.device_get(self.state)
 
     def close(self):
         pass

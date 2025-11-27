@@ -21,7 +21,7 @@ val_data_size=4
 group_size=8
 mode="mean_std_norm" # "mean_norm" or "mean_std_norm"
 
-export RUN_NAME="run_gigpo_subtask_qwen2.5_1.5b_achievements_wood_$(date +%Y%m%d-%H%M%S)"
+export RUN_NAME="run_gigpo_qwen2.5_1.5b_achievements_wood_$(date +%Y%m%d-%H%M%S)"
 
 # We only use data preparation to indicate the modality and the data size.
 python3 -m examples.data_preprocess.prepare \
@@ -70,16 +70,15 @@ python3 -m verl.trainer.main_ppo \
     algorithm.gamma=0.95 \
     algorithm.gigpo.step_advantage_w=1.0 \
     algorithm.gigpo.mode=$mode \
-    env.env_name='craftext/CraftextEnv' \
+    env.env_name='craftext/CraftextOracleEnv' \
     +env.craftext_settings='achievements_wood' \
-    +env.use_subtask_gigpo=True \
     env.seed=0 \
     env.max_steps=50 \
     env.rollout.n=$group_size \
     env.history_length=1 \
     env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
     trainer.critic_warmup=0 \
-    trainer.logger=['console','tensorboard'] \
+    trainer.logger=['console','tensorboard','comet'] \
     trainer.project_name='verl_agent_craftext' \
     trainer.experiment_name=$RUN_NAME \
     trainer.n_gpus_per_node=1 \

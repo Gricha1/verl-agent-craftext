@@ -78,7 +78,7 @@ python3 -m verl.trainer.main_ppo \
     env.history_length=1 \
     env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
     trainer.critic_warmup=0 \
-    trainer.logger=['console','tensorboard'] \
+    trainer.logger=['console','tensorboard','comet'] \
     trainer.project_name='verl_agent_craftext' \
     trainer.experiment_name=$RUN_NAME \
     trainer.n_gpus_per_node=1 \

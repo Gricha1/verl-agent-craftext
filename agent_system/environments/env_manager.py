@@ -603,6 +603,11 @@ class AppWorldEnvironmentManager(EnvironmentManagerBase):
         return postprocess_text_obs
 
 from agent_system.environments.env_package.craftext.projection import CRAFTEXT_TEMPLATE, CRAFTEXT_TEMPLATE_NO_HIS, CRAFTEXT_VL_TEMPLATE_NO_HIS
+from agent_system.environments.env_package.craftext.projection_oracle import (
+    CRAFTEXT_TEMPLATE_ORACLE, 
+    CRAFTEXT_TEMPLATE_ORACLE_NO_HIS, 
+    CRAFTEXT_VL_TEMPLATE_ORACLE_NO_HIS
+)
 
 
 class CraftextEnvironmentManager(EnvironmentManagerBase):
@@ -690,6 +695,124 @@ class CraftextEnvironmentManager(EnvironmentManagerBase):
                         action_history=memory_contexts[i],
                         current_step=len(self.memory[i]) + 1,
                         current_observation=text_renders[i]
+                    )
+
+            final_prompts.append(prompt)
+
+        return final_prompts
+
+
+class CraftextOracleEnvironmentManager(EnvironmentManagerBase):
+    """
+    EnvironmentManager для Craftext с поддержкой оракла.
+    Обрабатывает вопросы к оракулу и включает ответы в наблюдения.
+    """
+    def __init__(self, envs, projection_f, config):
+        self.memory = SimpleMemory()
+        super().__init__(envs, projection_f, config)
+    
+    def reset(self, kwargs) -> Dict[str, Any]:
+        obs, infos = self.envs.reset()
+        self.tasks = [info.get('instruction', 'No instruction found') for info in infos]
+        text_renders = [info.get('text_render', 'The world is empty.') for info in infos]
+                
+        if self.config.env.env_name == "craftext/CraftextOracleEnv":
+            observations = {
+                'text': self.build_text_obs(text_renders, infos, init=True), 
+                'anchor': text_renders.copy()
+            }
+        elif self.config.env.env_name == "craftext/CraftextOracleVLEnv":
+            observations = {
+                'text': self.build_text_obs(text_renders, infos, init=True), 
+                'image': obs,
+                'anchor': text_renders.copy()
+            }
+        else:
+            # Fallback для неизвестных имен сред
+            observations = {
+                'text': self.build_text_obs(text_renders, infos, init=True), 
+                'anchor': text_renders.copy()
+            }
+
+        self.pre_text_obs = text_renders
+        self.memory.reset(batch_size=len(infos))
+        return observations, infos
+
+    def step(self, text_actions: List[str]):
+        # Используем oracle projection, которая возвращает actions, valids, questions
+        action_ids, valids, questions = self.projection_f(text_actions)
+        
+        # Передаем вопросы в среду
+        next_obs, rewards, dones, infos = self.envs.step(action_ids, questions)
+        next_text_renders = [info.get('text_render', 'The world is empty.') for info in infos]
+
+        self.memory.store({'text_obs': self.pre_text_obs, 'action': text_actions})
+        self.pre_text_obs = next_text_renders
+
+        if self.config.env.env_name == "craftext/CraftextOracleEnv":
+            next_observations = {
+                'text': self.build_text_obs(next_text_renders, infos),
+                'anchor': next_text_renders.copy()
+            }
+        elif self.config.env.env_name == "craftext/CraftextOracleVLEnv":
+            next_observations = {
+                'text': self.build_text_obs(next_text_renders, infos),
+                'image': next_obs,
+                'anchor': next_text_renders.copy()
+            }
+        else:
+            # Fallback для неизвестных имен сред
+            next_observations = {
+                'text': self.build_text_obs(next_text_renders, infos),
+                'anchor': next_text_renders.copy()
+            }
+        
+        for i, info in enumerate(infos):
+            info['is_action_valid'] = to_numpy(valids[i])
+            # Добавляем информацию о вопросе (если был)
+            if questions[i] is not None:
+                info['question'] = questions[i]
+
+        return next_observations, to_numpy(rewards), to_numpy(dones), infos
+
+    def build_text_obs(self, text_renders: List[str], infos: List[Dict], init: bool = False) -> List[str]:
+        final_prompts = []
+        
+        if not init and self.config.env.history_length > 0:
+            memory_contexts, valid_lens = self.memory.fetch(
+                self.config.env.history_length,
+                obs_key="text_obs",
+                action_key="action"
+            )
+        
+        for i in range(len(text_renders)):
+            # Получаем ответ оракла (если есть)
+            oracle_answer = infos[i].get('oracle_answer', None)
+            
+            # Формируем наблюдение с учетом ответа оракла
+            observation_text = text_renders[i]
+            if oracle_answer:
+                observation_text += f"\n\n**Oracle's answer to your question:** {oracle_answer}"
+            
+            # Используем oracle шаблоны
+            if self.config.env.env_name == "craftext/CraftextOracleVLEnv":
+                prompt = CRAFTEXT_VL_TEMPLATE_ORACLE_NO_HIS.format(
+                    task_description=self.tasks[i],
+                    current_observation=observation_text
+                )
+            else:
+                if init or self.config.env.history_length <= 0:
+                    prompt = CRAFTEXT_TEMPLATE_ORACLE_NO_HIS.format(
+                        task_description=self.tasks[i],
+                        current_observation=observation_text
+                    )
+                else:
+                    prompt = CRAFTEXT_TEMPLATE_ORACLE.format(
+                        task_description=self.tasks[i],
+                        step_count=len(self.memory[i]),
+                        action_history=memory_contexts[i],
+                        current_step=len(self.memory[i]) + 1,
+                        current_observation=observation_text
                     )
 
             final_prompts.append(prompt)
@@ -791,8 +914,55 @@ def make_envs(config):
         envs = AppWorldEnvironmentManager(_envs, projection_f, config)
         val_envs = AppWorldEnvironmentManager(_val_envs, projection_f, config)
         return envs, val_envs
+    elif "oracle" in config.env.env_name.lower() and "craftext" in config.env.env_name.lower():
+        # Модификация Craftext с поддержкой оракла
+        # Проверяем наличие обоих слов "craftext" и "oracle" в имени среды
+        print(f"[make_envs] Detected Oracle environment: {config.env.env_name}")
+        from agent_system.environments.env_package.craftext import (
+            build_craftext_envs_oracle, 
+            craftext_projection_oracle
+        )
+
+        # Параметры для среды Craftext
+        env_kwargs = {
+            'config_name': config.env.craftext_settings,
+            'encode_form': 'embedding'
+        }
+        
+        # Параметры оракла
+        oracle_model_name = config.env.get('oracle_model_name', 'Qwen/Qwen2.5-1.5B-Instruct')
+        
+        # Создаем train и val среды с ораклом
+        _envs = build_craftext_envs_oracle(
+            seed=config.env.seed, 
+            env_num=config.data.train_batch_size, 
+            group_n=group_n, 
+            is_train=True, 
+            env_kwargs=env_kwargs, 
+            resources_per_worker=resources_per_worker,
+            oracle_model_name=oracle_model_name
+        )
+        _val_envs = build_craftext_envs_oracle(
+            seed=config.env.seed + 1000, 
+            env_num=config.data.val_batch_size, 
+            group_n=1, 
+            is_train=False, 
+            env_kwargs=env_kwargs, 
+            resources_per_worker=resources_per_worker,
+            oracle_model_name=oracle_model_name
+        )
+        
+        # Создаем функцию проекции с поддержкой вопросов
+        projection_f = partial(craftext_projection_oracle)
+        
+        # Используем менеджер с поддержкой оракла
+        envs = CraftextOracleEnvironmentManager(_envs, projection_f, config)
+        val_envs = CraftextOracleEnvironmentManager(_val_envs, projection_f, config)
+        
+        return envs, val_envs
     elif "craftext" in config.env.env_name.lower():
         # 1. Импортируем все необходимое для Craftext
+        print(f"[make_envs] Detected regular Craftext environment: {config.env.env_name}")
         from agent_system.environments.env_package.craftext import build_craftext_envs, craftext_projection
 
         # 2. Указываем параметры для среды Craftext (если нужны)

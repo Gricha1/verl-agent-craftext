@@ -1,11 +1,9 @@
-conda create -n verl-agent python==3.12 -y
+conda create -n verl-agent-311 python==3.11 -y
 
-conda activate verl-agent
+conda activate verl-agent-311
 
 pip install -e . "vllm==0.8.5"
 
-pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
-pip install psutil numpy
 pip install flash-attn==2.7.4.post1 --no-build-isolation
 
 pip install -e agent_system/environments/env_package/craftext/CrafText-super_igor_env_build
