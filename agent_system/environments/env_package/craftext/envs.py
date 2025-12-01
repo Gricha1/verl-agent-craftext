@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import jax.tree_util
 import numpy as np
 import ray
-from .utility import render_craftax_text, render_craftax_text_relative
+from .utility import render_craftax_text, render_craftax_ascii
 from craftax.craftax_classic.renderer import render_craftax_pixels as render_classic
 from craftax.craftax.constants import BLOCK_PIXEL_SIZE_HUMAN
 
@@ -93,7 +93,7 @@ class CraftextWorker:
         info = {}  # Создаем пустой info, так как info_jax может быть None
         info['won'] = done and reward > 0
         env_state_cpu = jax.device_get(new_state_jax.env_state)
-        text_render = render_craftax_text(env_state_cpu)
+        text_render = render_craftax_ascii(env_state_cpu)
         instruction_idx = new_state_jax.idx
         instruction_text = self.wrapper.scenario_handler.scenario_data.instructions_list[instruction_idx]
         info['text_render'] = text_render
@@ -133,7 +133,7 @@ class CraftextWorker:
         obs = np.asarray(obs_jax_rendered)
         info = {'won': False}
         env_state_cpu = jax.device_get(new_state_jax.env_state)
-        text_render = render_craftax_text(env_state_cpu)
+        text_render = render_craftax_ascii(env_state_cpu)
         instruction_text = self.wrapper.scenario_handler.scenario_data.instructions_list[scenario_idx]
         info['text_render'] = text_render
         info['instruction'] = instruction_text
@@ -259,121 +259,3 @@ def build_craftext_envs(
         is_train=is_train,
         env_kwargs=env_kwargs,
     )
-
-
-'''
-# Эта функция не зависит ни от какого 'self'. Все передается как аргументы.
-def _jittable_reset_func(wrapper, rng, env_params, instruction_idx):
-    return wrapper.reset(rng, env_params, instruction_idx=instruction_idx)
-
-# Эта функция тоже полностью "чистая".
-def _jittable_step_func(wrapper, rng, env_state, action, env_params):
-    return wrapper.step(rng, env_state, action, env_params)
-
-
-class CraftextWorker:
-    """
-    Ray remote actor, который хостит один экземпляр Craftext среды.
-    КЛЮЧЕВАЯ ЗАДАЧА: Хранить JAX state и key между вызовами.
-    """
-    
-    def __init__(self, seed: int, env_kwargs: dict):
-        # Ленивый импорт, как в примере webshop, чтобы избежать проблем с CUDA
-        from craftax.craftax_env import make_craftax_env_from_name
-
-        from craftext.enviroment.craftext_wrapper import InstructionWrapper
-        from craftext.enviroment.encoders.craftext_base_model_encoder import EncodeForm
-        from craftext.enviroment.encoders.craftext_distilbert_model_encoder import DistilBertEncode
-        from craftext.enviroment.scenarious.manager import ScenariosNoLambda
-        
-        env = make_craftax_env_from_name("Craftax-Classic-Pixels-v1", auto_reset=False)
-        self.wrapper = InstructionWrapper(
-            env=env,
-            config_name=env_kwargs.get('config_name', 'simple_achivments_no_paraphrases'),
-            sample_range=[0, 10_000],
-            scenario_handler_class=ScenariosNoLambda,
-            encode_model_class=DistilBertEncode,
-            encode_form=env_kwargs.get('encode_form', EncodeForm.EMBEDDING)
-        )
-        self.env_params = self.wrapper.env.default_params
-        self.key = jax.random.PRNGKey(seed)
-        self.state = None
-
-        self._jitted_reset = jax.jit(
-            _jittable_reset_func,
-            static_argnames=('wrapper', 'env_params', 'instruction_idx')
-        )
-        self._jitted_step = jax.jit(
-            _jittable_step_func,
-            static_argnames=('wrapper', 'env_params', 'action')
-        )
-
-    def _to_numpy(self, jax_array):
-        return np.asarray(jax_array)
-
-    def step(self, action: int):
-        if self.state is None:
-            raise RuntimeError("Необходимо вызвать reset() перед первым вызовом step().")
-
-        self.key, step_key = jax.random.split(self.key)
-        # action_jax = jnp.array(action, dtype=jnp.int32)
-
-        obs_jax, new_state_jax, reward_jax, done_jax, info_jax = self._jitted_step(
-            wrapper=self.wrapper,
-            rng=step_key, 
-            env_state=self.state, 
-            action=action,
-            env_params=self.env_params
-        )
-
-        self.state = new_state_jax
-                
-        obs = self._to_numpy(obs_jax)
-        reward = float(reward_jax)
-        done = bool(done_jax)
-                
-        info = dict(info_jax or {}) 
-        info['won'] = done and reward > 0
-
-        text_render = render_craftax_text(new_state_jax.env_state)
-        instruction_idx = new_state_jax.idx
-        instruction_text = self.wrapper.scenario_handler.scenario_data.instructions_list[instruction_idx]
-
-        info['text_render'] = text_render
-        info['instruction'] = instruction_text
-
-        gc.collect()
-
-        return obs, reward, done, info
-
-    def reset(self, scenario_idx: int):
-        self.key, reset_key = jax.random.split(self.key)
-        
-        obs_jax, new_state_jax = self._jitted_reset(
-            wrapper=self.wrapper,
-            rng=reset_key, 
-            env_params=self.env_params, 
-            instruction_idx=scenario_idx
-        )
-
-        self.state = new_state_jax
-        
-        obs = self._to_numpy(obs_jax)
-        info = {'won': False}
-        
-        text_render = render_craftax_text(new_state_jax.env_state)
-        instruction_text = self.wrapper.scenario_handler.scenario_data.instructions_list[scenario_idx]
-
-        info['text_render'] = text_render
-        info['instruction'] = instruction_text
-        
-        gc.collect()
-        
-        return obs, info
-
-    def get_scenarios(self):
-        return len(self.wrapper.scenario_handler.scenario_data.instructions_list)
-
-    def close(self):
-        pass
-'''

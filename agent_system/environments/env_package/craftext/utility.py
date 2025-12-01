@@ -222,133 +222,252 @@ def render_craftax_text(state) -> str:
     text_obs += direction
 
     return text_obs
-# --- Вспомогательные константы и функции (без изменений) ---
 
-BORING_BLOCKS = {
-    BlockType.GRASS.value,
-    BlockType.WATER.value,
-    BlockType.PATH.value,
-    BlockType.SAND.value,
-    BlockType.LAVA.value,
+
+# Обновите этот список, если у вас другие названия в BlockType
+ASCII_MAPPING = {
+    "out_of_bounds": "#",
+    "unknown": "?",
+    "water": "~",
+    "grass": ".", 
+    "stone": "%", 
+    "tree": "T",
+    "wood": "w",
+    "sand": ":",
+    "lava": "L",
+    "coal": "c",
+    "iron": "i",
+    "diamond": "d",
+    "gold": "g",
+    "path": "_",
+    "table": "T", # Crafting table
+    "furnace": "F",
+    "plant": "*",
+    "ripe_plant": "P",
+    "bed": "B",     # Добавил кровать на всякий случай
 }
-ACTION_TO_DIRECTION = {"1": "Left", "2": "Right", "3": "Up", "4": "Down"}
 
+# 0: Up, 1: Right, 2: Down, 3: Left
+# PLAYER_SYMBOLS = ["^", ">", "v", "<"]
+PLAYER_SYMBOLS = ["@", "@", "@", "@"]
 
-def get_detailed_direction_text(dx, dy, threshold=2.0):
-    if dx == 0 and dy == 0:
-        return "at your feet"
-    v_str = ""
-    if dy > 0:
-        v_str = "in front"
-    elif dy < 0:
-        v_str = "behind"
-    h_str = ""
-    if dx > 0:
-        h_str = "to the right"
-    elif dx < 0:
-        h_str = "to the left"
-    if not v_str:
-        return h_str
-    if not h_str:
-        return v_str
-    if abs(dy) > abs(dx) * threshold:
-        return v_str
-    elif abs(dx) > abs(dy) * threshold:
-        return h_str
-    else:
-        return f"{v_str} and {h_str}"
+# Zombie, Cow, Skeleton, Arrow
+# ИЗМЕНЕНО: Arrow теперь 'a', чтобы не путать с игроком '^'
+MOB_SYMBOLS = ["Z", "C", "S", "a"] 
 
+def render_craftax_ascii(state) -> str:
+    H, W = OBS_DIM
+    ascii_output = ""
 
-# --- Основная функция с исправлениями ---
+    # --- 1. Подготовка данных (карта) ---
+    pad_width = MAX_OBS_DIM + 2
+    padded_grid = np.pad(
+        state.map,
+        pad_width=pad_width,
+        mode='constant',
+        constant_values=BlockType.OUT_OF_BOUNDS.value,
+    )
+    
+    tl_x = int(state.player_position[0] - H // 2 + pad_width)
+    tl_y = int(state.player_position[1] - W // 2 + pad_width)
+    map_view = padded_grid[tl_x : tl_x + H, tl_y : tl_y + W]
 
+    # Хелпер для получения имени и символа блока
+    def get_block_info(val):
+        try:
+            name = BlockType(int(val)).name.lower()
+            char = ASCII_MAPPING.get(name, name[0].upper())
+            return char, name
+        except:
+            return "?", "unknown"
 
-def render_craftax_text_relative(state, max_targets=4) -> str:
-    """
-    Создает самый удачный, структурированный и "исполняемый" промпт для агента.
-    С ИСПРАВЛЕНИЯМИ для совместимости с JAX.
-    """
-    obs_dim_array = jnp.array([OBS_DIM[0], OBS_DIM[1]], dtype=jnp.int32)
-    padded_grid = jnp.pad(state.map, (MAX_OBS_DIM + 2, MAX_OBS_DIM + 2), constant_values=BlockType.OUT_OF_BOUNDS.value)
-    tl_corner = state.player_position - obs_dim_array // 2 + MAX_OBS_DIM + 2
-    map_view = jax.lax.dynamic_slice(padded_grid, tl_corner, OBS_DIM)
+    # --- 2. Подготовка мобов ---
+    mob_map = np.zeros((H, W), dtype=np.int32) - 1 # -1 means no mob
+    
+    def add_mobs(mobs, idx):
+        if not hasattr(mobs, 'position'): return
+        pos = np.asarray(mobs.position)
+        mask = np.asarray(mobs.mask)
+        local_pos = pos - state.player_position + np.array([H // 2, W // 2])
+        
+        for i in range(len(mask)):
+            if mask[i]:
+                lx, ly = local_pos[i]
+                if 0 <= lx < H and 0 <= ly < W:
+                    mob_map[int(lx), int(ly)] = idx
 
-    points_of_interest = []
-    px, py = OBS_DIM[0] // 2, OBS_DIM[1] // 2
+    add_mobs(state.zombies, 0)
+    add_mobs(state.cows, 1)
+    add_mobs(state.skeletons, 2)
+    add_mobs(state.arrows, 3)
 
-    for x in range(OBS_DIM[0]):
-        for y in range(OBS_DIM[1]):
-            if x == px and y == py:
-                continue
+    # --- 3. Отрисовка карты ---
+    ascii_output += "+" + "-" * (W * 2 + 1) + "+\n"
+    
+    visible_blocks = set()
+    current_player_char = "@" 
 
-            block_val = map_view[x, y]
-            # ИСПРАВЛЕНИЕ 1: Преобразуем JAX массив в int перед проверкой
-            if int(block_val) not in BORING_BLOCKS:
-                points_of_interest.append(
-                    {
-                        "name": BlockType(int(block_val)).name.title().replace("_", " "),
-                        "distance": abs(x - px) + abs(y - py),
-                        "rel_x": x - px,
-                        "rel_y": y - py,
-                    }
-                )
+    for x in range(H):
+        row_str = "| "
+        for y in range(W):
+            char_to_draw = " "
+            
+            # --- ИГРОК ---
+            if x == H // 2 and y == W // 2:
+                try:
+                    p_dir = int(state.player_direction)
+                    if 0 <= p_dir < len(PLAYER_SYMBOLS):
+                        char_to_draw = PLAYER_SYMBOLS[p_dir]
+                    else:
+                        char_to_draw = "@"
+                except:
+                    char_to_draw = "@"
+                current_player_char = char_to_draw
+            
+            # --- МОБЫ ---
+            elif mob_map[x, y] != -1:
+                char_to_draw = MOB_SYMBOLS[mob_map[x, y]]
+            
+            # --- БЛОКИ ---
+            else:
+                val = int(map_view[x, y])
+                visible_blocks.add(val)
+                char_to_draw, _ = get_block_info(val)
+            
+            row_str += char_to_draw + " "
+        ascii_output += row_str + "|\n"
+    
+    ascii_output += "+" + "-" * (W * 2 + 1) + "+\n"
 
-    points_of_interest.sort(key=lambda p: p["distance"])
+    # --- 4. Статус игрока (Stats) ---
+    def get_val(x):
+        return x.item() if hasattr(x, 'item') else x
 
-    obs_parts = []
-    # ИСПРАВЛЕНИЕ 2: Преобразуем JAX массив в int, а затем в str для ключа словаря
-    direction = int(state.player_direction)
-    direction_name = ACTION_TO_DIRECTION[str(direction)]
+    # Список полей статистики
+    stat_fields = ['player_health', 'player_food', 'player_drink', 'player_energy', 'player_mana']
+    fallback_fields = ['health', 'food', 'drink', 'energy', 'mana'] 
+    
+    stats_output = []
+    
+    # Сбор статов
+    all_fields_to_check = stat_fields + fallback_fields
+    checked_fields = set()
 
-    player_block = BlockType(int(map_view[px, py])).name.lower()
-    obs_parts.append(f"CURRENT STATUS:\nYou are standing on {player_block}. You are facing {direction_name}.")
+    for field in all_fields_to_check:
+        if hasattr(state, field) and field not in checked_fields:
+            val = get_val(getattr(state, field))
+            display_name = field.replace("player_", "").title()
+            stats_output.append(f"{display_name}: {int(val)}")
+            checked_fields.add(field)
 
-    front_x, front_y = px, py
-    if direction == 3:
-        front_x -= 1
-    elif direction == 4:
-        front_x += 1
-    elif direction == 1:
-        front_y -= 1
-    elif direction == 2:
-        front_y += 1
+    if stats_output:
+        ascii_output += "[STATS] " + " | ".join(stats_output) + "\n"
 
-    block_in_front_val = map_view[front_x, front_y]
-    # ИСПРАВЛЕНИЕ 3: Та же проблема, что и в первом исправлении
-    if int(block_in_front_val) not in BORING_BLOCKS:
-        block_name = BlockType(int(block_in_front_val)).name.title()
-        obs_parts.append(f"DIRECTLY IN FRONT OF YOU:\nThere is a **{block_name}** you can interact with.")
-
-    if points_of_interest:
-        obs_parts.append("NEARBY OBJECTS (Closest First):")
-        for target in points_of_interest[:max_targets]:
-            rx, ry = target["rel_x"], target["rel_y"]
-            if direction == 4:
-                rx, ry = -rx, -ry
-            elif direction == 1:
-                rx, ry = ry, -rx
-            elif direction == 2:
-                rx, ry = -ry, rx
-
-            direction_text = get_detailed_direction_text(rx, -ry)
-            obs_parts.append(f"- **{target['name']}**: is {direction_text} ({target['distance']} steps away).")
-
-    obs_parts.append("ACTION HELPER:")
-    if direction == 3:
-        obs_parts.append("To move FORWARD use UP, to move RIGHT use RIGHT, to move LEFT use LEFT.")
-    elif direction == 2:
-        obs_parts.append("To move FORWARD use RIGHT, to move RIGHT use DOWN, to move LEFT use UP.")
-    elif direction == 4:
-        obs_parts.append("To move FORWARD use DOWN, to move RIGHT use LEFT, to move LEFT use RIGHT.")
-    elif direction == 1:
-        obs_parts.append("To move FORWARD use LEFT, to move RIGHT use UP, to move LEFT use DOWN.")
-
-    inventory_items = []
+    # --- 5. Инвентарь (Items) ---
+    inv_output = []
+    
     for field in state.inventory.__class__.__dataclass_fields__:
-        value = getattr(state.inventory, field)
-        # ИСПРАВЛЕНИЕ 4: Преобразуем JAX массив в int перед сравнением и форматированием
-        if int(value) > 0:
-            inventory_items.append(f"{field.replace('_', ' ').title()}: {int(value)}")
-    inventory_str = "; ".join(inventory_items) if inventory_items else "Empty"
-    obs_parts.append(f"INVENTORY:\n{inventory_str}")
+        # Игнорируем то, что уже в статах
+        if field in checked_fields:
+            continue
+            
+        val = get_val(getattr(state.inventory, field))
+        if val > 0:
+            name = field.replace("_", " ").title()
+            inv_output.append(f"{name}: {int(val)}")
 
-    return "\n\n".join(obs_parts)
+    if inv_output:
+        ascii_output += "[ITEMS]\n"
+        chunk_size = 4
+        for i in range(0, len(inv_output), chunk_size):
+            ascii_output += "  " + ", ".join(inv_output[i:i+chunk_size]) + "\n"
+    else:
+        ascii_output += "[ITEMS] (Empty)\n"
+
+    # --- 6. Легенда ---
+    legend_items = []
+    
+    # Игрок и Стрела
+    legend_items.append(f"'{current_player_char}': You")
+    
+    # Добавляем в легенду мобов, если они есть на экране
+    if 3 in mob_map: # Arrow
+        legend_items.append(f"'{MOB_SYMBOLS[3]}': Arrow")
+    if 0 in mob_map: legend_items.append("Z: Zombie")
+    if 1 in mob_map: legend_items.append("C: Cow")
+    if 2 in mob_map: legend_items.append("S: Skeleton")
+
+    for val in sorted(list(visible_blocks)):
+        char, name = get_block_info(val)
+        if name != "out_of_bounds":
+            legend_items.append(f"'{char}': {name}")
+    
+    ascii_output += "-" * 20 + "\n"
+    ascii_output += "Legend: " + ", ".join(legend_items)
+    
+    return ascii_output
+
+
+
+def add_grid_overlay(image_array, block_pixel_size, grid_color=(255, 255, 255, 200), line_width=1):
+    """
+    Добавляет сетку на изображение для улучшения понимания пространственной информации.
+    
+    Args:
+        image_array: numpy array изображения (H, W, 3) или (H, W, 4)
+        block_pixel_size: размер блока в пикселях (для выравнивания сетки)
+        grid_color: цвет сетки в формате RGBA (по умолчанию полупрозрачный белый)
+        line_width: толщина линий сетки
+    
+    Returns:
+        numpy array изображения с наложенной сеткой
+    """
+    import numpy as np
+    
+    # Конвертируем в numpy array если нужно
+    if not isinstance(image_array, np.ndarray):
+        image_array = np.array(image_array)
+    
+    # Убеждаемся, что изображение в формате uint8
+    if image_array.dtype != np.uint8:
+        if image_array.max() <= 1.0:
+            image_array = (image_array * 255).astype(np.uint8)
+        else:
+            image_array = image_array.astype(np.uint8)
+    
+    # Создаем копию изображения
+    h, w = image_array.shape[:2]
+    result = image_array.copy().astype(np.float32)
+    
+    # Извлекаем цвет и альфа из grid_color
+    if len(grid_color) == 4:
+        grid_rgb = np.array(grid_color[:3], dtype=np.float32)
+        alpha = grid_color[3] / 255.0
+    else:
+        grid_rgb = np.array(grid_color[:3], dtype=np.float32)
+        alpha = 0.5  # По умолчанию 50% прозрачность
+    
+    # Создаем маску для линий сетки
+    grid_mask = np.zeros((h, w), dtype=bool)
+    
+    # Отмечаем вертикальные линии
+    for x in range(0, w, block_pixel_size):
+        x_start = max(0, x - line_width // 2)
+        x_end = min(w, x + line_width // 2 + 1)
+        grid_mask[:-128, x_start:x_end] = True
+    
+    # Отмечаем горизонтальные линии
+    for y in range(0, h - 128, block_pixel_size):
+        y_start = max(0, y - line_width // 2)
+        y_end = min(h, y + line_width // 2 + 1)
+        grid_mask[y_start:y_end, :] = True
+    
+    # Применяем альфа-блендинг только к пикселям на линиях сетки
+    for c in range(3):  # Для каждого RGB канала
+        result[:, :, c] = np.where(
+            grid_mask,
+            (1 - alpha) * result[:, :, c] + alpha * grid_rgb[c],
+            result[:, :, c]
+        )
+    
+    return result.astype(np.uint8)

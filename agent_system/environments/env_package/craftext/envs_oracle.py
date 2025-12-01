@@ -10,7 +10,7 @@ import jax.tree_util
 import numpy as np
 import ray
 from typing import Optional, Dict, Any
-from .utility import render_craftax_text, render_craftax_text_relative
+from .utility import render_craftax_text
 from craftax.craftax_classic.renderer import render_craftax_pixels as render_classic
 from craftax.craftax.constants import BLOCK_PIXEL_SIZE_HUMAN
 from .oracle import CraftextOracle
