@@ -34,3 +34,47 @@ Now it's your turn to take an action.
 You should first reason step-by-step about the current situation. This reasoning process MUST be enclosed within <think> </think> tags. 
 Once you've finished your reasoning, you should choose an admissible action for current step and present it within <action> </action> tags.
 """
+
+# Subtask-aware templates for subtask-based GiGPO
+VALID_SUBTASKS_STR = "find_object, grab_object, find_tool, operate_tool, find_destination, place_object"
+
+ALFWORLD_SUBTASK_TEMPLATE_NO_HIS = """
+You are an expert agent operating in the ALFRED Embodied Environment.
+Your current observation is: {current_observation}
+Your admissible actions of the current situation are: [{admissible_actions}].
+
+**IMPORTANT:** For each action, you must:
+1. First, predict which subtask you are trying to complete at this moment
+2. Then, reason step-by-step about the current situation
+3. Finally, choose and execute an admissible action
+
+**Valid subtasks:** {valid_subtasks}
+
+**Response format:**
+<subtask>subtask_name</subtask>
+<think>your_reasoning_here</think>
+<action>your_action_here</action>
+
+Now it's your turn to take an action.
+"""
+
+ALFWORLD_SUBTASK_TEMPLATE = """
+You are an expert agent operating in the ALFRED Embodied Environment. Your task is to: {task_description}
+Prior to this step, you have already taken {step_count} step(s). Below are the most recent {history_length} observations and the corresponding actions you took: {action_history}
+You are now at step {current_step} and your current observation is: {current_observation}
+Your admissible actions of the current situation are: [{admissible_actions}].
+
+**IMPORTANT:** For each action, you must:
+1. First, predict which subtask you are trying to complete at this moment
+2. Then, reason step-by-step about the current situation
+3. Finally, choose and execute an admissible action
+
+**Valid subtasks:** {valid_subtasks}
+
+**Response format:**
+<subtask>subtask_name</subtask>
+<think>your_reasoning_here</think>
+<action>your_action_here</action>
+
+Now it's your turn to take an action.
+"""

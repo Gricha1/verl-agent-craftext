@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import os
+import re
 from collections import defaultdict
 from functools import partial
 from typing import Any, Dict, List, Tuple, Union
@@ -863,8 +864,20 @@ def make_envs(config):
         _val_envs = build_alfworld_envs(alf_config_path, config.env.seed + 1000, config.data.val_batch_size, 1, is_train=False, env_kwargs=env_kwargs, resources_per_worker=resources_per_worker)
         
         projection_f = partial(alfworld_projection)
-        envs = AlfWorldEnvironmentManager(_envs, projection_f, config)
-        val_envs = AlfWorldEnvironmentManager(_val_envs, projection_f, config)
+        
+        # Check if we should use subtask-based GiGPO
+        use_subtask_manager = config.env.get('use_subtask_gigpo', False)
+        
+        if use_subtask_manager:
+            # Import here to avoid circular import
+            from agent_system.environments.env_subtask_manager import AlfWorldSubtaskEnvironmentManager
+            # Use subtask-based environment manager
+            envs = AlfWorldSubtaskEnvironmentManager(_envs, projection_f, config)
+            val_envs = AlfWorldSubtaskEnvironmentManager(_val_envs, projection_f, config)
+        else:
+            # Use standard environment manager
+            envs = AlfWorldEnvironmentManager(_envs, projection_f, config)
+            val_envs = AlfWorldEnvironmentManager(_val_envs, projection_f, config)
         return envs, val_envs
     elif "sokoban" in config.env.env_name.lower():
         from agent_system.environments.env_package.sokoban import build_sokoban_envs, sokoban_projection
@@ -994,7 +1007,7 @@ def make_envs(config):
         
         # 5. Выбираем менеджер: используем CraftextSubtaskEnvironmentManager если указано в конфиге
         # Import here to avoid circular import
-        from agent_system.environments.craftext_subtask_manager import CraftextSubtaskEnvironmentManager
+        from agent_system.environments.env_subtask_manager import CraftextSubtaskEnvironmentManager
         
         use_subtask_manager = config.env.get('use_subtask_gigpo', False)
         
