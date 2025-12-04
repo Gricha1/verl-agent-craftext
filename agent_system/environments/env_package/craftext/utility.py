@@ -1,111 +1,19 @@
 import jax
 import jax.numpy as jnp
-from craftax.craftax.constants import MAX_OBS_DIM
+from craftax.craftax.constants import MAX_OBS_DIM, BLOCK_PIXEL_SIZE_HUMAN
 from craftax.craftax_classic.constants import OBS_DIM, BlockType
+# from craftax.craftax.renderer import render
+from craftax.craftax_classic.renderer import render_craftax_pixels as render_classic
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+import textwrap
+from .projection import ACTION_TO_TEXT
 
 ACTION_TO_DIRECTION = {"1": "Left", "2": "Right", "3": "Up", "4": "Down"}
 
-# def render_craftax_text(state) -> str:
-#     text_obs = ""
-#     obs_dim_array = jnp.array([OBS_DIM[0], OBS_DIM[1]], dtype=jnp.int32)
-
-#     padded_grid = jnp.pad(
-#         state.map,
-#         (MAX_OBS_DIM + 2, MAX_OBS_DIM + 2),
-#         constant_values=BlockType.OUT_OF_BOUNDS.value,
-#     )
-
-#     tl_corner = state.player_position - obs_dim_array // 2 + MAX_OBS_DIM + 2
-#     map_view = jax.lax.dynamic_slice(padded_grid, tl_corner, OBS_DIM)
-
-#     def block_name(val):
-#         try:
-#             return BlockType(int(val)).name.lower()
-#         except Exception:
-#             return "unknown"
-
-#     mob_map = jnp.zeros((*OBS_DIM, 4), dtype=jnp.uint8)  # 4 types of mobs
-
-    
-#     def _add_mob_to_map(carry, mob_index):
-#         mob_map, mobs, mob_type_index = carry
-
-#         local_position = mobs.position[mob_index] - state.player_position + jnp.array([OBS_DIM[0], OBS_DIM[1]]) // 2
-#         on_screen = jnp.logical_and(local_position >= 0, local_position < jnp.array([OBS_DIM[0], OBS_DIM[1]])).all()
-#         on_screen *= mobs.mask[mob_index]
-
-#         mob_map = mob_map.at[local_position[0], local_position[1], mob_type_index].set(on_screen.astype(jnp.uint8))
-
-#         return (mob_map, mobs, mob_type_index), None
-
-#     (mob_map, _, _), _ = jax.lax.scan(
-#         _add_mob_to_map,
-#         (mob_map, state.zombies, 0),
-#         jnp.arange(state.zombies.mask.shape[0]),
-#     )
-#     (mob_map, _, _), _ = jax.lax.scan(_add_mob_to_map, (mob_map, state.cows, 1), jnp.arange(state.cows.mask.shape[0]))
-#     (mob_map, _, _), _ = jax.lax.scan(
-#         _add_mob_to_map,
-#         (mob_map, state.skeletons, 2),
-#         jnp.arange(state.skeletons.mask.shape[0]),
-#     )
-#     (mob_map, _, _), _ = jax.lax.scan(
-#         _add_mob_to_map,
-#         (mob_map, state.arrows, 3),
-#         jnp.arange(state.arrows.mask.shape[0]),
-#     )
-
-#     def mob_id_to_name(id):
-#         if id == 0:
-#             return "zombie"
-#         elif id == 1:
-#             return "cow"
-#         elif id == 2:
-#             return "skeleton"
-#         elif id == 3:
-#             return "arrow"
-
-#     text_obs += "Map: \n"
-
-#     table = ""
-#     for x in range(OBS_DIM[0]):
-#         row = ""
-#         for y in range(OBS_DIM[1]):
-#             tx, ty = x - OBS_DIM[0] // 2, y - OBS_DIM[1] // 2
-
-#             if tx == 0 and ty == 0:
-#                 description = f"agent {(y - OBS_DIM[1] // 2)}, {-1 * (x - OBS_DIM[0] // 2)}"
-#             elif mob_map[x, y].max() > 0.5:
-#                 mob_name = mob_id_to_name(mob_map[x, y].argmax())
-#                 description = f"{mob_name} {(y - OBS_DIM[1] // 2)}, {-1 * (x - OBS_DIM[0] // 2)}"
-#             else:
-#                 block = block_name(map_view[x, y])
-#                 description = f"{block} {(y - OBS_DIM[1] // 2)}, {-1 * (x - OBS_DIM[0] // 2)}"
-
-#             row += description + " "
-#         table += row
-#         table += "\n"
-
-#     # text_obs += "\n" + tabulate(table, tablefmt="github") + "\n\n"
-#     text_obs += str(table) + "\n"
-#     # text_obs += "To gather a sapling execute 'do' action" + "\n"
-
-#     text_obs += "Inventory: "
-#     for field in state.inventory.__class__.__dataclass_fields__:
-#         value = getattr(state.inventory, field)
-#         formatted_name = field.replace("_", " ").title()
-
-#         text_obs += f"{formatted_name}: {value}; "
-
-#     text_obs += "\n \n" + "Player Direction: "
-
-#     direction = ACTION_TO_DIRECTION[str(state.player_direction)]
-#     text_obs += direction
-
-#     return text_obs
 
 def render_craftax_text(state) -> str:
+
     """
     CPU-only, numpy-based renderer. Input `state` must be host-converted (e.g. via jax.device_get).
     """
@@ -471,3 +379,593 @@ def add_grid_overlay(image_array, block_pixel_size, grid_color=(255, 255, 255, 2
         )
     
     return result.astype(np.uint8)
+
+
+
+
+class VisualizerWithLLM:
+    """
+    Класс для визуализации эпизода Craftax с LLM агентом.
+    Показывает промпт/вывод модели, верхнюю информационную панель и нижнюю панель распределения политики.
+    """
+
+    def __init__(
+        self,
+        env,
+        env_params,
+        pixel_render_size=6,  # Увеличено чтобы игра занимала минимум 1/3
+        llm_panel_width=800,  # Ширина панели с текстом
+        banner_height=80,
+        font_size=18,  # Увеличен размер шрифта
+        policy_panel_height=250,
+    ):
+        self.env = env
+        self.env_params = env_params
+        self.pixel_render_size = pixel_render_size
+        self.llm_panel_width = llm_panel_width
+        self.banner_height = banner_height
+        self.policy_panel_height = policy_panel_height
+        self.frames = []
+
+        # env_render_func = render if self.env.environment_key == 1 else render_classic
+        env_render_func = render_classic
+        self._render_game_fn = jax.jit(env_render_func, static_argnums=(1,))
+
+        self.font_size = font_size
+        # Пробуем загрузить шрифт разными способами
+        self.font = None
+        
+        # Список возможных путей к шрифтам (в порядке приоритета)
+        font_paths = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",  # Fedora/RHEL
+            "/System/Library/Fonts/Helvetica.ttc",  # macOS
+            "/Windows/Fonts/arial.ttf",  # Windows
+            "arial.ttf",
+        ]
+        
+        # Пробуем найти доступный шрифт
+        for font_path in font_paths:
+            try:
+                self.font = ImageFont.truetype(font_path, font_size)
+                print(f"Loaded font from: {font_path} (size: {font_size})")
+                break
+            except (IOError, OSError, TypeError):
+                continue
+        
+        # Если не нашли системный шрифт, пытаемся найти через fontconfig (Linux)
+        if self.font is None:
+            try:
+                import subprocess
+                # Пробуем найти DejaVu через fc-list
+                result = subprocess.run(
+                    ['fc-list', ':', 'family', 'DejaVu'],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
+                if result.returncode == 0 and result.stdout:
+                    # Пробуем найти файл шрифта
+                    font_file_result = subprocess.run(
+                        ['fc-list', 'DejaVu Sans', 'file'],
+                        capture_output=True,
+                        text=True,
+                        timeout=2
+                    )
+                    if font_file_result.returncode == 0:
+                        font_file = font_file_result.stdout.strip().split('\n')[0].split(':')[-1].strip()
+                        try:
+                            self.font = ImageFont.truetype(font_file, font_size)
+                            print(f"Loaded font via fontconfig: {font_file} (size: {font_size})")
+                        except:
+                            pass
+            except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+                pass
+        
+        # Если все еще нет шрифта, используем default (но размер не будет применен)
+        if self.font is None:
+            try:
+                self.font = ImageFont.load_default()
+                # Для default font пытаемся создать шрифт с размером через другой способ
+                # Пробуем создать временный шрифт для проверки размера
+                try:
+                    # Пробуем создать шрифт с использованием ImageFont.FreeTypeFont
+                    # Но для этого нужен файл шрифта, поэтому просто используем default
+                    pass
+                except:
+                    pass
+                print(f"Warning: Using default font (size {font_size} may not apply). "
+                      f"Try installing DejaVu Sans: sudo apt-get install fonts-dejavu")
+            except Exception as e:
+                print(f"Error: Could not load any font! {e}")
+                self.font = None
+        
+        # Проверяем, что шрифт имеет размер
+        if self.font is not None:
+            try:
+                # Проверяем, имеет ли шрифт атрибут size
+                if hasattr(self.font, 'size'):
+                    actual_size = self.font.size
+                    if actual_size != font_size:
+                        print(f"Warning: Font size mismatch. Requested: {font_size}, Actual: {actual_size}")
+                else:
+                    print(f"Warning: Font does not support size attribute. Requested size: {font_size}")
+            except:
+                pass
+        
+        # Загружаем моноширинный шрифт для структурированных данных
+        self.mono_font = None
+        mono_font_paths = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+            "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+            "/usr/share/fonts/dejavu-sans-fonts/DejaVuSansMono.ttf",  # Fedora/RHEL
+            "/System/Library/Fonts/Menlo.ttc",  # macOS
+            "/Windows/Fonts/cour.ttf",  # Windows Courier
+            "/Windows/Fonts/consola.ttf",  # Windows Consolas
+        ]
+        
+        for mono_font_path in mono_font_paths:
+            try:
+                self.mono_font = ImageFont.truetype(mono_font_path, font_size)
+                print(f"Loaded mono font from: {mono_font_path} (size: {font_size})")
+                break
+            except (IOError, OSError, TypeError):
+                continue
+        
+        # Если не нашли моноширинный шрифт, используем обычный
+        if self.mono_font is None:
+            self.mono_font = self.font
+            print(f"Warning: Mono font not found, using regular font for structured data")
+
+    def _render_game_view(self, env_state):
+        """Рендерит игровое поле и возвращает его как PIL Image."""
+        pixels = self._render_game_fn(env_state, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
+        pixels = jnp.repeat(pixels, repeats=self.pixel_render_size, axis=0)
+        pixels = jnp.repeat(pixels, repeats=self.pixel_render_size, axis=1)
+        return Image.fromarray(np.array(pixels).astype(np.uint8))
+
+    def _create_llm_panel(self, prompt: str, model_output: str, height: int):
+        """Создает изображение панели с промптом и выводом модели."""
+        panel = Image.new("RGB", (self.llm_panel_width, height), "white")
+        draw = ImageDraw.Draw(panel)
+        
+        y_pos = 15
+        padding = 15
+        max_width = self.llm_panel_width - 2 * padding
+        
+        # Заголовок для промпта
+        try:
+            text_bbox = self.font.getbbox("PROMPT:")
+            header_height = text_bbox[3] - text_bbox[1]
+        except AttributeError:
+            header_height = self.font.size
+        
+        draw.text((padding, y_pos), "PROMPT:", font=self.font, fill=(100, 100, 200))
+        y_pos += header_height + 10
+        
+        # Промпт - обрабатываем многострочный текст с сохранением структуры
+        # Сначала разбиваем по переносам строк, затем обрабатываем каждую строку отдельно
+        prompt_paragraphs = prompt.split('\n')
+        
+        # Вычисляем ширину для переноса текста (в символах приблизительно)
+        # Для моноширинного шрифта (структурированные данные)
+        try:
+            if self.mono_font:
+                mono_char_width = self.mono_font.getbbox("M")[2] - self.mono_font.getbbox("M")[0]
+            else:
+                mono_char_width = self.font.getbbox("M")[2] - self.font.getbbox("M")[0]
+            if mono_char_width == 0:
+                mono_char_width = self.font_size // 2
+            wrap_chars_mono = int(max_width / mono_char_width)
+        except:
+            wrap_chars_mono = int(max_width / (self.font_size // 2))  # fallback
+        
+        # Для пропорционального шрифта (обычный текст)
+        # Используем среднюю ширину символов для более точного расчета
+        try:
+            # Вычисляем среднюю ширину символов в обычном шрифте
+            sample_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,!?"
+            total_width = 0
+            char_count = 0
+            for char in sample_chars:
+                try:
+                    bbox = self.font.getbbox(char)
+                    char_width = bbox[2] - bbox[0]
+                    if char_width > 0:
+                        total_width += char_width
+                        char_count += 1
+                except:
+                    pass
+            if char_count > 0:
+                avg_char_width = total_width / char_count
+            else:
+                avg_char_width = self.font_size // 2
+            # Учитываем, что пробелы обычно уже, добавляем небольшой коэффициент
+            wrap_chars_text = int(max_width / avg_char_width * 0.9)  # 0.9 для более консервативного переноса
+        except:
+            wrap_chars_text = int(max_width / (self.font_size // 2))  # fallback
+        
+        # Обрабатываем каждую строку отдельно, сохраняя информацию о том, является ли она структурированной
+        processed_lines = []  # (line, is_structured)
+        
+        # Определяем, находимся ли мы в блоке карты (для группировки структурированных строк)
+        in_map_block = False
+        
+        for paragraph in prompt_paragraphs:
+            if paragraph.strip() == "":
+                # Пустая строка - сохраняем как отдельную строку
+                # Если мы были в блоке карты, продолжаем считать следующие строки картой
+                processed_lines.append(("", False))
+                # Сбрасываем флаг блока карты при пустой строке (но можно продолжать если следующая строка структурированная)
+            else:
+                # Определяем, является ли строка структурированной
+                # Структурированные данные обычно содержат:
+                # - Множественные пробелы подряд
+                # - Начинаются с ключевых слов карты/таблицы
+                # - Содержат символы карты: . @ : ~ % c T w и т.д.
+                # - Содержат разделители типа +---+ или |---|
+                # - Содержат символы типа ":", "|", или форматирование типа таблицы
+                
+                # Символы, характерные для карты Craftax
+                map_chars = set('.@:~%cTwT#?*LPFBrgs')
+                has_map_chars = any(char in paragraph for char in map_chars)
+                has_separator = '+-' in paragraph or '---' in paragraph  # Разделители типа +---+
+                
+                # Проверяем паттерн строки карты: начинается с |, содержит пробелы и символы карты
+                looks_like_map_row = (
+                    paragraph.strip().startswith('|') and paragraph.strip().endswith('|') and
+                    (has_map_chars or paragraph.count(' ') > 5)
+                )
+                
+                is_structured = (
+                    in_map_block or  # Продолжаем блок карты
+                    looks_like_map_row or  # Строка выглядит как строка карты
+                    '  ' in paragraph or  # Множественные пробелы
+                    paragraph.strip().startswith(('Map:', 'Inventory:', 'Player Direction:', 'Legend:')) or
+                    any(keyword in paragraph.lower() for keyword in ['map:', 'inventory:', 'legend:', 'grass', 'stone', 'tree', 'agent', 'wood', 'sapling']) or
+                    '|' in paragraph or  # Табличное форматирование
+                    has_separator or  # Разделители
+                    (has_map_chars and ('|' in paragraph or paragraph.count(' ') > 3)) or  # Строки с символами карты и форматированием
+                    paragraph.count(':') > 0 and len(paragraph.split(':')) > 1  # Ключ-значение пары
+                )
+                
+                # Если строка начинается с "Map:", отмечаем что входим в блок карты
+                if 'map:' in paragraph.lower():
+                    in_map_block = True
+                
+                if is_structured:
+                    # Если мы в структурированном блоке, следующая строка тоже структурированная
+                    # (до следующей пустой строки или изменения типа контента)
+                    in_map_block = True
+                    
+                    # Для структурированных данных не делаем перенос по словам - сохраняем структуру
+                    # Если строка слишком длинная, разбиваем на части по wrap_chars_mono, но без добавления "..."
+                    if len(paragraph) > wrap_chars_mono:
+                        # Разбиваем длинную строку на несколько строк по wrap_chars_mono символов
+                        # Это сохранит структуру, но позволит отобразить весь контент
+                        start = 0
+                        while start < len(paragraph):
+                            end = start + wrap_chars_mono
+                            chunk = paragraph[start:end]
+                            processed_lines.append((chunk, True))
+                            start = end
+                    else:
+                        processed_lines.append((paragraph, True))
+                else:
+                    # Если строка не структурированная, сбрасываем флаг блока карты
+                    in_map_block = False
+                    # Для обычного текста используем textwrap с правильной шириной
+                    # Используем break_long_words=False чтобы не разрывать длинные слова в середине
+                    # и break_on_hyphens=True для переноса по дефисам
+                    wrapped = textwrap.wrap(
+                        paragraph, 
+                        width=wrap_chars_text,
+                        break_long_words=False,  # Не разрываем длинные слова
+                        break_on_hyphens=True,   # Разрешаем перенос по дефисам
+                        expand_tabs=False,       # Сохраняем табуляции как есть
+                        replace_whitespace=False # Сохраняем оригинальные пробелы где возможно
+                    )
+                    for wline in wrapped:
+                        processed_lines.append((wline, False))
+        
+        # Ограничиваем количество строк промпта
+        max_prompt_lines = min(len(processed_lines), height // (header_height + 5) // 3)
+        
+        # Рисуем строки, используя соответствующий шрифт
+        for line, is_structured in processed_lines[:max_prompt_lines]:
+            # Используем моноширинный шрифт для структурированных данных
+            font_to_use = self.mono_font if (is_structured and self.mono_font) else self.font
+            
+            draw.text((padding, y_pos), line, font=font_to_use, fill=(50, 50, 50))
+            try:
+                text_bbox = font_to_use.getbbox(line)
+                text_height = text_bbox[3] - text_bbox[1]
+            except AttributeError:
+                text_height = font_to_use.size if hasattr(font_to_use, 'size') else self.font_size
+            y_pos += text_height + 3
+        
+        if len(processed_lines) > max_prompt_lines:
+            draw.text((padding, y_pos), "...", font=self.font, fill=(100, 100, 100))
+            y_pos += header_height + 5
+        
+        # Разделитель
+        y_pos += 10
+        draw.line([padding, y_pos, self.llm_panel_width - padding, y_pos], fill=(200, 200, 200))
+        y_pos += 15
+        
+        # Заголовок для вывода модели
+        draw.text((padding, y_pos), "MODEL OUTPUT:", font=self.font, fill=(200, 100, 100))
+        y_pos += header_height + 10
+        
+        # Вывод модели
+        # Используем тот же расчет ширины для обычного текста (wrap_chars_text из промпта)
+        # Если wrap_chars_text не определен, вычисляем его здесь
+        try:
+            # Используем среднюю ширину символов для расчета
+            sample_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,!?"
+            total_width = 0
+            char_count = 0
+            for char in sample_chars:
+                try:
+                    bbox = self.font.getbbox(char)
+                    char_width = bbox[2] - bbox[0]
+                    if char_width > 0:
+                        total_width += char_width
+                        char_count += 1
+                except:
+                    pass
+            if char_count > 0:
+                avg_char_width = total_width / char_count
+                output_wrap_chars = int(max_width / avg_char_width * 0.9)
+            else:
+                output_wrap_chars = int(max_width / (self.font_size // 2))
+        except:
+            output_wrap_chars = int(max_width / (self.font_size // 2))
+        
+        output_lines = textwrap.wrap(
+            model_output, 
+            width=output_wrap_chars,
+            break_long_words=False,  # Не разрываем длинные слова
+            break_on_hyphens=True,   # Разрешаем перенос по дефисам
+            expand_tabs=False,       # Сохраняем табуляции как есть
+            replace_whitespace=False # Сохраняем оригинальные пробелы где возможно
+        )
+        # Ограничиваем количество строк вывода
+        max_output_lines = min(len(output_lines), (height - y_pos - 20) // (header_height + 5))
+        for line in output_lines[:max_output_lines]:
+            draw.text((padding, y_pos), line, font=self.font, fill=(50, 50, 50))
+            try:
+                text_bbox = self.font.getbbox(line)
+                text_height = text_bbox[3] - text_bbox[1]
+            except AttributeError:
+                text_height = self.font.size
+            y_pos += text_height + 3
+        if len(output_lines) > max_output_lines:
+            draw.text((padding, y_pos), "...", font=self.font, fill=(100, 100, 100))
+        
+        return panel
+
+    def _add_info_banner(self, image: Image.Image, text: str) -> Image.Image:
+        """Добавляет верхнюю информационную панель к изображению."""
+        img_with_banner = Image.new(
+            "RGB", (image.width, image.height + self.banner_height), "white"
+        )
+        img_with_banner.paste(image, (0, self.banner_height))
+
+        draw = ImageDraw.Draw(img_with_banner)
+
+        # Логика для поддержки ручных (\n) и автоматических переносов
+        try:
+            char_width = self.font.getbbox("A")[2] - self.font.getbbox("A")[0]
+            if char_width == 0: 
+                raise AttributeError
+            wrap_width = image.width // char_width
+        except (AttributeError, TypeError):
+            wrap_width = image.width // (self.font.size // 2)
+
+        # Разделяем текст по ручным переносам \n
+        manual_lines = text.split('\n')
+        
+        all_lines_to_render = []
+        # Каждую ручную строку дополнительно переносим автоматически
+        for manual_line in manual_lines:
+            wrapped_lines = textwrap.wrap(manual_line.strip(), width=wrap_width)
+            all_lines_to_render.extend(wrapped_lines)
+
+        # Отрисовываем все получившиеся строки
+        y_pos = 5
+        for line in all_lines_to_render:
+            draw.text((10, y_pos), line, font=self.font, fill=(0, 0, 0))
+            try:
+                text_bbox = self.font.getbbox(line)
+                text_height = text_bbox[3] - text_bbox[1]
+            except AttributeError:
+                text_height = self.font.size
+            y_pos += text_height + 3
+            
+        return img_with_banner
+    
+    def _create_policy_panel(self, policy_distribution, width):
+        """Создает изображение панели с гистограммой распределения действий."""
+        panel = Image.new("RGB", (width, self.policy_panel_height), "white")
+        draw = ImageDraw.Draw(panel)
+        policy_probs = np.asarray(policy_distribution).flatten()
+        num_actions = len(policy_probs)
+        if num_actions == 0: 
+            return panel
+
+        padding = 20
+        top_padding = 30
+        bottom_padding = 130
+        chart_area_height = self.policy_panel_height - top_padding - bottom_padding
+        if chart_area_height <= 0: 
+            chart_area_height = 1
+
+        bar_spacing = 2
+        bar_width = (width - padding * 2 - bar_spacing * (num_actions - 1)) / num_actions
+        
+        for i, prob in enumerate(policy_probs):
+            bar_height = prob * chart_area_height
+            x0, y0 = padding + i * (bar_width + bar_spacing), self.policy_panel_height - bottom_padding - bar_height
+            x1, y1 = x0 + bar_width, self.policy_panel_height - bottom_padding
+            draw.rectangle([x0, y0, x1, y1], fill="cornflowerblue")
+            
+            # Надпись сверху (вероятность)
+            prob_text = f"{prob:.2f}"
+            try:
+                text_bbox = self.font.getbbox(prob_text)
+                text_width = text_bbox[2] - text_bbox[0]
+            except AttributeError:
+                text_width = self.font.getlength(prob_text)
+            
+            draw.text((x0 + (bar_width - text_width) / 2, y0 - 15), prob_text, font=self.font, fill="black")
+
+            # Надпись снизу (название действия)
+            action_text = ACTION_TO_TEXT[i] if i < len(ACTION_TO_TEXT) else f"Action{i}"
+            
+            try:
+                bbox = self.font.getbbox(action_text)
+                text_width, text_height = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            except AttributeError:
+                size = self.font.getsize(action_text)
+                bbox = (0, 0, size[0], size[1])
+                text_width, text_height = size
+            
+            text_img = Image.new('RGBA', (text_width, text_height), (255, 255, 255, 0))
+            text_draw = ImageDraw.Draw(text_img)
+            
+            # Рисуем текст со смещением, чтобы он не обрезался
+            text_draw.text((-bbox[0], -bbox[1]), action_text, font=self.font, fill="black")
+            
+            rotated_text = text_img.rotate(60, expand=True, resample=Image.BICUBIC)
+            
+            bar_center_x = x0 + bar_width / 2
+            paste_x = int(bar_center_x - rotated_text.width / 2)
+            paste_y = int(y1 + 5)
+
+            panel.paste(rotated_text, (paste_x, paste_y), rotated_text)
+
+        draw.line([padding, y1, width - padding, y1], fill="black")
+        return panel
+
+    def render_step(
+        self,
+        env_state,
+        action,
+        prompt: str,
+        model_output: str,
+        step_num: int,
+        reward: float,
+        instruction: str,
+        success_rate: float = 0.0,
+        instruction_done: float = 0.0,
+        policy_distribution=None,
+        value: float = None,
+        action_text: str = None,
+        is_action_valid: bool = None,
+    ):
+        """
+        Рендерит полный кадр (игра + панель LLM + инфо-баннер + гистограмма).
+        
+        Args:
+            env_state: Состояние среды
+            action: ID действия (int)
+            prompt: Промпт, который был отправлен модели
+            model_output: Полный вывод модели
+            step_num: Номер шага
+            reward: Награда за шаг
+            instruction: Инструкция/задача
+            success_rate: Процент успешности (опционально)
+            instruction_done: Прогресс выполнения инструкции (опционально)
+            policy_distribution: Распределение вероятностей действий (опционально)
+            value: Значение value функции (опционально)
+            action_text: Текстовое представление действия (если None, берется из ACTION_TO_TEXT)
+            is_action_valid: Валидность действия (опционально)
+        """
+        # 1. Рендерим игру и панель LLM
+        game_img = self._render_game_view(env_state)
+        llm_panel = self._create_llm_panel(prompt, model_output, game_img.height)
+
+        # 2. Убеждаемся, что игра занимает минимум 1/3 от общей ширины
+        # Вычисляем минимальную ширину игры (1/3 от общей ширины с учетом llm_panel)
+        # Если llm_panel_width = X, то игра должна быть минимум X/2 (чтобы игра была 1/3 от total = X + X/2 = 1.5X)
+        min_game_width = llm_panel.width / 2
+        
+        # Если игра меньше минимальной ширины, масштабируем её
+        # Но используем NEAREST для пиксельной графики (без размытия)
+        if game_img.width < min_game_width:
+            scale_factor = min_game_width / game_img.width
+            new_game_width = int(game_img.width * scale_factor)
+            new_game_height = int(game_img.height * scale_factor)
+            # Используем NEAREST для пиксельной графики - без размытия
+            game_img = game_img.resize((new_game_width, new_game_height), Image.Resampling.NEAREST)
+            # Обновляем высоту llm_panel под новую высоту игры
+            llm_panel = self._create_llm_panel(prompt, model_output, game_img.height)
+
+        # 3. Объединяем их горизонтально
+        combined_width = game_img.width + llm_panel.width
+        combined_img = Image.new("RGB", (combined_width, game_img.height))
+        combined_img.paste(game_img, (0, 0))
+        combined_img.paste(llm_panel, (game_img.width, 0))
+        
+        # 3. Формируем текст для баннера
+        action_display = action_text if action_text else (
+            ACTION_TO_TEXT[action] if isinstance(action, int) and action < len(ACTION_TO_TEXT) 
+            else str(action)
+        )
+        
+        valid_text = ""
+        if is_action_valid is not None:
+            valid_text = f" | Action Valid: {is_action_valid}"
+        
+        value_text = ""
+        if value is not None:
+            value_text = f" | Value: {value:.4f}"
+        
+        raw_info_text = (
+            f"Step: {step_num} | Reward: {reward:.4f} | "
+            f"Instruction Done: {instruction_done:.2f} | Success Rate: {success_rate:.2f}\n"
+            f"Instruction: {instruction}\n"
+            f"Action: {action_display}{valid_text}{value_text}"
+        )
+
+        info_text = raw_info_text.replace("'", "'")
+        
+        # 4. Добавляем баннер к объединенному изображению
+        img_with_banner = self._add_info_banner(combined_img, info_text)
+
+        # 5. Создаем панель с гистограммой (если есть распределение политики)
+        if policy_distribution is not None:
+            policy_panel = self._create_policy_panel(policy_distribution, img_with_banner.width)
+            
+            # 6. Создаем финальный холст и объединяем все части
+            final_frame = Image.new(
+                "RGB",
+                (img_with_banner.width, img_with_banner.height + self.policy_panel_height),
+                "white"
+            )
+            final_frame.paste(img_with_banner, (0, 0))
+            final_frame.paste(policy_panel, (0, img_with_banner.height))
+        else:
+            final_frame = img_with_banner
+
+        self.frames.append(final_frame)
+
+    def save_gif(self, filename="episode.gif", duration=300):
+        """Сохраняет накопленные кадры в GIF файл."""
+        if not self.frames:
+            print("Нет кадров для сохранения.")
+            return
+        self.frames[0].save(
+            filename, save_all=True, append_images=self.frames[1:], duration=duration, loop=0
+        )
+        print(f"GIF сохранен в {filename}")
+
+    def clear_frames(self):
+        """Очищает список кадров для новой визуализации."""
+        self.frames = []

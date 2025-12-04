@@ -49,6 +49,14 @@ class CraftextWorker:
         self._jitted_reset = jax.jit(self.wrapper.reset, static_argnames=['env_params'])
         self._jitted_step = jax.jit(self.wrapper.step, static_argnames=['env_params'])
 
+        self.observation_type = env_kwargs.get('observation_type', 'ascii')
+        if self.observation_type == 'ascii':
+            self.render_func = render_craftax_ascii
+        elif self.observation_type == 'text':
+            self.render_func = render_craftax_text
+        else:
+            raise ValueError(f"Invalid observation type: {self.observation_type}")
+
     def _shape_or_type(self, x):
         # helper for debug: return shape if array-like, else type
         try:
@@ -93,7 +101,7 @@ class CraftextWorker:
         info = {}  # Создаем пустой info, так как info_jax может быть None
         info['won'] = done and reward > 0
         env_state_cpu = jax.device_get(new_state_jax.env_state)
-        text_render = render_craftax_ascii(env_state_cpu)
+        text_render = self.render_func(env_state_cpu)
         instruction_idx = new_state_jax.idx
         instruction_text = self.wrapper.scenario_handler.scenario_data.instructions_list[instruction_idx]
         info['text_render'] = text_render
@@ -133,7 +141,7 @@ class CraftextWorker:
         obs = np.asarray(obs_jax_rendered)
         info = {'won': False}
         env_state_cpu = jax.device_get(new_state_jax.env_state)
-        text_render = render_craftax_ascii(env_state_cpu)
+        text_render = self.render_func(env_state_cpu)
         instruction_text = self.wrapper.scenario_handler.scenario_data.instructions_list[scenario_idx]
         info['text_render'] = text_render
         info['instruction'] = instruction_text

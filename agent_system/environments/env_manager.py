@@ -981,7 +981,8 @@ def make_envs(config):
         # 2. Указываем параметры для среды Craftext (если нужны)
         env_kwargs = {
             'config_name': config.env.craftext_settings, # Пример
-            'encode_form': 'embedding'   # Пример
+            'encode_form': 'embedding',   # Пример
+            'observation_type': config.env.observation_type,
         }
         
         # 3. Создаем train и val среды
