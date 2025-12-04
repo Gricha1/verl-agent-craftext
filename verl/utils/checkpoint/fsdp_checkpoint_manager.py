@@ -117,14 +117,41 @@ class FSDPCheckpointManager(BaseCheckpointManager):
         with get_fsdp_state_ctx(self.model, StateDictType.SHARDED_STATE_DICT, state_dict_cfg, optim_cfg):
             self.model.load_state_dict(model_state_dict)
             if self.optimizer is not None:
-                self.optimizer.load_state_dict(optimizer_state_dict)
+                # Проверяем, можно ли загрузить optimizer state
+                # Если optimizer_state_dict пустой или несовместим, пропускаем загрузку
+                try:
+                    # Проверяем, что optimizer_state_dict не пустой и имеет правильную структуру
+                    if optimizer_state_dict is not None and isinstance(optimizer_state_dict, dict):
+                        # Проверяем, что есть param_groups и они не пустые
+                        if 'param_groups' in optimizer_state_dict and len(optimizer_state_dict['param_groups']) > 0:
+                            # Пробуем загрузить, но если не получится - пропускаем
+                            try:
+                                self.optimizer.load_state_dict(optimizer_state_dict)
+                                print(f"[rank-{self.rank}]: Successfully loaded optimizer state")
+                            except (ValueError, KeyError) as e:
+                                print(f"[rank-{self.rank}]: Failed to load optimizer state (incompatible structure), starting from scratch: {e}")
+                                # Не загружаем optimizer state, оптимизатор начнет с нуля
+                        else:
+                            print(f"[rank-{self.rank}]: Optimizer state is empty, starting from scratch")
+                    else:
+                        print(f"[rank-{self.rank}]: Optimizer state is None or invalid, starting from scratch")
+                except Exception as e:
+                    print(f"[rank-{self.rank}]: Error checking optimizer state, starting from scratch: {e}")
         # recover random state
         if "rng" in extra_state_dict:
             # 'rng' may not exist for backward compatibility
             self.load_rng_state(extra_state_dict["rng"])
 
         if self.lr_scheduler is not None:
-            self.lr_scheduler.load_state_dict(lr_scheduler_state_dict)
+            if lr_scheduler_state_dict is not None:
+                try:
+                    self.lr_scheduler.load_state_dict(lr_scheduler_state_dict)
+                    print(f"[rank-{self.rank}]: Successfully loaded lr_scheduler state")
+                except Exception as e:
+                    print(f"[rank-{self.rank}]: Failed to load lr_scheduler state, starting from scratch: {e}")
+                    # Не загружаем lr_scheduler state, он начнет с нуля
+            else:
+                print(f"[rank-{self.rank}]: lr_scheduler state is None, starting from scratch")
 
     def save_checkpoint(self, local_path: str, hdfs_path: str = None, global_step: int = 0, max_ckpt_to_keep=None):
         """

@@ -245,6 +245,30 @@ class SimpleAgent:
             # Для обычных LLM моделей
             return self._predict_llm(observation)
     
+    def predict_with_prompt(self, observation: str, image=None) -> dict:
+        """
+        Предсказывает действие на основе наблюдения и возвращает промпт и вывод модели.
+        
+        Args:
+            observation: Текстовое наблюдение из среды
+            image: Опциональное изображение (PIL Image или numpy array) для VLM моделей
+            
+        Returns:
+            Словарь с ключами:
+                - 'prompt': промпт, отправленный модели
+                - 'model_output': полный вывод модели
+                - 'action': извлеченное действие (строка)
+        """
+        if self.is_vlm:
+            # Для VLM моделей
+            if image is None:
+                raise ValueError("Для VLM моделей необходимо передать изображение")
+            
+            return self._predict_vlm_with_prompt(observation, image)
+        else:
+            # Для обычных LLM моделей
+            return self._predict_llm_with_prompt(observation)
+    
     def _predict_llm(self, observation: str) -> str:
         """Предсказание для LLM моделей."""
         # Формируем промпт используя chat template
@@ -282,6 +306,47 @@ class SimpleAgent:
         response = outputs[0].outputs[0].text.strip()
         
         return response
+    
+    def _predict_llm_with_prompt(self, observation: str) -> dict:
+        """Предсказание для LLM моделей с возвратом промпта."""
+        # Формируем промпт используя chat template
+        chat = [{"role": "user", "content": observation}]
+        prompt = self.tokenizer.apply_chat_template(
+            chat,
+            add_generation_prompt=True,
+            tokenize=False
+        )
+        
+        # Генерируем ответ
+        if self.use_lora and self.lora_path:
+            try:
+                from vllm.lora.request import LoRARequest
+                lora_request = LoRARequest(
+                    lora_name=self.lora_name,
+                    lora_int_id=1,
+                    lora_path=self.lora_path,
+                )
+                outputs = self.llm.generate(
+                    [prompt], 
+                    self.sampling_params,
+                    lora_request=lora_request
+                )
+            except Exception as e:
+                import traceback
+                print(f"Ошибка при генерации с LoRA: {e}")
+                print(traceback.format_exc())
+                print("Используем без LoRA")
+                outputs = self.llm.generate([prompt], self.sampling_params)
+        else:
+            outputs = self.llm.generate([prompt], self.sampling_params)
+        
+        response = outputs[0].outputs[0].text.strip()
+        
+        return {
+            'prompt': prompt,
+            'model_output': response,
+            'action': response
+        }
     
     def _predict_vlm(self, text_prompt: str, image) -> str:
         """Предсказание для VLM моделей."""
@@ -344,6 +409,73 @@ class SimpleAgent:
         )
         
         return output_text[0].strip()
+    
+    def _predict_vlm_with_prompt(self, text_prompt: str, image) -> dict:
+        """Предсказание для VLM моделей с возвратом промпта."""
+        import torch
+        from PIL import Image as PILImage
+        from verl.utils.dataset.vision_utils import process_image as process_image_util
+        
+        # Конвертируем изображение в PIL если нужно
+        if isinstance(image, np.ndarray):
+            image = PILImage.fromarray(image)
+        elif not isinstance(image, PILImage.Image):
+            raise ValueError(f"Неизвестный тип изображения: {type(image)}")
+        
+        # Обрабатываем изображение через утилиту (как в rl_dataset.py)
+        processed_image = process_image_util(image)
+        
+        # Формируем сообщения
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": processed_image},
+                    {"type": "text", "text": text_prompt},
+                ],
+            }
+        ]
+        
+        # Применяем chat template (как в rl_dataset.py)
+        raw_prompt = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        
+        # Обрабатываем через processor напрямую (как в rl_dataset.py)
+        inputs = self.processor(
+            text=[raw_prompt],
+            images=[processed_image],
+            return_tensors="pt",
+        )
+        
+        # Перемещаем на устройство
+        inputs = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+        
+        # Генерируем ответ
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **inputs,
+                max_new_tokens=self.max_response_length,
+                do_sample=self.do_sample,
+                temperature=self.temperature if self.do_sample else None,
+            )
+        
+        # Обрезаем сгенерированные токены (убираем входные)
+        input_ids = inputs['input_ids']
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):] for in_ids, out_ids in zip(input_ids, generated_ids)
+        ]
+        output_text = self.processor.batch_decode(
+            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )
+        
+        response = output_text[0].strip()
+        
+        return {
+            'prompt': raw_prompt,
+            'model_output': response,
+            'action': response
+        }
 
 
     

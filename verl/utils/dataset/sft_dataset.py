@@ -79,7 +79,7 @@ class SFTDataset(Dataset):
             import pandas
 
             while isinstance(ls, (pandas.core.series.Series, numpy.ndarray)) and len(ls) == 1:
-                ls = ls[0]
+                ls = ls.iloc[0] if isinstance(ls, pandas.core.series.Series) else ls[0]
             return ls
 
         dataframes = []
@@ -94,7 +94,16 @@ class SFTDataset(Dataset):
             # type(x[0]): numpy.ndarray
             # type(x[0][0]): dict
             try:
-                self.prompts = self.prompts.apply(lambda x: series_to_item(x)[key], axis=1)  # noqa: B023
+                def extract_key(x):
+                    item = series_to_item(x)
+                    # If item is a dict, extract the key; otherwise return as-is
+                    if isinstance(item, dict):
+                        return item[key]
+                    else:
+                        # If prompt_dict_keys is set but data is not a dict, return the item itself
+                        # This handles cases where the data structure doesn't match the config
+                        return item
+                self.prompts = self.prompts.apply(extract_key, axis=1)  # noqa: B023
             except Exception:
                 print(f"self.prompts={self.prompts}")
                 raise
@@ -104,7 +113,16 @@ class SFTDataset(Dataset):
         self.responses = self.dataframe[self.response_key]
         for key in self.response_dict_keys:
             try:
-                self.responses = self.responses.apply(lambda x: series_to_item(x)[key], axis=1)  # noqa: B023
+                def extract_key(x):
+                    item = series_to_item(x)
+                    # If item is a dict, extract the key; otherwise return as-is
+                    if isinstance(item, dict):
+                        return item[key]
+                    else:
+                        # If response_dict_keys is set but data is not a dict, return the item itself
+                        # This handles cases where the data structure doesn't match the config
+                        return item
+                self.responses = self.responses.apply(extract_key, axis=1)  # noqa: B023
             except Exception:
                 print(f"self.responses={self.responses}")
                 raise
