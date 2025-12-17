@@ -1,27 +1,21 @@
 #!/bin/bash
-set -x
+# set -x
 
-# -----------------------------------------------------------------------------
-# <--- ИЗМЕНЕНО: Добавляем критические переменные окружения, которые мы отладили
-# -----------------------------------------------------------------------------
-# Запрещаем JAX в дочерних процессах использовать GPU
 export JAX_PLATFORMS=cpu
-# (Опционально, но рекомендуется) Используем личную папку для временных файлов Ray
 export RAY_TEMP_DIR="/home/n.sorokin/ray_temp" 
-# -----------------------------------------------------------------------------
 
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0,1
 ENGINE=${1:-vllm}
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
 num_cpus_per_env_worker=0.01
 
-train_data_size=4
-val_data_size=4
-group_size=8
+train_data_size=2
+val_data_size=8
+group_size=2
 mode="mean_std_norm" # "mean_norm" or "mean_std_norm"
 
-export RUN_NAME="run_gigpo_qwen2.5_1.5b_achievements_wood_$(date +%Y%m%d-%H%M%S)"
+export RUN_NAME="run_gigpo_dialog_qwen2.5_1.5b_achievements_wood_$(date +%Y%m%d-%H%M%S)"
 
 # We only use data preparation to indicate the modality and the data size.
 python3 -m examples.data_preprocess.prepare \
@@ -72,10 +66,11 @@ python3 -m verl.trainer.main_ppo \
     algorithm.gigpo.mode=$mode \
     env.env_name='craftext/CraftextOracleEnv' \
     +env.craftext_settings='achievements_wood' \
+    +env.observation_type='ascii' \
     env.seed=0 \
-    env.max_steps=50 \
+    env.max_steps=25 \
     env.rollout.n=$group_size \
-    env.history_length=1 \
+    env.history_length=0 \
     env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
     trainer.critic_warmup=0 \
     trainer.logger=['console','tensorboard','comet'] \

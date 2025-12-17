@@ -3,8 +3,9 @@ Oracle agent для Craftext среды.
 Использует Qwen 2.5 1.5B для ответов на вопросы агента.
 Реализован как Ray remote actor для избежания хранения весов в каждом воркере.
 """
+import os
 import ray
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 try:
     import torch
@@ -41,7 +42,14 @@ You are an expert guide for the CrafText (based on Craftax) environment. Your go
 """
 
 
-@ray.remote(num_gpus=0.1 if torch and torch.cuda.is_available() else 0)
+# Оракул использует CPU по умолчанию, чтобы избежать конфликтов с trainer
+# Trainer требует 1 GPU, и если оракул тоже требует GPU, возникает конфликт ресурсов
+# 
+# Варианты:
+# - num_gpus=0 (CPU) - стабильно, но медленнее
+# - num_gpus=0.05 (часть GPU) - быстрее, но возможны конфликты
+# - num_gpus=1 (полный GPU) - нужен отдельный GPU (см. ORACLE_GPU_FIX_OPTIONS.md)
+@ray.remote(num_gpus=0.1)  # Использовать CPU для избежания конфликтов
 class CraftextOracle:
     """
     Ray remote actor для оракла.
@@ -65,20 +73,58 @@ class CraftextOracle:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model_name = model_name
         
+        # Диагностика GPU
+        if torch.cuda.is_available():
+            print(f"[Oracle] CUDA available: {torch.cuda.is_available()}")
+            print(f"[Oracle] CUDA device count: {torch.cuda.device_count()}")
+            print(f"[Oracle] Current CUDA device: {torch.cuda.current_device()}")
+            print(f"[Oracle] CUDA device name: {torch.cuda.get_device_name(0)}")
+            print(f"[Oracle] CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')}")
+        else:
+            print(f"[Oracle] WARNING: CUDA not available, will use CPU (very slow!)")
+        
         print(f"[Oracle] Loading model {model_name} on {self.device}...")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-            device_map="auto" if self.device == "cuda" else None,
-            trust_remote_code=True
-        )
         
-        if self.device == "cpu":
+        # Загружаем модель с правильной конфигурацией GPU
+        if self.device == "cuda":
+            # Используем device_map="auto" для автоматического распределения
+            # или явно указываем устройство
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=torch.float16,
+                device_map="auto",  # Автоматически разместит на доступном GPU
+                trust_remote_code=True
+            )
+            # Убеждаемся, что модель на GPU
+            if hasattr(self.model, 'device'):
+                if "cuda" not in str(next(self.model.parameters()).device):
+                    print(f"[Oracle] WARNING: Model not on CUDA, moving manually...")
+                    self.model = self.model.to("cuda")
+        else:
+            # CPU режим
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=torch.float32,
+                trust_remote_code=True
+            )
             self.model = self.model.to(self.device)
         
+        # Проверяем, где реально находится модель
+        if hasattr(self.model, 'device'):
+            actual_device = str(next(self.model.parameters()).device)
+        else:
+            actual_device = str(next(self.model.parameters()).device)
+        
         self.model.eval()
-        print(f"[Oracle] Model loaded successfully on {self.device}")
+        print(f"[Oracle] Model loaded successfully")
+        print(f"[Oracle] Model device (expected): {self.device}")
+        print(f"[Oracle] Model device (actual): {actual_device}")
+        
+        # Проверяем, что модель действительно на нужном устройстве
+        if self.device == "cuda" and "cuda" not in actual_device:
+            print(f"[Oracle] WARNING: Model expected on CUDA but is on {actual_device}!")
+            print(f"[Oracle] This will be VERY slow. Check GPU availability and memory.")
     
     def _get_extended_state_info(self, env_state: Any) -> str:
         """
@@ -442,6 +488,160 @@ class CraftextOracle:
             import traceback
             traceback.print_exc()
             return f"I encountered an error: {str(e)}"
+    
+    def answer_questions_batch(
+        self,
+        questions_data: List[Dict[str, Any]],
+        max_length: int = 256
+    ) -> List[str]:
+        """
+        Отвечает на батч вопросов одновременно, используя настоящую батч-генерацию.
+        Все вопросы обрабатываются одним вызовом model.generate(), что значительно быстрее.
+        
+        Args:
+            questions_data: Список словарей с ключами:
+                - 'question': str - вопрос от агента
+                - 'context': Optional[str] - опциональный контекст
+                - 'env_state': Optional[Any] - опциональное состояние среды
+            max_length: Максимальная длина ответа
+            
+        Returns:
+            Список ответов оракла (в том же порядке, что и вопросы)
+        """
+        import time
+        total_start = time.time()
+        
+        num_questions = len(questions_data)
+        if num_questions == 0:
+            return []
+        
+        print(f"[Oracle] Processing batch of {num_questions} questions with true batch generation...")
+        
+        # Шаг 1: Подготовка промптов для всех вопросов
+        prep_start = time.time()
+        prompts = []
+        
+        for i, q_data in enumerate(questions_data):
+            question = q_data.get('question', '')
+            context = q_data.get('context')
+            env_state = q_data.get('env_state')
+            
+            try:
+                # Получаем расширенную информацию о состоянии (если доступна)
+                extended_state = None
+                if env_state is not None:
+                    extended_state = self._get_extended_state_info(env_state)
+                
+                # Формируем промпт
+                prompt = self._build_prompt(question, context, extended_state)
+                prompts.append(prompt)
+                
+            except Exception as e:
+                print(f"[Oracle] Error preparing question {i+1}: {e}")
+                # Добавляем пустой промпт, чтобы сохранить порядок
+                prompts.append("")
+        
+        prep_time = time.time() - prep_start
+        
+        # Шаг 2: Токенизация батча (с padding)
+        tokenize_start = time.time()
+        try:
+            # Токенизируем все промпты одновременно с padding
+            inputs = self.tokenizer(
+                prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=2048,  # Максимальная длина промпта
+            ).to(self.device)
+            
+            # Сохраняем длины входных последовательностей для декодирования
+            input_lengths = [inputs['attention_mask'][i].sum().item() for i in range(len(prompts))]
+            
+        except Exception as e:
+            print(f"[Oracle] Error tokenizing batch: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback: обрабатываем по одному
+            return self._fallback_sequential_processing(questions_data, max_length)
+        
+        tokenize_time = time.time() - tokenize_start
+        
+        # Шаг 3: Генерация батча (один вызов для всех вопросов!)
+        gen_start = time.time()
+        
+        # Диагностика перед генерацией
+        actual_device = str(next(self.model.parameters()).device)
+        print(f"[Oracle] Generating batch on device: {actual_device}")
+        if torch.cuda.is_available():
+            print(f"[Oracle] GPU memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+            print(f"[Oracle] GPU memory reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+        
+        try:
+            with torch.no_grad():
+                # attention_mask уже включен в **inputs, не нужно передавать отдельно
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=max_length,
+                    do_sample=True,
+                    temperature=0.7,
+                    top_p=0.9,
+                    pad_token_id=self.tokenizer.eos_token_id
+                )
+        except Exception as e:
+            print(f"[Oracle] Error in batch generation: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback: обрабатываем по одному
+            return self._fallback_sequential_processing(questions_data, max_length)
+        
+        gen_time = time.time() - gen_start
+        
+        # Шаг 4: Декодирование всех ответов
+        decode_start = time.time()
+        answers = []
+        for i in range(num_questions):
+            try:
+                # Извлекаем только сгенерированную часть (после промпта)
+                input_length = input_lengths[i]
+                generated_tokens = outputs[i][input_length:]
+                
+                # Декодируем
+                response = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                answers.append(response.strip())
+            except Exception as e:
+                print(f"[Oracle] Error decoding answer {i+1}: {e}")
+                answers.append(f"I encountered an error: {str(e)}")
+        
+        decode_time = time.time() - decode_start
+        total_time = time.time() - total_start
+        
+        # Статистика
+        avg_time = total_time / num_questions
+        print(f"[Oracle] Batch completed: {num_questions} questions in {total_time:.2f}s "
+              f"(prep={prep_time:.2f}s, tokenize={tokenize_time:.2f}s, "
+              f"gen={gen_time:.2f}s, decode={decode_time:.2f}s, "
+              f"avg {avg_time:.3f}s/question, throughput: {num_questions/total_time:.2f} questions/s)")
+        
+        return answers
+    
+    def _fallback_sequential_processing(
+        self,
+        questions_data: List[Dict[str, Any]],
+        max_length: int = 256
+    ) -> List[str]:
+        """
+        Fallback метод: обрабатывает вопросы последовательно, если батч-обработка не удалась.
+        """
+        print(f"[Oracle] Falling back to sequential processing...")
+        answers = []
+        for q_data in questions_data:
+            question = q_data.get('question', '')
+            context = q_data.get('context')
+            env_state = q_data.get('env_state')
+            answer = self.answer_question(question, context, env_state, max_length)
+            answers.append(answer)
+        return answers
     
     def close(self):
         """Освобождает ресурсы."""

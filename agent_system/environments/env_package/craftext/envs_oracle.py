@@ -10,7 +10,7 @@ import jax.tree_util
 import numpy as np
 import ray
 from typing import Optional, Dict, Any
-from .utility import render_craftax_text
+from .utility import render_craftax_text, render_craftax_ascii
 from craftax.craftax_classic.renderer import render_craftax_pixels as render_classic
 from craftax.craftax.constants import BLOCK_PIXEL_SIZE_HUMAN
 from .oracle import CraftextOracle
@@ -54,6 +54,15 @@ class CraftextWorkerOracle:
         # Компиляция JIT-функций
         self._jitted_reset = jax.jit(self.wrapper.reset, static_argnames=['env_params'])
         self._jitted_step = jax.jit(self.wrapper.step, static_argnames=['env_params'])
+
+        # Выбор типа наблюдения (как в CraftextWorker)
+        self.observation_type = env_kwargs.get('observation_type', 'ascii')
+        if self.observation_type == 'ascii':
+            self.render_func = render_craftax_ascii
+        elif self.observation_type == 'text':
+            self.render_func = render_craftax_text
+        else:
+            raise ValueError(f"Invalid observation type: {self.observation_type}")
 
     def _shape_or_type(self, x):
         try:
@@ -107,48 +116,31 @@ class CraftextWorkerOracle:
         info = {}
         info['won'] = done and reward > 0
         env_state_cpu = jax.device_get(new_state_jax.env_state)
-        text_render = render_craftax_text(env_state_cpu)
+        text_render = self.render_func(env_state_cpu)  # Используем выбранную функцию рендеринга
         instruction_idx = new_state_jax.idx
         instruction_text = self.wrapper.scenario_handler.scenario_data.instructions_list[instruction_idx]
         info['text_render'] = text_render
         info['instruction'] = instruction_text
 
-        # Обрабатываем вопрос к оракулу (если есть)
+        # Сохраняем информацию о вопросе для последующей батч-обработки
+        # Вместо вызова оракула напрямую, сохраняем данные вопроса в info
         if question and self.oracle_handle is not None:
+            # Получаем контекст текущего состояния для оракла
+            context = f"Task: {instruction_text}\nCurrent state: {text_render}"
+            
+            # Получаем env_state на CPU для передачи в оракла (для расширенного состояния)
+            env_state_cpu_for_oracle = None
             try:
-                # Получаем контекст текущего состояния для оракла
-                context = f"Task: {instruction_text}\nCurrent state: {text_render}"
-                
-                # Получаем env_state на CPU для передачи в оракла (для расширенного состояния)
-                # Пытаемся передать env_state, но если не получится - передадим только контекст
-                env_state_cpu_for_oracle = None
-                try:
-                    env_state_cpu_for_oracle = jax.device_get(new_state_jax.env_state)
-                except Exception as e:
-                    print(f"[CraftextWorkerOracle] Warning: Could not get env_state for oracle: {e}")
-                    env_state_cpu_for_oracle = None
-                
-                # Вызываем оракла асинхронно через Ray с env_state
-                oracle_answer = ray.get(self.oracle_handle.answer_question.remote(
-                    question, 
-                    context, 
-                    env_state_cpu_for_oracle
-                ))
-                info['oracle_answer'] = oracle_answer
+                env_state_cpu_for_oracle = jax.device_get(new_state_jax.env_state)
             except Exception as e:
-                print(f"[CraftextWorkerOracle] Error querying oracle: {e}")
-                import traceback
-                traceback.print_exc()
-                # Пытаемся вызвать оракла без env_state как fallback
-                try:
-                    oracle_answer = ray.get(self.oracle_handle.answer_question.remote(
-                        question, 
-                        context, 
-                        None
-                    ))
-                    info['oracle_answer'] = oracle_answer
-                except Exception as e2:
-                    info['oracle_answer'] = f"Oracle error: {str(e2)}"
+                # Если не получилось получить env_state, это не критично
+                env_state_cpu_for_oracle = None
+            
+            # Сохраняем данные вопроса в info для последующей батч-обработки
+            info['oracle_question'] = question
+            info['oracle_context'] = context
+            info['oracle_env_state'] = env_state_cpu_for_oracle
+            info['oracle_answer'] = None  # Будет заполнено после батч-обработки
         elif question:
             # Если вопрос есть, но оракла нет, возвращаем сообщение об ошибке
             info['oracle_answer'] = "Oracle not available"
@@ -180,7 +172,7 @@ class CraftextWorkerOracle:
         obs = np.asarray(obs_jax_rendered)
         info = {'won': False}
         env_state_cpu = jax.device_get(new_state_jax.env_state)
-        text_render = render_craftax_text(env_state_cpu)
+        text_render = self.render_func(env_state_cpu)  # Используем выбранную функцию рендеринга
         instruction_text = self.wrapper.scenario_handler.scenario_data.instructions_list[scenario_idx]
         info['text_render'] = text_render
         info['instruction'] = instruction_text
@@ -257,7 +249,7 @@ class CraftextMultiProcessEnvOracle(gym.Env):
 
     def step(self, actions: list[int], questions: Optional[list[Optional[str]]] = None):
         """
-        Выполняет шаг во всех средах.
+        Выполняет шаг во всех средах с батч-обработкой вопросов к оракулу.
         
         Args:
             actions: Список числовых действий
@@ -270,13 +262,54 @@ class CraftextMultiProcessEnvOracle(gym.Env):
         if len(questions) != len(actions):
             questions = questions[:len(actions)] + [None] * (len(actions) - len(questions))
         
+        # Выполняем шаги во всех средах (без вызова оракула)
         futures = [
             worker.step.remote(action, question) 
             for worker, action, question in zip(self._workers, actions, questions)
         ]
         results = ray.get(futures)
         obs_list, reward_list, done_list, info_list = zip(*results)
-        return list(obs_list), list(reward_list), list(done_list), list(info_list)
+        info_list = list(info_list)
+        
+        # Собираем все вопросы для батч-обработки
+        questions_to_process = []
+        question_indices = []
+        for i, info in enumerate(info_list):
+            if 'oracle_question' in info and info['oracle_question'] is not None:
+                questions_to_process.append({
+                    'question': info['oracle_question'],
+                    'context': info.get('oracle_context'),
+                    'env_state': info.get('oracle_env_state')
+                })
+                question_indices.append(i)
+        
+        # Обрабатываем все вопросы батчем через оракула
+        if questions_to_process and self.oracle_handle is not None:
+            try:
+                oracle_answers = ray.get(
+                    self.oracle_handle.answer_questions_batch.remote(questions_to_process)
+                )
+                # Добавляем ответы в соответствующие info и очищаем временные поля
+                for idx, answer in zip(question_indices, oracle_answers):
+                    info_list[idx]['oracle_answer'] = answer
+                    # Очищаем временные поля, которые использовались для передачи данных
+                    info_list[idx].pop('oracle_question', None)
+                    info_list[idx].pop('oracle_context', None)
+                    info_list[idx].pop('oracle_env_state', None)
+            except Exception as e:
+                print(f"[CraftextMultiProcessEnvOracle] Error in batch oracle processing: {e}")
+                import traceback
+                traceback.print_exc()
+                # В случае ошибки, заполняем ответы об ошибкой
+                for idx in question_indices:
+                    if info_list[idx].get('oracle_answer') is None:
+                        info_list[idx]['oracle_answer'] = f"Oracle batch error: {str(e)}"
+                    # Очищаем временные поля даже в случае ошибки
+                    info_list[idx].pop('oracle_question', None)
+                    info_list[idx].pop('oracle_context', None)
+                    info_list[idx].pop('oracle_env_state', None)
+        
+        return list(obs_list), list(reward_list), list(done_list), info_list
 
     def reset(self):
         """Сброс всех сред."""
