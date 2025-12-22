@@ -1,14 +1,8 @@
 #!/bin/bash
 set -x
 
-# -----------------------------------------------------------------------------
-# <--- ИЗМЕНЕНО: Добавляем критические переменные окружения, которые мы отладили
-# -----------------------------------------------------------------------------
-# Запрещаем JAX в дочерних процессах использовать GPU
 export JAX_PLATFORMS=cpu
-# (Опционально, но рекомендуется) Используем личную папку для временных файлов Ray
 export RAY_TEMP_DIR="/home/n.sorokin/ray_temp" 
-# -----------------------------------------------------------------------------
 
 export CUDA_VISIBLE_DEVICES=0
 ENGINE=${1:-vllm}
@@ -23,7 +17,6 @@ mode="mean_std_norm" # "mean_norm" or "mean_std_norm"
 
 export RUN_NAME="run_gigpo_qwen2.5_1.5b_achievements_wood_$(date +%Y%m%d-%H%M%S)"
 
-# We only use data preparation to indicate the modality and the data size.
 python3 -m examples.data_preprocess.prepare \
     --mode 'text' \
     --train_data_size $train_data_size \
