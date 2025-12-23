@@ -4,8 +4,8 @@
 export JAX_PLATFORMS=cpu
 export RAY_TEMP_DIR="/home/jovyan/nsorokin/ray_temp" 
 
-source /home/jovyan/nsorokin/miniconda3/etc/profile.d/conda.sh
-conda activate /home/jovyan/nsorokin/verl-agent-craftext/verl-agent-conda-venv-311/
+#source /home/jovyan/nsorokin/miniconda3/etc/profile.d/conda.sh
+#conda activate /home/jovyan/nsorokin/verl-agent-craftext/verl-agent-conda-venv-311/
 
 ENGINE=${1:-vllm}
 export VLLM_ATTENTION_BACKEND=XFORMERS
@@ -15,12 +15,12 @@ train_data_size=32
 val_data_size=8
 
 export RUN_NAME="run_ppo_qwen2.5_1.5b_achievements_collect_wood_$(date +%Y%m%d-%H%M%S)"
-/home/jovyan/nsorokin/verl-agent-craftext/verl-agent-conda-venv-311/bin/python3 -m examples.data_preprocess.prepare \
+python -m examples.data_preprocess.prepare \
     --mode 'text' \
     --train_data_size $train_data_size \
     --val_data_size $val_data_size
 
-/home/jovyan/nsorokin/verl-agent-craftext/verl-agent-conda-venv-311/bin/python3 -m verl.trainer.main_ppo \
+python -m verl.trainer.main_ppo \
     algorithm.adv_estimator=gae \
     data.train_files=$HOME/data/verl-agent/text/train.parquet \
     data.val_files=$HOME/data/verl-agent/text/test.parquet \
