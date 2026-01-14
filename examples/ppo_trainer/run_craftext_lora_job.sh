@@ -1,5 +1,6 @@
 #!/bin/bash
 # set -x
+export COMET_API_KEY="3OfuYHwcRgIwG7DzgzJ190igY"
 
 export JAX_PLATFORMS=cpu
 export RAY_TEMP_DIR="/home/jovyan/nsorokin/ray_temp" 

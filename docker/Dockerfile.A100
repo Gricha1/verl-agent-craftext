@@ -16,11 +16,13 @@ RUN apt-get update && apt-get install -y \
 RUN apt install -y python3-dev libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev
 
 # Install conda & setup conda
-RUN curl -L -o ~/miniconda.sh -O  https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh  &&\
-    chmod +x ~/miniconda.sh &&\
-    ~/miniconda.sh -b -p /opt/conda &&\
-    rm ~/miniconda.sh &&\
-    /opt/conda/bin/conda install numpy pyyaml scipy ipython mkl mkl-include &&\
+RUN curl -L -o ~/miniconda.sh -O https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh 
+RUN chmod +x ~/miniconda.sh && \
+    ~/miniconda.sh -b -p /opt/conda && \
+    rm ~/miniconda.sh 
+RUN /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+RUN /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+RUN /opt/conda/bin/conda install -y numpy scipy ipython mkl mkl-include && \
     /opt/conda/bin/conda clean -ya
 ENV PATH /opt/conda/bin:$PATH
 
@@ -47,7 +49,9 @@ RUN echo "cd /usr/home/workspace && pip install -e agent_system/environments/env
 RUN echo "cd /usr/home/workspace && pip install flash-attn==2.7.4.post1 --no-build-isolation" >> ~/.bashrc
 #RUN pip install -e agent_system/environments/env_package/craftext/CrafText-super_igor_env_build
 RUN pip install datasets
-RUN pip install tensorboard
+#RUN pip install tensorboard
+RUN echo "pip install tensorboard" >> ~/.bashrc
+RUN echo "pip install comet_ml" >> ~/.bashrc
 
 WORKDIR /usr/home/workspace
 

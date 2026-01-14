@@ -28,4 +28,4 @@ else
 fi
 echo gpus in docker --- $gpus
 
-docker run -it --rm --name $container_name --memory="200g" --gpus '"device=0,1"' --env WANDB_API_KEY=$WANDB_API_KEY -v $(pwd):/usr/home/workspace -v $(pwd)/logdir:/root/logdir $image_name
+docker run -it --rm --name $container_name --memory="200g" --shm-size=8g --gpus '"device=0,1"' --env WANDB_API_KEY=$WANDB_API_KEY -v $(pwd):/usr/home/workspace -v $(pwd)/logdir:/root/logdir $image_name
