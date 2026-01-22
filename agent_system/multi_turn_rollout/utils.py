@@ -134,6 +134,7 @@ def adjust_batch(config, data: DataProto, mode="copy") -> DataProto:
 def filter_group_data(batch_list : List[Dict],
                         episode_rewards: np.ndarray,
                         episode_lengths: np.ndarray,
+                        episode_costs: np.ndarray,
                         success: Dict[str, np.ndarray],
                         traj_uid: np.ndarray,
                         tool_callings: np.ndarray,
@@ -146,7 +147,7 @@ def filter_group_data(batch_list : List[Dict],
     Adopted from DAPO (https://arxiv.org/abs/2503.14476)
     """
     if last_try:
-        return batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings
+        return batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings
     
     batch_size = config.data.train_batch_size
     group_n = config.env.rollout.n
@@ -178,9 +179,10 @@ def filter_group_data(batch_list : List[Dict],
     batch_list = [batch_list[i] for i in keep_indices]
     episode_rewards = episode_rewards[keep_indices]
     episode_lengths = episode_lengths[keep_indices]
+    episode_costs = episode_costs[keep_indices] if len(episode_costs) > 0 else np.zeros(len(keep_indices), dtype=np.float32)
     # success = {key: value[keep_indices] for key, value in success.items()}
     traj_uid = traj_uid[keep_indices]
     tool_callings = tool_callings[keep_indices]
 
-    return batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings
+    return batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings
 

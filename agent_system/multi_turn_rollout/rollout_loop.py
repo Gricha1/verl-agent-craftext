@@ -227,6 +227,7 @@ class TrajectoryCollector:
             total_batch_list: List[List[Dict]],
             episode_rewards: np.ndarray,
             episode_lengths: np.ndarray,
+            episode_costs: np.ndarray,
             success: Dict[str, np.ndarray],
             traj_uid: np.ndarray,
             tool_callings: np.ndarray,
@@ -260,6 +261,8 @@ class TrajectoryCollector:
                     data['episode_rewards'] = episode_rewards[bs]
                     # episode_lengths
                     data['episode_lengths'] = episode_lengths[bs]
+                    # episode_costs (для Caged Craftext)
+                    data['episode_costs'] = episode_costs[bs]
                     # tool_callings
                     data['tool_callings'] = tool_callings[bs]
                     # success_rate
@@ -319,7 +322,48 @@ class TrajectoryCollector:
         total_infos = [[] for _ in range(batch_size)]
         episode_lengths = np.zeros(batch_size, dtype=np.float32)
         episode_rewards = np.zeros(batch_size, dtype=np.float32)
+        episode_costs = np.zeros(batch_size, dtype=np.float32)  # Для Caged Craftext - накопление cost
         tool_callings = np.zeros(batch_size, dtype=np.float32)
+
+        # -------------------------
+        # Saute-style safety shaping (optional)
+        # -------------------------
+        saute_cfg = None
+        saute_enabled = False
+        try:
+            saute_cfg = self.config.algorithm.get("saute", None)
+            saute_enabled = bool(saute_cfg and saute_cfg.get("enabled", False))
+        except Exception:
+            saute_cfg = None
+            saute_enabled = False
+
+        if saute_enabled:
+            saute_gamma = float(saute_cfg.get("gamma", 1.0))
+            safety_budget = float(saute_cfg.get("safety_budget", 1.0))
+            unsafe_reward = float(saute_cfg.get("unsafe_reward", -10.0))
+            violation_threshold = float(saute_cfg.get("violation_threshold", 0.0))
+            append_safety_info_to_obs = bool(saute_cfg.get("append_safety_info_to_obs", True))
+
+            # OmniSafe-style per-step budget normalization:
+            # B_step = B * (1 - gamma^T)/(1-gamma) / T
+            T = int(self.config.env.max_steps)
+            if abs(saute_gamma - 1.0) < 1e-8:
+                safety_budget_per_step = max(safety_budget, 1e-8)
+            else:
+                safety_budget_per_step = safety_budget * (1 - (saute_gamma ** T)) / (1 - saute_gamma) / max(T, 1)
+                safety_budget_per_step = max(float(safety_budget_per_step), 1e-8)
+
+            safety_obs = np.ones(batch_size, dtype=np.float32)
+            violation_counts = np.zeros(batch_size, dtype=np.int32)
+        else:
+            saute_gamma = 1.0
+            safety_budget_per_step = 1.0
+            unsafe_reward = -10.0
+            violation_threshold = 0.0
+            append_safety_info_to_obs = False
+            safety_obs = None
+            violation_counts = None
+
         # Trajectory collection loop
         for _step in range(self.config.env.max_steps):
             active_masks = np.logical_not(is_done)
@@ -356,6 +400,11 @@ class TrajectoryCollector:
             
             next_obs, rewards, dones, infos = envs.step(text_actions)
 
+            # Конвертируем в numpy массивы, если они пришли как списки
+            if isinstance(rewards, list):
+                rewards = np.array(rewards, dtype=np.float32)
+            if isinstance(dones, list):
+                dones = np.array(dones, dtype=bool)
             
             if len(rewards.shape) == 2:
                 rewards = rewards.squeeze(1)
@@ -370,6 +419,45 @@ class TrajectoryCollector:
 
             if 'tool_calling' in infos[0]:
                 tool_callings[active_masks] += np.array([info['tool_calling'] for info in infos], dtype=np.float32)[active_masks]
+            
+            # Извлекаем cost из info для Caged Craftext (если есть)
+            # cost - стоимость шага, episode_cost - накопленная стоимость эпизода
+            if 'cost' in infos[0]:
+                costs = np.array([info.get('cost', 0.0) for info in infos], dtype=np.float32)
+                # Накапливаем cost для активных эпизодов
+                episode_costs[active_masks] += costs[active_masks]
+                batch.non_tensor_batch['cost'] = torch_to_numpy(costs, is_object=True)
+
+                # Saute: update safety state + shape reward (optional)
+                if saute_enabled:
+                    # count violations as (cost > threshold)
+                    violations = (costs > violation_threshold).astype(np.int32)
+                    violation_counts[active_masks] += violations[active_masks]
+
+                    # Update safety state: s <- (s - cost/B_step) / gamma
+                    safety_obs[active_masks] -= (costs[active_masks] / safety_budget_per_step)
+                    if abs(saute_gamma - 1.0) >= 1e-8:
+                        safety_obs[active_masks] /= saute_gamma
+
+                    # Reward gating: unsafe -> big penalty
+                    original_rewards = rewards.copy()
+                    safe_mask = (safety_obs > 0.0)
+                    rewards = rewards.copy()
+                    unsafe_active = np.logical_and(active_masks, np.logical_not(safe_mask))
+                    rewards[unsafe_active] = unsafe_reward
+
+                    batch.non_tensor_batch['original_rewards'] = torch_to_numpy(original_rewards, is_object=True)
+                    batch.non_tensor_batch['saute/safety_state'] = torch_to_numpy(safety_obs, is_object=True)
+                    batch.non_tensor_batch['saute/violation_count'] = torch_to_numpy(violation_counts.astype(np.float32), is_object=True)
+            
+            # Извлекаем episode_cost из info (если есть, используется как итоговая стоимость эпизода)
+            # При завершении эпизода (done=True) обновляем episode_costs значением из info
+            if 'episode_cost' in infos[0]:
+                episode_costs_from_info = np.array([info.get('episode_cost', 0.0) for info in infos], dtype=np.float32)
+                # Используем episode_cost из info для завершенных эпизодов
+                episode_costs[dones] = episode_costs_from_info[dones]
+                batch.non_tensor_batch['episode_cost'] = episode_costs_from_info
+            
             # Create reward tensor, only assign rewards for active environments
             # episode_rewards += torch_to_numpy(rewards) * torch_to_numpy(active_masks)
             episode_rewards[active_masks] += torch_to_numpy(rewards)[active_masks]
@@ -390,6 +478,17 @@ class TrajectoryCollector:
             is_done = np.logical_or(is_done, dones)
                 
             # Update observations for next step
+            if saute_enabled and append_safety_info_to_obs:
+                # Augment next observation text with safety info for the agent.
+                # This matches the Saute idea of state augmentation, but in text form.
+                if isinstance(next_obs, dict) and next_obs.get('text', None) is not None:
+                    for i in range(batch_size):
+                        # only meaningful for envs that are still active before the transition
+                        if active_masks[i]:
+                            next_obs['text'][i] = (
+                                next_obs['text'][i]
+                                + f"\n\n[SAFETY] Violations so far: {int(violation_counts[i])} | Safety state: {float(safety_obs[i]):.4f}"
+                            )
             obs = next_obs
 
             # Break if all environments are done
@@ -403,7 +502,7 @@ class TrajectoryCollector:
                     episode_lengths=episode_lengths,
                     )
         
-        return total_batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings
+        return total_batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings
     
     def dynamic_multi_turn_loop(
             self,
@@ -431,6 +530,7 @@ class TrajectoryCollector:
         total_batch_list = []
         total_episode_rewards = []
         total_episode_lengths = []
+        total_episode_costs = []
         total_success = []
         total_traj_uid = []
         total_tool_callings = []
@@ -443,14 +543,15 @@ class TrajectoryCollector:
                 print(f"valid num={len(total_batch_list)} < target num={self.config.data.train_batch_size * self.config.env.rollout.n}. Keep generating... ({try_count}/{max_try_count})")
             try_count += 1
 
-            batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings = self.vanilla_multi_turn_loop(
+            batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings = self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
                 envs=envs,
             )
-            batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings = filter_group_data(batch_list=batch_list, 
+            batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings = filter_group_data(batch_list=batch_list, 
                                                                                                 episode_rewards=episode_rewards, 
                                                                                                 episode_lengths=episode_lengths, 
+                                                                                                episode_costs=episode_costs,
                                                                                                 success=success, 
                                                                                                 traj_uid=traj_uid, 
                                                                                                 tool_callings=tool_callings, 
@@ -461,17 +562,19 @@ class TrajectoryCollector:
             total_batch_list += batch_list
             total_episode_rewards.append(episode_rewards)
             total_episode_lengths.append(episode_lengths)
+            total_episode_costs.append(episode_costs)
             total_success.append(success)
             total_traj_uid.append(traj_uid)
             total_tool_callings.append(tool_callings)
 
         total_episode_rewards = np.concatenate(total_episode_rewards, axis=0)
         total_episode_lengths = np.concatenate(total_episode_lengths, axis=0)
+        total_episode_costs = np.concatenate(total_episode_costs, axis=0) if len(total_episode_costs) > 0 else np.zeros(len(total_episode_rewards), dtype=np.float32)
         total_success = {key: np.concatenate([success[key] for success in total_success], axis=0) for key in total_success[0].keys()}
         total_traj_uid = np.concatenate(total_traj_uid, axis=0)
         total_tool_callings = np.concatenate(total_tool_callings, axis=0)
 
-        return total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, total_tool_callings
+        return total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, total_tool_callings
 
     def multi_turn_loop(
             self,
@@ -498,7 +601,7 @@ class TrajectoryCollector:
         # Initial observations from the environment
         if self.config.algorithm.filter_groups.enable and is_train:
             # Dynamic Sampling (for DAPO and Dynamic GiGPO)
-            total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, totoal_tool_callings = \
+            total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, totoal_tool_callings = \
                 self.dynamic_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
@@ -506,7 +609,7 @@ class TrajectoryCollector:
             )
         else:
             # Vanilla Sampling   
-            total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, totoal_tool_callings = \
+            total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, totoal_tool_callings = \
                 self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
@@ -516,6 +619,9 @@ class TrajectoryCollector:
         assert len(total_batch_list) == len(total_episode_lengths)
         assert len(total_batch_list) == len(total_traj_uid)
         assert len(total_batch_list) == len(totoal_tool_callings)
+        # Для обратной совместимости, если episode_costs нет (для обычного craftext)
+        if len(total_episode_costs) == 0:
+            total_episode_costs = np.zeros(len(total_episode_rewards), dtype=np.float32)
         
 
         # Create trajectory data
@@ -523,6 +629,7 @@ class TrajectoryCollector:
             total_batch_list=total_batch_list,
             episode_rewards=total_episode_rewards,
             episode_lengths=total_episode_lengths,
+            episode_costs=total_episode_costs,
             success=total_success,
             traj_uid=total_traj_uid,
             tool_callings=totoal_tool_callings,

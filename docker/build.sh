@@ -1,1 +1,1 @@
-docker build -f Dockerfile.Titan -t safe_llm_img .
+docker build -f Dockerfile.A100 -t safe_llm_img .

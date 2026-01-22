@@ -1023,6 +1023,7 @@ class RayPPOTrainer:
         )
 
         self.global_steps = 0
+        self.total_env_steps = 0  # Счетчик шагов среды (для логирования)
 
         # load checkpoint before doing anything
         self._load_checkpoint()
@@ -1033,7 +1034,7 @@ class RayPPOTrainer:
             val_metrics = self._validate()
             assert val_metrics, f"{val_metrics=}"
             pprint(f"Initial validation metrics: {val_metrics}")
-            logger.log(data=val_metrics, step=self.global_steps)
+            logger.log(data=val_metrics, step=self.total_env_steps)
             if self.config.trainer.get("val_only", False):
                 return
 
@@ -1126,6 +1127,11 @@ class RayPPOTrainer:
 
                     # compute global_valid tokens
                     batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
+                    
+                    # Подсчитываем количество шагов среды в этом batch
+                    # Количество шагов = количество записей в batch (каждая запись - один шаг)
+                    num_env_steps_in_batch = len(batch.batch["input_ids"])
+                    self.total_env_steps += num_env_steps_in_batch
 
                     with _timer("reward", timing_raw):
                         # compute reward model score
@@ -1284,6 +1290,7 @@ class RayPPOTrainer:
                     {
                         "training/global_step": self.global_steps,
                         "training/epoch": epoch,
+                        "training/total_env_steps": self.total_env_steps,  # Общее количество шагов среды
                     }
                 )
                 # collect metrics
@@ -1294,7 +1301,8 @@ class RayPPOTrainer:
                 metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
 
                 # TODO: make a canonical logger that supports various backend
-                logger.log(data=metrics, step=self.global_steps)
+                # Логируем с шагами среды вместо шагов PPO
+                logger.log(data=metrics, step=self.total_env_steps)
 
                 progress_bar.update(1)
                 self.global_steps += 1

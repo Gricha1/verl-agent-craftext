@@ -609,6 +609,11 @@ from agent_system.environments.env_package.craftext.projection_oracle import (
     CRAFTEXT_TEMPLATE_ORACLE_NO_HIS, 
     CRAFTEXT_VL_TEMPLATE_ORACLE_NO_HIS
 )
+# Импортируем шаблоны для caged_craftext (используем те же, что и для обычного craftext)
+from agent_system.environments.env_package.caged_craftext.projection import (
+    CRAFTEXT_TEMPLATE, 
+    CRAFTEXT_TEMPLATE_NO_HIS
+)
 
 
 class CraftextEnvironmentManager(EnvironmentManagerBase):
@@ -697,6 +702,133 @@ class CraftextEnvironmentManager(EnvironmentManagerBase):
                         current_step=len(self.memory[i]) + 1,
                         current_observation=text_renders[i]
                     )
+
+            final_prompts.append(prompt)
+
+        return final_prompts
+
+
+class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
+    """
+    EnvironmentManager для Caged Craftext - безопасной версии Craftext с CMDP поддержкой.
+    Аналогичен CraftextEnvironmentManager, но работает с caged_craftext окружениями.
+    """
+    def __init__(self, envs, projection_f, config):
+        self.memory = SimpleMemory()
+        super().__init__(envs, projection_f, config)
+    
+    def reset(self, kwargs) -> Dict[str, Any]:
+        obs, infos = self.envs.reset()
+        self.tasks = [info.get('instruction', 'No instruction found') for info in infos]
+        text_renders = [info.get('text_render', 'The world is empty.') for info in infos]
+        
+        # Извлекаем constraint информацию, если есть
+        constraints = [info.get('constraint', '') for info in infos]
+                
+        if self.config.env.env_name == "caged_craftext/CagedCraftextEnv":
+            observations = {
+                'text': self.build_text_obs(text_renders, infos, init=True), 
+                'anchor': text_renders.copy()
+            }
+            # Добавляем constraint в observations, если есть
+            if any(constraints):
+                observations['constraint'] = constraints
+
+        if self.config.env.env_name == "caged_craftext/CagedCraftextVLEnv":
+            observations = {
+                'text': self.build_text_obs(text_renders, infos, init=True), 
+                'image': obs,
+                'anchor': text_renders.copy()
+            }
+            # Добавляем constraint в observations, если есть
+            if any(constraints):
+                observations['constraint'] = constraints
+
+        self.pre_text_obs = text_renders
+        self.memory.reset(batch_size=len(infos))
+        return observations, infos
+
+    def step(self, text_actions: List[str]):
+        action_ids, valids = self.projection_f(text_actions)
+        next_obs, rewards, dones, infos = self.envs.step(action_ids)
+        next_text_renders = [info.get('text_render', 'The world is empty.') for info in infos]
+
+        self.memory.store({'text_obs': self.pre_text_obs, 'action': text_actions})
+        self.pre_text_obs = next_text_renders
+
+        # Извлекаем constraint информацию, если есть
+        constraints = [info.get('constraint', '') for info in infos]
+        
+        if self.config.env.env_name == "caged_craftext/CagedCraftextEnv":
+            next_observations = {
+                'text': self.build_text_obs(next_text_renders, infos),
+                'anchor': next_text_renders.copy()
+            }
+            # Добавляем constraint в observations, если есть
+            if any(constraints):
+                next_observations['constraint'] = constraints
+
+        if self.config.env.env_name == "caged_craftext/CagedCraftextVLEnv":
+            next_observations = {
+                'text': self.build_text_obs(next_text_renders, infos),
+                'image': next_obs,
+                'anchor': next_text_renders.copy()
+            }
+            # Добавляем constraint в observations, если есть
+            if any(constraints):
+                next_observations['constraint'] = constraints
+        
+        return next_observations, rewards, dones, infos
+
+    def build_text_obs(self, text_renders: List[str], infos: List[Dict], init: bool = False) -> List[str]:
+        """
+        Строит текстовые наблюдения из рендеров и инфо.
+        Для Caged Craftext также может включать информацию о constraint.
+        """
+        # Используем базовый метод из CraftextEnvironmentManager
+        # Но можно добавить поддержку constraint, если нужно
+        final_prompts = []
+        
+        for i, (text_render, info) in enumerate(zip(text_renders, infos)):
+            task = self.tasks[i] if hasattr(self, 'tasks') and i < len(self.tasks) else info.get('instruction', 'No instruction found')
+            
+            # Получаем constraint, если есть
+            constraint = info.get('constraint', '')
+            
+            # Получаем историю действий
+            history = self.memory.get(i) if hasattr(self.memory, 'get') else []
+            action_history_str = ""
+            if history and not init:
+                action_hist = [h.get('action', '') for h in history[-5:]]  # Последние 5 действий
+                action_history_str = "\n".join([f"Step {j+1}: {act}" for j, act in enumerate(action_hist)])
+            
+            # Строим промпт (используем те же шаблоны, что и для обычного craftext)
+            if self.config.env.history_length == 0:
+                if action_history_str:
+                    prompt = CRAFTEXT_TEMPLATE.format(
+                        task_description=task,
+                        step_count=len(history) if history else 0,
+                        action_history=action_history_str,
+                        current_step=len(history) if history else 0,
+                        current_observation=text_render
+                    )
+                else:
+                    prompt = CRAFTEXT_TEMPLATE_NO_HIS.format(
+                        task_description=task,
+                        current_observation=text_render
+                    )
+            else:
+                prompt = CRAFTEXT_TEMPLATE.format(
+                    task_description=task,
+                    step_count=len(history) if history else 0,
+                    action_history=action_history_str if action_history_str else "No actions taken yet.",
+                    current_step=len(history) if history else 0,
+                    current_observation=text_render
+                )
+            
+            # Добавляем constraint информацию в промпт, если есть
+            if constraint:
+                prompt += f"\n\n**CONSTRAINT:** {constraint}"
 
             final_prompts.append(prompt)
 
@@ -971,6 +1103,44 @@ def make_envs(config):
         # Используем менеджер с поддержкой оракла
         envs = CraftextOracleEnvironmentManager(_envs, projection_f, config)
         val_envs = CraftextOracleEnvironmentManager(_val_envs, projection_f, config)
+        
+        return envs, val_envs
+    elif "caged_craftext" in config.env.env_name.lower() or (config.env.env_name.lower().startswith("caged") and "craftext" in config.env.env_name.lower()):
+        # 1. Импортируем все необходимое для Caged Craftext
+        print(f"[make_envs] Detected Caged Craftext environment: {config.env.env_name}")
+        from agent_system.environments.env_package.caged_craftext import build_caged_craftext_envs, craftext_projection
+
+        # 2. Указываем параметры для среды Caged Craftext
+        env_kwargs = {
+            'config_name': config.env.craftext_settings,  # Например, 'achievements_safe_caged'
+            'encode_form': 'embedding',
+            'observation_type': config.env.observation_type,
+        }
+        
+        # 3. Создаем train и val среды
+        _envs = build_caged_craftext_envs(
+            seed=config.env.seed, 
+            env_num=config.data.train_batch_size, 
+            group_n=group_n, 
+            is_train=True, 
+            env_kwargs=env_kwargs, 
+            resources_per_worker=resources_per_worker
+        )
+        _val_envs = build_caged_craftext_envs(
+            seed=config.env.seed + 1000, 
+            env_num=config.data.val_batch_size, 
+            group_n=1, 
+            is_train=False, 
+            env_kwargs=env_kwargs, 
+            resources_per_worker=resources_per_worker
+        )
+        
+        # 4. Создаем функцию проекции (используем ту же, что и для обычного craftext)
+        projection_f = partial(craftext_projection)
+        
+        # 5. Используем CagedCraftextEnvironmentManager
+        envs = CagedCraftextEnvironmentManager(_envs, projection_f, config)
+        val_envs = CagedCraftextEnvironmentManager(_val_envs, projection_f, config)
         
         return envs, val_envs
     elif "craftext" in config.env.env_name.lower():
