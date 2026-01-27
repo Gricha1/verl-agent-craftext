@@ -309,6 +309,42 @@ class DataParallelPPOActor(BasePPOActor):
             assert len(indices) == log_probs.size(0), f"{len(indices)} vs. {log_probs.size()}"
             revert_indices = torch.tensor(get_reverse_idx(indices), dtype=torch.long)
             log_probs = log_probs[revert_indices]
+            if calculate_entropy:
+                entropys = entropys[revert_indices]
+
+        # Применяем маску action токенов, если включено log_prob_action_only
+        log_prob_action_only = self.config.get("log_prob_action_only", False)
+        if log_prob_action_only:
+            # Получаем tokenizer из config или создаем заново
+            tokenizer = None
+            if hasattr(self, 'tokenizer'):
+                tokenizer = self.tokenizer
+            elif hasattr(self.config, 'tokenizer_path') or 'tokenizer_path' in self.config:
+                from verl.utils import hf_tokenizer
+                tokenizer_path = self.config.get('tokenizer_path', None)
+                if tokenizer_path:
+                    tokenizer = hf_tokenizer(tokenizer_path, trust_remote_code=self.config.get("trust_remote_code", False))
+            
+            if tokenizer is not None:
+                # Декодируем response токены в текст
+                responses = batch["responses"]
+                response_texts = tokenizer.batch_decode(responses, skip_special_tokens=True)
+                
+                # Извлекаем маску action токенов
+                from verl.utils.action_token_extraction import extract_action_token_positions_simple
+                action_mask = extract_action_token_positions_simple(
+                    response_texts=response_texts,
+                    response_token_ids=responses,
+                    tokenizer=tokenizer
+                )
+                
+                # Применяем маску к log_probs: устанавливаем 0 для не-action токенов
+                # Это эквивалентно игнорированию их при суммировании
+                log_probs = log_probs * action_mask.float()
+                
+                if calculate_entropy:
+                    # Также применяем маску к entropy
+                    entropys = entropys * action_mask.float()
 
         return log_probs, entropys
 

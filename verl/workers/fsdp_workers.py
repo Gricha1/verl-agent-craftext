@@ -556,6 +556,9 @@ class ActorRolloutRefWorker(Worker):
             with open_dict(self.config.actor):
                 self.config.actor.use_remove_padding = use_remove_padding
                 self.config.actor.use_fused_kernels = use_fused_kernels
+                # Передаем tokenizer_path в config для использования в compute_log_prob
+                if not hasattr(self.config.actor, 'tokenizer_path') or self.config.actor.get('tokenizer_path') is None:
+                    self.config.actor.tokenizer_path = self.config.model.path
             self.actor = DataParallelPPOActor(config=self.config.actor, actor_module=self.actor_module_fsdp, actor_optimizer=self.actor_optimizer)
 
         if self._is_rollout:

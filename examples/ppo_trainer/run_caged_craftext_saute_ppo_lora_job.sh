@@ -12,7 +12,28 @@ export COMET_API_KEY="3OfuYHwcRgIwG7DzgzJ190igY"
 export JAX_PLATFORMS=cpu
 export RAY_TEMP_DIR="/home/jovyan/nsorokin/ray_temp"
 
+# НЕ устанавливаем CUDA_VISIBLE_DEVICES="" здесь, так как это мешает Ray видеть GPU
+# Encoder'ы в caged_craftext уже исправлены и проверяют torch.cuda.is_available() перед использованием CUDA
+
+# Путь к пакету caged_craftext (должен содержать модуль craftext.environment)
+# Путь к клонированному репозиторию CAGED-CrafText
+# Вычисляем путь относительно корня проекта (работает и в Docker, и на хосте)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+DEFAULT_CAGED_PATH="$PROJECT_ROOT/caged_craftext"
+
+# Используем переменную окружения, если установлена, иначе вычисленный путь
+export CAGED_CRAFTEXT_PATH="${CAGED_CRAFTEXT_PATH:-$DEFAULT_CAGED_PATH}"
+export PYTHONPATH="${CAGED_CRAFTEXT_PATH}:${PYTHONPATH}"
+echo "[INFO] CAGED_CRAFTEXT_PATH установлен: $CAGED_CRAFTEXT_PATH"
+echo "[INFO] Корень проекта: $PROJECT_ROOT"
+
 ENGINE=${1:-vllm}
+# LOG_PROB_ACTION_ONLY: если true, log_prob считается только для токенов внутри <action> тегов (без reasoning)
+# Использование: bash run_caged_craftext_saute_ppo_lora_job.sh vllm true
+LOG_PROB_ACTION_ONLY=${2:-false}
+# Убираем аргументы скрипта, чтобы они не передавались в Hydra
+shift 2 2>/dev/null || shift 1 2>/dev/null || true
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
 num_cpus_per_env_worker=0.03
@@ -74,6 +95,7 @@ python -m verl.trainer.main_ppo \
   critic.model.fsdp_config.param_offload=False \
   critic.model.fsdp_config.optimizer_offload=False \
   algorithm.use_kl_in_reward=False \
+  +algorithm.log_prob_action_only=$LOG_PROB_ACTION_ONLY \
   env.env_name='caged_craftext/CagedCraftextEnv' \
   +env.craftext_settings='achievements_safe_budget_energy_collect_wood' \
   +env.observation_type='ascii' \
@@ -82,7 +104,7 @@ python -m verl.trainer.main_ppo \
   env.history_length=0 \
   env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
   trainer.critic_warmup=0 \
-  trainer.logger=['console','tensorboard','comet'] \
+  trainer.logger=['console','comet'] \
   trainer.project_name='verl_agent_caged_craftext' \
   trainer.experiment_name=$RUN_NAME \
   trainer.n_gpus_per_node=2 \

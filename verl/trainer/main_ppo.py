@@ -32,10 +32,20 @@ def main(config):
 def run_ppo(config) -> None:
     if not ray.is_initialized():
         # this is for local ray cluster
-        ray.init(
-            runtime_env={"env_vars": {"TOKENIZERS_PARALLELISM": "true", "NCCL_DEBUG": "WARN", "VLLM_LOGGING_LEVEL": "WARN", "VLLM_ALLOW_RUNTIME_LORA_UPDATING": "true"}},
-            num_cpus=config.ray_init.num_cpus,
-        )
+        ray_init_kwargs = {
+            "runtime_env": {"env_vars": {"TOKENIZERS_PARALLELISM": "true", "NCCL_DEBUG": "WARN", "VLLM_LOGGING_LEVEL": "WARN", "VLLM_ALLOW_RUNTIME_LORA_UPDATING": "true"}},
+            "num_cpus": config.ray_init.num_cpus,
+        }
+        # Добавляем num_gpus, если указано в конфиге
+        # Если не указано, пытаемся определить из trainer.n_gpus_per_node
+        if hasattr(config.ray_init, 'num_gpus') and config.ray_init.num_gpus is not None:
+            ray_init_kwargs["num_gpus"] = config.ray_init.num_gpus
+        elif hasattr(config.trainer, 'n_gpus_per_node') and config.trainer.n_gpus_per_node is not None:
+            # Автоматически определяем количество GPU из конфигурации trainer
+            total_gpus = config.trainer.n_gpus_per_node * config.trainer.nnodes
+            ray_init_kwargs["num_gpus"] = total_gpus
+            print(f"[INFO] Ray init: автоматически установлено num_gpus={total_gpus} из trainer.n_gpus_per_node={config.trainer.n_gpus_per_node} * nnodes={config.trainer.nnodes}")
+        ray.init(**ray_init_kwargs)
 
     runner = TaskRunner.remote()
     ray.get(runner.run.remote(config))

@@ -222,8 +222,43 @@ class CagedCraftextMultiProcessEnv(gym.Env):
         self._rng = np.random.RandomState(seed)
         self._env_kwargs = env_kwargs if env_kwargs is not None else {}
 
-        # Создаем Ray-воркеры CagedCraftextWorker
-        env_worker = ray.remote(**resources_per_worker)(CagedCraftextWorker)
+        # Передаем переменные окружения в Ray workers
+        # Вычисляем путь относительно корня проекта
+        current_file_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.abspath(os.path.join(current_file_dir, '../../../../'))
+        default_caged_path = os.path.join(project_root, 'caged_craftext')
+        
+        # Используем переменную окружения или вычисленный путь
+        caged_craftext_path = os.environ.get('CAGED_CRAFTEXT_PATH', default_caged_path)
+        caged_craftext_path = os.path.abspath(caged_craftext_path)
+        
+        # Собираем все необходимые переменные окружения для Ray workers
+        # НЕ устанавливаем CUDA_VISIBLE_DEVICES="" здесь, так как это может мешать Ray
+        # Encoder'ы уже исправлены и проверяют torch.cuda.is_available() перед использованием CUDA
+        env_vars = {
+            "CAGED_CRAFTEXT_PATH": caged_craftext_path,
+            "PYTHONPATH": f"{caged_craftext_path}:{os.environ.get('PYTHONPATH', '')}",
+            "JAX_PLATFORMS": os.environ.get('JAX_PLATFORMS', 'cpu'),
+        }
+        
+        # Передаем CUDA_VISIBLE_DEVICES только если он явно установлен в окружении
+        # Не устанавливаем пустое значение, чтобы не мешать Ray
+        if 'CUDA_VISIBLE_DEVICES' in os.environ and os.environ['CUDA_VISIBLE_DEVICES']:
+            env_vars["CUDA_VISIBLE_DEVICES"] = os.environ['CUDA_VISIBLE_DEVICES']
+        
+        runtime_env = {
+            "env_vars": env_vars
+        }
+        print(f"[DEBUG] CagedCraftextMultiProcessEnv: Передаем в Ray workers:")
+        print(f"  CAGED_CRAFTEXT_PATH={caged_craftext_path}")
+        print(f"  JAX_PLATFORMS={env_vars['JAX_PLATFORMS']}")
+        if 'CUDA_VISIBLE_DEVICES' in env_vars:
+            print(f"  CUDA_VISIBLE_DEVICES={env_vars['CUDA_VISIBLE_DEVICES']}")
+        else:
+            print(f"  CUDA_VISIBLE_DEVICES=не установлен (encoder'ы будут проверять torch.cuda.is_available())")
+
+        # Создаем Ray-воркеры CagedCraftextWorker с runtime_env
+        env_worker = ray.remote(**resources_per_worker, runtime_env=runtime_env)(CagedCraftextWorker)
         self._workers = [
             env_worker.remote(seed + i, self._env_kwargs) 
             for i in range(self.num_processes)
