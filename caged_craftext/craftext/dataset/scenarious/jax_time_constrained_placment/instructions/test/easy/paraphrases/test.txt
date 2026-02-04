@@ -1,0 +1,78 @@
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a furnace during the day",
+        "instruction_paraphrases":["Set a heater in daylight", "During the span of sunlit hours, it becomes necessary to position a furnace.", "At the time of the day, it is crucial to install a kiln.", "Upon the melodic canvas of daylight, one is required to settle a great smelting instrument of labour.", "In the ever-changing cycles of day's light, the task of establishing a furnace takes place, a silent dance within the grand tapestry of existence."],
+        "check_lambda": "lambda game_data: at_time_block_placed(game_data, BlockType.FURNACE, radius)",
+        "str_check_lambda": "at_time_block_placed(game_data, BlockType.FURNACE, radius)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a stone during the day",
+        "instruction_paraphrases":["Position a rock during daylight", 
+"In the hours following dawn and preceding dusk, one should position a stone",
+"At the time of sunlight, organize a boulder",
+"In the silver light of the day, there lies a task to be done, the setting of a stone so firm and stout",
+"When daylight holds the world in its warm grip, there lies a seemingly simple task, to root a stone in the heart of the earth."],
+        "check_lambda": "lambda game_data: at_time_block_placed(game_data, BlockType.STONE, radius)",
+        "str_check_lambda": "at_time_block_placed(game_data, BlockType.STONE, radius)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a furnace during the night",
+        "instruction_paraphrases":["Install a heater in the darkness", "While the obsidian cloak of nocturnal hours is wrapped around everything, position a stove", "During the time when night has enveloped everything, establish a heating apparatus", "In the dead of night, under the solemn spectacle of stars twinkling as though sharing secret tales, put forth a forge", "In the deep, silent grasp of evening, set forth a warming soul, a furnace, amidst the solitude"],
+        "check_lambda": "lambda game_data: at_time_block_placed(game_data, block_name=BlockType.FURNACE, radius=1)",
+        "str_check_lambda": "at_time_block_placed(game_data, block_name=BlockType.FURNACE, radius=1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a plant during the day.",
+        "instruction_paraphrases":["Position a flora in the daylight.", 
+"While the sun is shining, make it a point to position a plant.", 
+"In the illuminating daylight, make sure to establish the position of a flora.", 
+"In the vibrant luminescence of the noonday sun, dispatch thou a green embodiment of nature.", 
+"In the middle of the vast brightness that the day offers, give place to a life form, a plant, its own space to grow."],
+        "check_lambda": "lambda game_data: at_time_block_placed(game_data, BlockType.PLANT, radius)",
+        "str_check_lambda": "at_time_block_placed(game_data, BlockType.PLANT, radius)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Please place a plant when it's dark outside.",
+        "instruction_paraphrases":["Kindly position a flora during the nocturnal hours.", "When the outside world is shrouded in darkness, that is the moment one will set down a plant.", "At the time the external environment drowns in the night's obscurity, that is when one should purposefully situate the vegetation.", "In the eventide's veiled mystery, behest thine task of bestowing a herb in its rightful place.", "When the world around us submits to the quiet embrace of night, then it is the time to gently settle a plant in its spot, a meaningful ritual amidst the looming shadows."],
+        "check_lambda": "lambda game_data: at_time_block_placed(game_data, BlockType.PLANT, radius=10)",
+        "str_check_lambda": "at_time_block_placed(game_data, BlockType.PLANT, radius=10)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a crafting table during the daytime",
+        "instruction_paraphrases":["Position a building desk in the hours of sunlight", 
+"Though the duration of the day, it is then you should site a crafting table", 
+"During the stint at which the sun shines, accurately incline a constructing bench.", 
+"Layeth upon thy ground, under the watch of the brilliant sol, a table of crafts", 
+"In the light-filled dance of daytime, seek to find a place for your crafting table."],
+        "check_lambda": "lambda game_data: at_time_block_placed(game_data, BlockType.CRAFTING_TABLE, radius)",
+        "str_check_lambda": "at_time_block_placed(game_data, BlockType.CRAFTING_TABLE, radius)"
+    }
+}
+
+----

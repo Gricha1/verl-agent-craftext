@@ -1,0 +1,15 @@
+container:
+  image: "cr.ai.cloud.ru/0be50883-779e-4f89-a2c2-6befd3879c6f/craftext-cloud:latest" 
+  command: python3 baselines/ppo_with_instruction_rnn_visual_text_combined.py --craftext_settings medium --env_name "Craftax-Pixels-v1" --num_envs 256        
+  environment:                                                                          
+    "WANDB_API_KEY": "3f6fdf4323c224837cb09cb12af92fede4400119"
+    "CRAFTEXT_SCENARIO_PATH": "./craftext/scenarios/"
+  work_dir: '.'                                                                         
+  run_from_copy: False                                                                   
+  cry_copy_dir: "/home/jovyan/<LOCAL FOLDER>/.cryri"                                     
+
+cloud:
+  region: "SR006"                                                                        
+  instance_type: "a100plus.1gpu.80vG.12C.96G"                                            
+  n_workers: 1     
+  description: "craftext_medium"                                                                     

@@ -1,0 +1,137 @@
+#!/bin/bash
+
+# installing deps
+sudo apt-get update
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    curl \
+    libbz2-dev \
+    libffi-dev \
+    liblzma-dev \
+    libncursesw5-dev \
+    libreadline-dev \
+    libsqlite3-dev \
+    libssl-dev \
+    libxml2-dev \
+    libxmlsec1-dev \
+    llvm \
+    make \
+    tk-dev \
+    wget \
+    xz-utils \
+    zlib1g-dev \
+    vim \
+    less
+
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential git nano rsync vim tree curl \
+    wget unzip htop tmux xvfb patchelf ca-certificates bash-completion libjpeg-dev libpng-dev \
+    ffmpeg cmake swig libssl-dev libcurl4-openssl-dev libopenmpi-dev python3-dev zlib1g-dev \
+    qtbase5-dev qtdeclarative5-dev libglib2.0-0 libglu1-mesa-dev libgl1-mesa-dev libvulkan1 \
+    libgl1 libglx-mesa0 libosmesa6 libosmesa6-dev libglew-dev mesa-utils libglew-dev libc-dev libgl1-mesa-glx libglfw3 libglew2.1
+
+
+# installing conda
+if [ -d "$HOME/miniconda3" ]; then
+    echo "Miniconda is installed in $HOME/miniconda3"
+else
+    echo "Install Miniconda"
+    curl -L -o ~/miniconda.sh -O  https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh  &&\
+            chmod +x ~/miniconda.sh &&\
+            ~/miniconda.sh -b -p $HOME/miniconda3 &&\
+            rm ~/miniconda.sh &&\
+            /opt/conda/bin/conda install numpy pyyaml scipy ipython mkl mkl-include &&\
+            /opt/conda/bin/conda clean -ya
+fi
+export PATH=$HOME/miniconda3/bin:$PATH
+
+
+# installing craftext deps
+
+source "$HOME/miniconda3/etc/profile.d/conda.sh"
+
+# Создание окружения (если не существует)
+if ! conda env list | grep -q "dynalang"; then
+    echo "Creating dynalang environment..."
+    conda env create -f environment.yaml
+fi
+
+# Активация окружения
+echo "Activating conda environment..."
+conda activate dynalang
+
+# Проверка активации
+echo "Current conda environment:"
+conda info --envs | grep '*' || echo "No environment activated!"
+
+
+pip install "jax[cuda11_cudnn82]==0.4.7" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+
+pip install msgpack
+#RUN pip install torch
+#RUN pip install torchvision
+pip install scikit-learn
+
+# Install JAX deps
+pip install flax --no-deps
+pip install orbax-checkpoint==0.1.7 --no-deps
+pip install etils --no-deps
+pip install gymnax --no-deps
+pip install tensorstore --no-deps
+pip install distrax --no-deps
+
+# Install Torch deps
+pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cu113
+
+pip install pygame --no-deps
+pip install seaborn
+
+# Install Craftax, CrafText in docker for conda env
+cd ..
+cd Craftax && pip install -e . --no-deps
+
+cd ..
+pip install -e . --no-deps
+# Setup github
+#RUN echo "git config --global --add safe.directory /usr/home/workspace" >> ~/.bashrc
+
+
+
+
+#conda install python=3.9
+
+#python -m pip install --upgrade pip==24.0
+
+#pip install -r requirements.txt
+
+#pip install seaborn
+
+#echo "cd /usr/home/workspace/ && pip install -e ." >> ~/.bashrc
+#cd .. && pip install -e .
+#pip install orbax-checkpoint==0.5.7
+#pip install optax==0.1.9
+
+
+# setup wandb
+export WANDB_MODE="online"  # или "offline" если не хотите логировать
+export WANDB_API_KEY=""  # Ваш API ключ
+export COMET_API_KEY="3OfuYHwcRgIwG7DzgzJ190igY"
+
+#python test_python.py
+# run experiment
+pip show gymnax
+pip show jax
+pip show jaxlib
+pip install comet_ml
+
+echo "*********************"
+conda info --envs | grep '*'
+echo "*********************"
+
+nvidia-smi
+cd baselines
+echo "start training"
+python cmdp_ppo_with_instruction.py --craftext_settings achievements_safe_sequential_defeat_monster --env_name="Craftax-Classic-Pixels-v1-Text" --num_envs=512 \
+       --dir_path /home/ggorbov/craftext/CrafText
+#nvidia-smi
+#python docker/test_python.py

@@ -1,0 +1,26 @@
+FROM continuumio/miniconda3
+
+# install python 3.8.5
+RUN conda install python=3.9
+
+RUN python -m pip install --upgrade pip==24.0
+
+ADD requirements.txt /tmp/
+RUN pip install -r /tmp/requirements.txt
+
+RUN pip install seaborn
+
+RUN pip install plotly
+RUN pip install "plotly[kaleido]"
+RUN pip install --upgrade kaleido
+
+RUN pip install comet_ml
+#RUN plotly_get_chrome
+RUN apt update -y && apt-get install -y libnss3 libatk-bridge2.0-0 libcups2 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2
+
+RUN echo "cd /usr/home/workspace/ && pip install -e ." >> ~/.bashrc
+
+RUN echo "pip install orbax-checkpoint==0.5.7" >> ~/.bashrc
+RUN echo "pip install optax==0.1.9" >> ~/.bashrc
+
+WORKDIR /usr/home/workspace

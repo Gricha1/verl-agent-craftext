@@ -1,0 +1,74 @@
+# System
+FROM nvidia/cuda:11.4.3-cudnn8-devel-ubuntu20.04
+ARG DEBIAN_FRONTEND=noninteractive
+ENV TZ=America/San_Francisco
+ENV PYTHONUNBUFFERED 1
+ENV PIP_DISABLE_PIP_VERSION_CHECK 1
+ENV PIP_NO_CACHE_DIR 1
+RUN apt-get update && apt-get install -y \
+  ffmpeg git python3-pip vim libglew-dev \
+  x11-xserver-utils xvfb curl pkg-config \
+  libhdf5-dev libfreetype6-dev zip \
+  libsdl1.2-dev libsdl-image1.2-dev libsdl-ttf2.0-dev \
+  libsdl-mixer1.2-dev libportmidi-dev \
+  && apt-get clean
+
+# Install conda
+RUN curl -L -o ~/miniconda.sh -O  https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh  &&\
+    chmod +x ~/miniconda.sh &&\
+    ~/miniconda.sh -b -p /opt/conda &&\
+    rm ~/miniconda.sh &&\
+    /opt/conda/bin/conda install numpy pyyaml scipy ipython mkl mkl-include &&\
+    /opt/conda/bin/conda clean -ya
+ENV PATH /opt/conda/bin:$PATH
+
+ADD docker/environment.yaml /tmp/
+RUN conda env create -f /tmp/environment.yaml
+
+# Make RUN commands use the new environment:
+SHELL ["conda", "run", "-n", "dynalang", "/bin/bash", "-c"]
+
+# Ensure the conda environment is activated:
+RUN echo "!!Make sure conda is activated:" && which python && python --version
+
+# Install JAX with CUDA support
+RUN pip install "jax[cuda11_cudnn82]==0.4.7" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+
+RUN pip install msgpack
+#RUN pip install torch
+#RUN pip install torchvision
+RUN pip install scikit-learn
+
+# Install JAX deps
+RUN pip install flax --no-deps
+RUN pip install orbax-checkpoint==0.1.7 --no-deps
+RUN pip install etils --no-deps
+RUN pip install gymnax --no-deps
+RUN pip install tensorstore --no-deps
+RUN pip install distrax --no-deps
+
+# Install Torch deps
+RUN pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cu113
+
+RUN pip install pygame --no-deps
+RUN pip install seaborn
+
+# Install Craftax, CrafText in docker for conda env
+SHELL ["/bin/bash", "--login", "-c"]
+RUN echo ". /opt/conda/etc/profile.d/conda.sh" >> ~/.bashrc && \
+    echo "conda activate dynalang" >> ~/.bashrc
+RUN echo "cd /usr/home/workspace/Craftax && pip install -e . --no-deps" >> ~/.bashrc
+RUN echo "cd /usr/home/workspace/ && pip install -e . --no-deps" >> ~/.bashrc
+
+# Setup github
+RUN echo "git config --global --add safe.directory /usr/home/workspace" >> ~/.bashrc
+
+RUN pip install plotly
+
+RUN pip install --upgrade kaleido
+
+RUN echo "y" | plotly_get_chrome
+
+RUN apt update && apt-get install -y libnss3 libatk-bridge2.0-0 libcups2 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2
+
+WORKDIR /usr/home/workspace

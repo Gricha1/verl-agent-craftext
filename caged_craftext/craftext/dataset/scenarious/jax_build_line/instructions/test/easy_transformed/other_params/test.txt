@@ -1,0 +1,143 @@
+{
+    INSTRUCTION_CRAFTING_TABLE_2: {
+        instruction: Check for the existence of a line of crafting table blocks of size 2 within the game.,
+        scenario_checker: 3,
+        instruction_paraphrases: [
+            Look for a line containing 2 blocks of crafting tables.,
+            Can you spot a line within the game that constitutes 2 blocks, specifically crafting table blocks?,
+            Explore the surroundings for a linear arrangement of 2 crafting table blocks.,
+            Ensure to identify a sequence containing a pair of crafting table blocks in a linear arrangement.,
+            In the game, confirm if there is a linear pattern consisting of a pair of crafting table blocks.
+        ],
+        arguments: create_target_state(BlockType.CRAFTING_TABLE, 2, check_diagonal=False),
+        str_check_lambda: \"str_check_lambda: is_line_formed(gd, ix)\"
+    }
+}
+----
+{
+    INSTRUCTION_STONE_2: {
+        instruction: Form a diagonal line made up of stones of length 2.,
+        scenario_checker: 3,
+        instruction_paraphrases: [
+            Create a slanted row of rocks spanning a distance of 2 spaces.,
+            Position two stones in a diagonal formation.,
+            Erect a diagonal pathway composed of 2 stones.,
+            Fabricate a two-part diagonal series using stones.,
+            Assemble a sequence of rocks arranged diagonally with a size twice that of a single rock.
+        ],
+        arguments: create_target_state(BlockType.STONE, 2, check_diagonal=True),
+        str_check_lambda: \"str_check_lambda: is_line_formed(gd, ix)\"
+    }
+}
+----
+{
+    INSTRUCTION_PLANT_4: {
+        instruction: Create a diagonal line of Plant type blocks that is 4 blocks long.,
+        scenario_checker: 3,
+        instruction_paraphrases: [
+            Form a 4-block long diagonal line with blocks of the Plant type.,
+            On the game map, arrange Plant blocks in a diagonal line that spans four squares.,
+            Can you build a diagonal line, with a size of four blocks, and use only Plant blocks?,
+            Construct a line that's 4 units long, using only Plant blocks. Make sure the line is diagonal.,
+            Could you form a stretch of Plant blocks diagonally across 4 grid spaces?
+        ],
+        arguments: create_target_state(BlockType.PLANT, 4, check_diagonal=True),
+        str_check_lambda: \"str_check_lambda: is_line_formed(gd, ix)\"
+    }
+}
+----
+{
+    INSTRUCTION_STONE_2: {
+        instruction: Make sure there is a row of two stones in your proximity.,
+        scenario_checker: 3,
+        instruction_paraphrases: [
+            Ensure a line of couple of rocks exists somewhere close to you.,
+            Verify if you find a couple of stones lined up nearby.,
+            Ascertaining there are two stones in a sequence situated near you.,
+            Could you confirm for me if a two-stone line is in your vicinity?,
+            Authenticate whether or not a row of two stones is located nearby.
+        ],
+        arguments: create_target_state(BlockType.STONE, 2, check_diagonal=False),
+        str_check_lambda: \"str_check_lambda: is_line_formed(gd, ix)\"
+    }
+}
+----
+{
+    INSTRUCTION_PLANT_3: {
+        instruction: Create a diagonal line of plant blocks with a length of 3,
+        scenario_checker: 3,
+        instruction_paraphrases: [
+            Form a 3 block long diagonal line using plant blocks,
+            Position three plant blocks in a diagonal line,
+            Create a diagonal row consisting of three types of plant blocks,
+            Build a line of plant blocks diagonally with a size of three,
+            Fabicate a line diagonally with three blocks and make sure they are plant blocks
+        ],
+        arguments: create_target_state(BlockType.PLANT, 3, check_diagonal=True),
+        str_check_lambda: \"str_check_lambda: is_line_formed(gd, ix)\"
+    }
+}
+----
+{
+    INSTRUCTION_PLANT_2: {
+        instruction: Make a diagonal line of plants, 2 blocks long.,
+        scenario_checker: 3,
+        instruction_paraphrases: [
+            Create a line of flora, 2 blocks in length, in a diagonal orientation.,
+            Place two plant blocks in a line, arranging them diagonally.,
+            Form a line composing of two plants, positioned diagonally.,
+            Organize a 2-block long diagonal sequence with plants.,
+            Construct a diagonal sequence using two pieces of flora.
+        ],
+        arguments: create_target_state(BlockType.PLANT, 2, check_diagonal=True),
+        str_check_lambda: \"str_check_lambda: is_line_formed(gd, ix)\"
+    }
+}
+----
+{
+    INSTRUCTION_FURNACE_4: {
+        instruction: Verify if there is a line of Furnaces of length 4 in the game.,
+        scenario_checker: 3,
+        instruction_paraphrases: [
+            Please ensure there is a straight line consisting of four Furnaces in the game.,
+            Confirm if you can find a continuous line of four Furnaces in the game.,
+            Please Authenticate a straight alignment of Furnaces with a count of 4 in the game.,
+            Can you authenticate a linear arrangement of Furnaces, where the quantity is 4, in our current game?,
+            Would you be so kind as to ascertain the existence of a sequence of Furnaces, comprising four units in a straight line within the game?
+        ],
+        arguments: create_target_state(BlockType.FURNACE, 4, check_diagonal=False),
+        str_check_lambda: \"str_check_lambda: is_line_formed(gd, ix)\"
+    }
+}
+----
+{
+    INSTRUCTION_STONE_4: {
+        instruction: Form a diagonal line of stone blocks of size 4,
+        scenario_checker: 3,
+        instruction_paraphrases: [
+            Create a diagonal streak of stone of four blocks,
+            Arrange a series of four boulders in a diagonal line,
+            Produce a diagonal row of quartet rocks,
+            Set up an oblique chain of stone blocks, each with a total of four units,
+            Structure a diagonal stone linkage of exactly four
+        ],
+        arguments: create_target_state(BlockType.STONE, 4, check_diagonal=True),
+        str_check_lambda: \"str_check_lambda: is_line_formed(gd, ix)\"
+    }
+}
+----
+{
+    INSTRUCTION_CRAFTING_TABLE_4: {
+        instruction: Check if there's a diagonal line of crafting tables at least four blocks long,
+        scenario_checker: 3,
+        instruction_paraphrases: [
+            See if there is a slanted line of at least four workbenches.,
+            Can you find a diagonal array of 4 or more craft tables in a sequence?,
+            Examine if there's a sequence of a minimum of four artisan tables in a diagonal line.,
+            Check to see if there's a series of craft stations in a slanting line, with at least four blocks.,
+            Look for a sequence of crafting tables aligned diagonally, totaling a minimum of four items.
+        ],
+        arguments: create_target_state(BlockType.CRAFTING_TABLE, 4, check_diagonal=True),
+        str_check_lambda: \"str_check_lambda: is_line_formed(gd, ix)\"
+    }
+}

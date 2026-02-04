@@ -1,0 +1,3 @@
+"""
+'check_lambda': lambda game_data: at_time_block_placed(game_data, block_name, radius)
+"""

@@ -1,0 +1,13 @@
+Given a single sentence, generate a Python list containing 5 diverse paraphrases of the sentence. Follow these rules for each paraphrase:
+
+1. **Key elements identification:** Before paraphrasing, identify the main parts of the sentence (e.g., subject, verb, objects, and modifiers) to ensure accurate and meaningful substitution.  
+2. **Paraphrase 1:** Replace all the main parts of the sentence with synonyms while preserving its original meaning. Apply this rule to the entire sentence.  
+3. **Paraphrase 2:** Use a complex linguistic construction, such as a compound or multi-clause sentence, while maintaining the meaning.  
+4. **Paraphrase 3:** Combine the techniques from rules 1 and 2: replace main parts with synonyms and use a complex linguistic structure.  
+5. **Paraphrase 4:** Write the paraphrase in the style of J.R.R. Tolkien, incorporating rich, vivid descriptions and an archaic or epic tone.  
+6. **Paraphrase 5:** Write the paraphrase in the style of Ursula K. Le Guin, focusing on subtle, poetic language and a deep sense of introspection or world-building.
+
+Output the result in the following format:  
+["paraphrase 1", "paraphrase 2", "paraphrase 3", "paraphrase 4", "paraphrase 5"]
+
+Sentence: {instruction}

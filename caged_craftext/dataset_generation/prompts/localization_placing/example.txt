@@ -1,0 +1,5 @@
+"""
+'check_lambda': lambda game_data, ix: place_object_relevant_to(
+            game_data, BlockType.CRAFTING_TABLE, BlockType.TREE, 2, 1
+        )
+"""

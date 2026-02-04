@@ -1,0 +1,3 @@
+"""
+'check_lambda': lambda game_data, ix: is_square_formed(game_data,ix, BlockType.FURNACE, 3)
+"""

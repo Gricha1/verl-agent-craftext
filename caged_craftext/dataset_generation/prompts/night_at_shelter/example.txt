@@ -1,0 +1,3 @@
+"""
+'check_lambda': lambda game_data: is_cross_formed(game_data, block_name, size=3, radius=5)
+"""

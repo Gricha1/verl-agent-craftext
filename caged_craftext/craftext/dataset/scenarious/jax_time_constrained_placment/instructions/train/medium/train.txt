@@ -1,0 +1,95 @@
+{
+    "INSTRUCTION_FURNACE_MORNING": "{
+        "instruction": "Place a furnace in the morning",
+        "scenario_checker": "Scenarios.TIME_CONSTRAINED_PLACEMENT.value,
+        "instruction_paraphrases": [
+            "During the early hours, set a heater",
+            "At sunrise, position a stove",
+            "Put a kiln when it's sunrise",
+            "Install a heating device as day breaks",
+            "Mount a heater during the dawn"
+        ]
+        "arguments":  create_target_state(BlockType.FURNACE, radius),
+        "str_check_lambda": "lambda gd, ix: "at_time_block_placed(gd, ix)"
+    }
+}
+----
+{
+    "INSTRUCTION_FURNACE_EVENING": "{
+        "instruction": "Place a furnace during the evening",
+        "scenario_checker": "Scenarios.TIME_CONSTRAINED_PLACEMENT.value,
+        "instruction_paraphrases": [
+            "Set the furnace when it's nighttime.",
+            "Position the heating appliance as the sun is setting.",
+            "During the evening, ensure the furnace is placed.",
+            "As the day turns into night, fix the smelting device in place.",
+            "When the twilight sets in, manufacture and position the smelter.",
+        ]
+        "arguments":  create_target_state(BlockType.FURNACE, radius),
+        "str_check_lambda": "lambda gd, ix: "at_time_block_placed(gd, ix)"
+    }
+}
+----
+{
+    "INSTRUCTION_STONE_STONE": "{
+        "instruction": "Place a stone during the morning.
+        "scenario_checker": "Scenarios.TIME_CONSTRAINED_PLACEMENT.value
+        "instruction_paraphrases": [
+            "Set a rock at sunrise.",
+            "Position the pebble when it's daytime.",
+            "In the morning, lay down the stone.",
+            "At daybreak, put a stone in its place.",
+            "When morning arrives, place your piece of rock."
+        ]
+        "arguments":  create_target_state(BlockType.STONE, 1),
+        "str_check_lambda": "lambda gd, ix: "at_time_block_placed(gd, ix)"
+    }
+}
+----
+{
+    "INSTRUCTION_STONE_EVENING": "{
+        "instruction": "Place a stone in the evening
+        "scenario_checker": "Scenarios.TIME_CONSTRAINED_PLACEMENT.value
+        "instruction_paraphrases": [
+            "During dusk, put a rock down.",
+            "Please set a cobble in the nightfall.",
+            "As the night begins, position a pebble.",
+            "Insert a boulder as the sun is setting.",
+            "Position a chunk of stone in position when it's twilight."
+        ]
+        "arguments":  create_target_state(BlockType.STONE, radius),
+        "str_check_lambda": "lambda gd, ix: "at_time_block_placed(gd, ix)"
+    }
+}
+----
+{
+    "INSTRUCTION_ENCHANTMENT_TABLE_ICE_EVENING": "{
+        "instruction": "Place a enchantment table of ice during the evening
+        "scenario_checker": "Scenarios.TIME_CONSTRAINED_PLACEMENT.value
+        "instruction_paraphrases": [
+            "At dusk, set down an ice enchantment table
+            "Position a frosty enchanting bench when the sun goes down
+            "Put an icy magician's table in place at twilight
+            "When it's getting dark, install an icy magical workbench
+            "During the time of sundown, establish a frosty charm desk
+        ]
+        "arguments":  create_target_state(BlockType.ENCHANTMENT_TABLE_ICE, radius)
+        "str_check_lambda": "lambda gd, ix: "at_time_block_placed(gd, ix)
+    }
+}
+----
+{
+    "INSTRUCTION_ENCHANTMENT_TABLE_FIRE_EVENING": "{
+        "instruction": "Place a Enchantment_Table_Fire during the evening
+        "scenario_checker": "Scenarios.TIME_CONSTRAINED_PLACEMENT.value
+        "instruction_paraphrases": [
+            "During the evening, set an Enchantment Table of Fire.
+            "When it gets dark, position a Fire Enchantment Table.
+            "Put down an Enchantment_Table_Fire as the evening falls.
+            "At dusk, establish an Enchantment Table with Fire attributes.
+            "In the later part of the day, positioned a fire imbued enchantment table into the game.
+        ]
+        "arguments":  create_target_state(BlockType.ENCHANTMENT_TABLE_FIRE, radius)
+        "str_check_lambda": "lambda gd, ix: "at_time_block_placed(gd, ix)
+    }
+}

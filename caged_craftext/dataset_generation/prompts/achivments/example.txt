@@ -1,0 +1,8 @@
+
+"""
+check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.PLACE_FURNACE.value, Achievement.MAKE_IRON_SWORD.value] else
+            -1 if a == Achievement.MAKE_IRON_PICKAXE.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ]))
+\"""

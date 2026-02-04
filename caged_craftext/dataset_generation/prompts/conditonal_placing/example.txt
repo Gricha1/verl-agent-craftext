@@ -1,0 +1,3 @@
+"""
+ lambda gd, ix: conditional_placing(gd, InventoryItems.WOOD, BlockType.FURNACE, 1, 1)
+ """

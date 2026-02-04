@@ -1,0 +1,15 @@
+planer_config:
+
+  model_config:
+    original_model_path: "Qwen/Qwen2.5-3B-Instruct"
+    peft_weights_path: null
+
+  generation_config:
+    num_paraphrases: 20
+    beam_groups: 20
+    beams_count: 20
+    max_new_tokens: 128
+    prompt_template: 0
+  super_dataset: null
+  
+  augment: false

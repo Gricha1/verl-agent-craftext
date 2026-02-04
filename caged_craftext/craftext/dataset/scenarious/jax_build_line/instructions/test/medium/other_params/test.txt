@@ -1,0 +1,240 @@
+{
+    "INSTRUCTION": {
+        "instruction": "Create a diagonal line of stones with a size of 7.",
+        "instruction_paraphrases": [
+            "Make a slanted line of rocks with a span of 7.",
+            "Form a line of seven stones on an angle.",
+            "Sketch a diagonal sequence using seven rocks.",
+            "Develop a diagonal row of stones that stretches to a length of 7.",
+            "Construct a diagonal arrangement of boulders with a total count of seven."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.STONE, 7, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.STONE, 7, check_diagonal=True)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a line of furnaces that is five blocks in length.",
+        "instruction_paraphrases": [
+            "Create a straight line made up of five furnaces.",
+            "In a straight line, place five furnace blocks.",
+            "Assemble a linear collection of five furnace blocks.",
+            "Set up a raw of five furnaces in sequential order.",
+            "Arrange five furnaces in a straight line."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.FURNACE, 5, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.FURNACE, 5, check_diagonal=False)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Check if there's a diagonal line of enchantment fire tables of size 3.",
+        "instruction_paraphrases": [
+            "Verify a line of three fire enchantment tables aligned diagonally.",
+            "Can you identify a diagonal sequence of three enchantment fire tables?",
+            "Ensure there's a triplet of enchantment fire tables configured diagonally.",
+            "Confirm the presence of a row of three fire enchantment tables that's diagonally arranged.",
+            "Find a diagonal alignment of three enchantment fire tables and validate it."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_FIRE, 3, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_FIRE, 3, check_diagonal=True)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Check if there is a line of crafting tables of length 4.",
+        "instruction_paraphrases": [
+            "Examine if four crafting tables are aligned in a line.",
+            "Scan if there exist a consecutive row of four crafting tables.",
+            "Can you confirm if there is a straight line made up of four workbenches?",
+            "Investigate if there's a linear arrangement of four crafting stations.",
+            "Please verify if we have a sequence of four workstations forming a straight line."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.CRAFTING_TABLE, 4, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.CRAFTING_TABLE, 4, check_diagonal=False)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Check if there's a line of enchantment tables filled with ice, with a length of six.",
+        "instruction_paraphrases": [
+            "Verify whether a line of icy enchantment tables, six in length, exists.",
+            "Explore the presence of a sequentially arranged line, containing six enchantment tables of the ice type.",
+            "Can you find a consecutive line made up of six frost-laden enchantment tables?",
+            "Look for a linear arrangement comprising six icy magic workstations laid out in succession.",
+            "Confirm the existence of an uninterrupted line formation consisting of precisely six enchantment tables, each infused with the element of ice."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, 6, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, 6, check_diagonal=False)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Check if there is a diagonal line of enchantment table of fire with a length of two",
+        "instruction_paraphrases": [
+            "Please verify whether there's a sequence of two fire enchantment tables in a diagonal line",
+            "Inspect the surroundings and see if there is a diagonal arrangement of two fire enchanting tables",
+            "Could you check for a series of two fire enchantment platforms that are placed in a diagonal line?",
+            "Ascertain whether you can see a pattern of two fire enchantment tables arranged diagonally?",
+            "Evaluate the vicinity for a diagonal sequence of two fire enchantment stations"
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_FIRE, 2, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_FIRE, 2, check_diagonal=True)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Check for a line of rocks that has a length of 3.",
+        "instruction_paraphrases": [
+            "Confirm if there's a three-block-long line of stones.",
+            "Can you find a stretch of rocks that spans three blocks?",
+            "Do you see a stone line that consists of 3 consecutive blocks?",
+            "I want you to verify if there exists a sequence of stones arranged in a line with a length of three.",
+            "Establish whether there is a direct arrangement of three blocks worth of stones."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.STONE, 3, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.STONE, 3, check_diagonal=False)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Make a diagonal line of two blocks using furnaces.",
+        "instruction_paraphrases": [
+            "Create a furnace line diagonally made of two blocks.",
+            "Arrange two furnace blocks in a diagonal line.",
+            "Fabricate a diagonal sequence that consists of a pair of furnace blocks.",
+            "Using furnaces, form a bidirectional line that is positioned diagonally.",
+            "A pair of furnace cubes is required to be assembled into a diagonal formation."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.FURNACE, 2, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.FURNACE, 2, check_diagonal=True)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Make a diagonal line of plant blocks with length 3",
+        "instruction_paraphrases": [
+            "I need a line of plant blocks, stretching out diagonally for 3 blocks",
+            "Create a series of three plant blocks in a diagonal pattern",
+            "Formulate a line with three plant items, but ensure it's arranged diagonally",
+            "Can you construct a diagonal line, that is 3 blocks long, with plant blocks?",
+            "Place plant blocks to form a diagonal sequence that extends for three blocks"
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.PLANT, 3, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.PLANT, 3, check_diagonal=True)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Ensure that there is a straight line of three Enchantment Ice Table blocks in the game map.",
+        "instruction_paraphrases": [
+            "Check if there exists a sequence of three consecutive Enchantment Ice Table blocks in the game layout.",
+            "Isn't the game map arranged in such a way that it consecutively delivers three Enchantment Ice Tables?",
+            "Confirm if we can spot three successive blocks of Enchantment Ice Tables in the current game map.",
+            "Verify the presence of a successive trio of Enchantment Ice Table blocks in the game.",
+            "Can you determine whether or not there exists a line of three Enchantment Ice Table blocks in a row in our current game map?"
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, 3, check_diagonal= False),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, 3, check_diagonal= False)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Please find and check for a diagonal line of furnaces that contains 5 in a row.",
+        "instruction_paraphrases": [
+            "We need to inspect for furnace alignment. Could you verify if there's a sequence of 5 furnaces constructed in a diagonal pattern?",
+            "You need to identify if there's a series of 5 furnaces, arranged diagonally.",
+            "What I want you to do is locate a row of 5 furnaces positioned in an oblique line.",
+            "Overall objective is the identification of a sequence of 5 furnaces in a line, but not a straightforward one, rather a diagonal line.",
+            "The mission I have for you involves furnaces. Look for a formation where 5 of them are aligned in a diagonal sequence."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.FURNACE, 5, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.FURNACE, 5, check_diagonal=True)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Check if there's a line of six crafting tables in the game.",
+        "instruction_paraphrases": [
+            "Inspect if a sequence of six crafting tables is present in the game",
+            "Do examine if a row of six crafting benches exists in the game",
+            "Can you verify if there's a line of six workbenches in the current game state?",
+            "Conduct a check to confirm if the game contains a succession of six carpentry tables.",
+            "Could you ascertain if there prevails a continuous array of six joiner's benches in the game environment?"
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data,ix, BlockType.CRAFTING_TABLE, 6, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data,ix, BlockType.CRAFTING_TABLE, 6, check_diagonal=False)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Check if there is a line of plant blocks of length 5.",
+        "instruction_paraphrases": [
+            "Can you check for a string of five plant blocks in a row?",
+            "Look out for an arrangement of vegetation blocks that stretches out for five blocks.",
+            "Are we able to find any sequence of plant blocks that consists of a length of five?",
+            "Validate the existence of a consecutive line of five blocks which are of plant type.",
+            "Could you verify whether we have a series of five blocks arranged consecutively that represent plants?"
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data,ix, BlockType.PLANT, 5, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data,ix, BlockType.PLANT, 5, check_diagonal=False)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Arrange a diagonal line of torches that will be seven blocks long.",
+        "instruction_paraphrases": [
+            "Set a line of torches to run diagonally and make it seven blocks in length.",
+            "Assemble a torch line of seven blocks on a diagonal.",
+            "Place seven torches in a diagonal line.",
+            "Construct a line using seven torches and angle it diagonally.",
+            "Create a diagonal alignment using seven torches."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data,ix, BlockType.FOUNTAIN, 7, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data,ix, BlockType.FOUNTAIN, 7, check_diagonal=True)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Form a line of Enchantment Table Ice with a length of 2.",
+        "instruction_paraphrases": [
+            "Create a straight line consisting of 2 Ice Enchantment Tables",
+            "Construct a row of 2 Enchantment Table Ice units",
+            "Arrange two Enchantment Table Ices in a linear format",
+            "Using two Ice Enchantment Tables, create a line",
+            "Put two Enchantment Table Ices in a row."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, 2, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, 2, check_diagonal=False)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Identify if there is a line of three furnaces",
+        "instruction_paraphrases": [
+            "Can you spot a chain of three furnaces?",
+            "Look for a series of three heating units aligned together.",
+            "Is there a linear sequence of three smelting structures?",
+            "You should check and see if there's a trio of furnaces arranged in a single line.",
+            "Verify if a consecutive arrangement of three units dedicated for heating and smelting has been formed."
+        ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.FURNACE, 3, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.FURNACE, 3, check_diagonal=False)"
+    }
+}
+----

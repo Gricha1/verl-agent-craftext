@@ -1,0 +1,205 @@
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the stone two blocks to the left of the furnace.",
+        "instruction_paraphrases":["Position the rock two cubes left of the smelter.", "Next to the smelting furnace, precisely two blocks to the left, that's where the stone must be situated.", "Just adjacent to the furnace for smelting, in the exact location two cubes to the left, that's where the rock should be positioned.", "Twain cubes yonder to the left of the fiery furnace, there in truth you are bid to set the stone.", "Tick two paces left from the heat of the forge, there, in gentle agreement with the world's order, let the stone find its place."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.FURNACE, 1, 2),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.STONE, BlockType.FURNACE, 1, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the furnace two blocks above the ruby.",
+        "instruction_paraphrases":["Position the heater two units over the gem.", 
+"Ensure that the furnace finds its position two blocks higher than where the ruby is located.", 
+"Arrange the heater in such a way that it is situated not on the level of the gem, but two units greater.", 
+"In the shadowy depths, where the red flame of ruby flickers, one must position yonder furnace, in a place that would take two steps to reach should one climb from the gem.", 
+"In the weave of this world, look to the ruby, shimmering low, and from there, count two blocks higher - there establish the furnace, its warm heart beating in the dark."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.RUBY, 2, 2),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.RUBY, 2, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the Fire Enchantment table two blocks above the water source.",
+        "instruction_paraphrases":["Position the Fire Enchantment stand two cubes above the water origin.", 
+  "While the water source lays below, the Fire Enchantment table should be placed, uninterrupted, two blocks higher.", 
+  "Whilst the aquatic origin rests beneath, the Fire Enchantment stand ought to be positioned, without any obstructions, two cubes elevated.",
+  "In a realm where the liquid life-source flows beneath, it was asked that the Table of Fire Enchantment rise, as if compelled by invisible forces, two blocks high, suspended in hallowed silence above the waters.", 
+  "In a world where the water source, the life giver, dwells below, The Fire Enchantment table, a tool of formidable magic, claims its rightful place two blocks above, a silent sentinel hovering over the waters, untouched."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, BlockType.WATER, 2, 2),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, BlockType.WATER, 2, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the stone 4 squares to the right side of the ripe plant",
+        "instruction_paraphrases":["Position the rock four grids to the appropriate side of the mature flora", 
+"Four squares away, at the right of the ripe plant, is where you should place the stone",
+"Towards the accurate side of the mature vegetation, arrange the pebble precisely four squares afar",
+"In the vastness of the green, one must with great care deposit yonder stone some four squares to the rightful side of the ripened plant, ripe as the morning dew",
+"Amidst ethereal greenery, allow the stone to find its rest in a position four squares to the right of the plant - ripe with wisdom of growth and time."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.RIPE_PLANT, 0, 4),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.STONE, BlockType.RIPE_PLANT, 0, 4)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a furnace one block to the right of the fountain",
+        "instruction_paraphrases":["Situate a kiln one cube to the starboard of the water feature", "A furnace should be positioned just one block to the right - the exact location lies adjacent to the fountain ", "Position a heater precisely one square on the starboard - a spot neighbouring to the water spectacle", "In the company of the fountain, a solitary step to the right, plant thou thy forge, as if the two companions speak in silent harmony", "In the close presence of the fountain, let a furnace take its place, alone unto the right by a bare block's distance, engaging in quiet dialogue with the serene water."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.FOUNTAIN, 0, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.FOUNTAIN, 0, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the stone four blocks to the left of the fire grass.",
+        "instruction_paraphrases":["Position the rock quartet squares to the west of the flame foliage.", 
+"While keeping fire grass as a point of reference, move four blocks and there you must put the stone.", 
+"Having the flame foliage as your guide, eastward for four segments, that's where the rock should be established.", 
+"Four squares westward of the searing blades of grass, in that untouched place, the stone of origins must be laid to rest, untouched by the flames.", 
+"In the dance of placement, the stone becomes a partner four steps leftward from the fire grass, in a ritual older than memory."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.FIRE_GRASS, 1, 4),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.STONE, BlockType.FIRE_GRASS, 1, 4)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the enchantment table fire one block to the right of the tree",
+        "instruction_paraphrases":["Position the magic platform fire a unit space to the starboard of the wood",
+ "The activity of setting the enchantment table fire involves moving it just one block towards the right of the tree",
+ "For the act of positioning the magic platform fire, you must shift it a unit space to the right-hand side of the wood",
+ "'Twas directed, by powers unseen, that one should ordain the sorcery board aflame, a mere stone's step to the right of the ancient tree",
+ "Imagine a world where the fire of the mystic table must gently be laid exactly one space rightward from the rooted tree"],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, BlockType.TREE, 0, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, BlockType.TREE, 0, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Put the stone 3 blocks to the left of the fire grass.",
+        "instruction_paraphrases":["Place the pebble three sections to the left of the flame foliage.", 
+"On the left side, exactly three blocks away from the fire grass, is where the stone should be placed.", 
+"Relocate the rock to a location precisely three partitions to the left of the combustion vegetation.", 
+"In the realm where fire grass dances in the gusts, the stone should find a home, three spans to the left, steadfast in its position.", 
+"In the symphony of reality, where the flame foliage murmurs whispering hymns, the unassuming stone should find solace, three steps removed and towards the brightness of the left."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.STONE, BlockType.FIRE_GRASS, 1, 3),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.STONE, BlockType.FIRE_GRASS, 1, 3)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the furnace one block to the right of the plant",
+        "instruction_paraphrases":["Position the heater a unit to the east of the shrub", "A plant exists, and to its right by the distance of a single block, a furnace should be positioned", "A shrub is defined, and to its immediate east, influenced by the span of a lone unit, a heater ought to be lodged", "In the space wherein a green plant has its existence, seek thee one measure to the right where thou shall position thy forge", "There is a discord between plant and heater, separated by a single unit of space moving toward the east, in this crafted world we dwell."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.PLANT, 0, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.PLANT, 0, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a crafting table 5 blocks above the fire enchantment table",
+        "instruction_paraphrases":["Install a work surface 5 blocks away from the flame bewitchment surface", "Observing the fire enchantment table, you should position the crafting table precisely five blocks higher", "Situate the workbench a distance of five blocks over the flame spellbinding stand, if you gauge it correctly", "Upon the ethereal enchantment table bearing a blazing spell, thou must post a crafting surface, lifted to the heights of five blocks", "In a world where enchantment and craftmanship intertwine, on a plain raised five blocks high from the fire-imbued enchantment table, lay down your crafting terrain."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.ENCHANTMENT_TABLE_FIRE, 2, 5),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.ENCHANTMENT_TABLE_FIRE, 2, 5)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the furnace four blocks directly above the fire grass.",
+        "instruction_paraphrases":["Arrange the heater four units straightabove the fire flora.", 
+"Ensure that the stove is situated four blocks in height directly over the flaming vegetation.", 
+"A four-block elevation needs to be maintained between the fire-touched grass and the strategically positioned kiln.", 
+"In the direct ascension of fourscore blocks from the incandescent blades of flaming verdure, one must perchance locate the smithy.", 
+"Just as a star finds its place in the sky, so must the kiln find its place - four blocks removed, though straight above, the fire-kissed grass."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.FIRE_GRASS, 2, 4),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.FURNACE, BlockType.FIRE_GRASS, 2, 4)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a plant three blocks below the area of darkness",
+        "instruction_paraphrases":["Position a flora trio of cubes beneath the zone of obscurity", 
+"Proceed in the placement of a plant at a distance equivalent to three blocks in the lower region under the territory dominated by darkness",
+"The method involves stationing a flora a triple of units downwardly the section engulfed in dimness",
+"In an area shrouded in shadows, deep down by count of three stones, it is ordained that a sapling must find its position",
+"In the still and silent dominion of the unseen, three steps of distance below, a plant is to nestle and bathe in the undisturbed tranquility of darkness"],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.PLANT, BlockType.DARKNESS, 3, 3),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.PLANT, BlockType.DARKNESS, 3, 3)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the fire enchantment table two blocks below the invalid block",
+        "instruction_paraphrases":["Set the pyro enchantment board a pair of blocks beneath the faulty cube", 
+"Impose the act of positioning the table of fire enchantment straight two units beneath, where stands the non-viable block", 
+"Cast the essential imperative of arranging the board of pyro enchantment, following downwards to a duo of units beyond the place of the faulty cube", 
+"Let it be declared: beneath the block, void and lacking substance, descend two measures, there to lay down the Table of Enchantment, ablaze with unseen flame", 
+"In the world of blocks, one finds a nonconforming form, devoid of purpose. Lay beneath it, two spaces down, the fiery enchantment table, holder of arcane powers yet unseen."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, BlockType.INVALID, 3, 2),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_FIRE, BlockType.INVALID, 3, 2)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place Crafting Table right 1 block away from the water body",
+        "instruction_paraphrases":["Position the Crafting Table exactly one block distant from the aquatic structure", "While maintaining a distance of one block away from the water body, position the Crafting Table right there", "While adhering to an exact measurement of a one-block separation from the aquatic entity, set the Crafting Table precisely in that location", "In the heart of ye ancient land of mystery, do thou place yonder Crafting Table justly a stone's throw from the body of water, shimmering under the celestial dome", "In the underlayment of the world, find a measured balance between the Crafting Table and the oceanic entity, with but a single block break between them, a testament to both ingenuity and the unending dance of distance."],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.WATER, 0, 1),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.CRAFTING_TABLE, BlockType.WATER, 0, 1)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place the enchantment table of ice five blocks below the ruby.",
+        "instruction_paraphrases":["Locate the sorcery desk of frost five cubes beneath the garnet",
+ "Below the garnet, by a count of five blocks, one must find the ice magic table",
+ "Below the crimson gemstone, using five units of measurement, find the frost bewitching bench",
+ "In the deep, where the garnet gleams, five paces beneath, one is required to lay down the ethereal board of frost, the mystic symbol of sorcery",
+ "Where the ruby glows beneath the frost, five pieces of the world lower, the table of enchantment is to be found, shrouded in ice"],
+        'check_lambda': lambda game_data, ix: place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_ICE, BlockType.RUBY, 3, 5),
+        "str_check_lambda": "place_object_relevant_to(game_data, BlockType.ENCHANTMENT_TABLE_ICE, BlockType.RUBY, 3, 5)"
+    }
+}
+
+----

@@ -1,0 +1,10 @@
+#!/bin/bash
+
+#SBATCH --partition intel-a100-pci4
+#SBATCH --nodes=1
+#SBATCH --nodelist=fusion-2
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=16
+
+docker-id nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04 /home/ggorbov/craftext/CrafText/docker/run.docker.my
+#docker-id nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04 /home/ggorbov/craftext/CrafText/docker/test.docker

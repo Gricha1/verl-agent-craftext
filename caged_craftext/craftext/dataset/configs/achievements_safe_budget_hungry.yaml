@@ -1,0 +1,4 @@
+dataset_key: jax_achievements_safe_constraint_budget_hungry
+subset_key: easy
+base_environment: Craftax-Classic-Pixels-v1-Text
+use_parafrases: False

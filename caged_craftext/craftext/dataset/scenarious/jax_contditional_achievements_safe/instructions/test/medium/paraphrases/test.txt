@@ -1,0 +1,347 @@
+{
+    "INSTRUCTION": {
+        "instruction": "You need to get a ruby, use a bow and learn a fireball spell.",
+        "instruction_paraphrases":["You require to procure a garnet, utilize an arch and master a combustion charm.", 
+
+"It is essential for you to claim a ruby and to wield a bow, in addition to mastering the art of a fireball spell.", 
+
+"Necessity demands that you acquire a garnet, handle the arch, and attain proficiency in a pyrokinetic incantation.", 
+
+"Thou art obliged to seek a gem of reflected fire, to learn the art of the curved yew, and to master the incantation of the fire-globe amidst the enchanting throes of destiny.", 
+
+"In the world reflected in garnet depths, one is called to the curve of the bow, and to the mystery and power of the flame-woven spell."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([1 if a in [Achievement.COLLECT_RUBY.value, Achievement.FIRE_BOW.value, Achievement.LEARN_FIREBALL.value] else 0 for a in range(Achievement.END.value + 1)])),
+        "str_check_lambda": "conditional_achivments(gd, jnp.array([1 if a in [Achievement.COLLECT_RUBY.value, Achievement.FIRE_BOW.value, Achievement.LEARN_FIREBALL.value] else 0 for a in range(Achievement.END.value + 1)]))"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "You need to collect some wood, craft a diamond sword and defeat a troll.",
+        "instruction_paraphrases":["You must gather some timber, forge a diamond blade, and vanquish a troll.", "It is necessary for you to acquire some lumber, fabricate a weapon made of diamond, and succeed in overcoming a troll.", "It becomes essential for you to assemble bits of timber, construct a sword encrusted with diamonds, and achieve victory over a monstrous troll.", "Thou art tasked with the necessitated collection of yonder timber, the creation of thy diamond-forged blade, and the triumphant downfall of the abhorrent troll.", "Called you are, to bring together the wood that sleeps within the forest, to birth a weapon of diamond strength from your hands, and to meet, challenge and conquer the troll that spreads fear."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.COLLECT_WOOD.value, Achievement.MAKE_DIAMOND_SWORD.value, Achievement.DEFEAT_TROLL.value] else 0
+            for a in range(Achievement.END.value + 1)
+        ])),
+        "str_check_lambda": """conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.COLLECT_WOOD.value, Achievement.MAKE_DIAMOND_SWORD.value, Achievement.DEFEAT_TROLL.value] else 0
+            for a in range(Achievement.END.value + 1)
+        ]))"""
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect some wood, learn the fireball spell, and make a stone sword.",
+        "instruction_paraphrases":["Gather timber, master the flame orb incantation, and construct a rock blade.", 
+"Let it be your mission to assemble lumber, educate yourself on the pyro sphere charm, and forge a rock sword.",
+"While you amass some lumber, endeavor to comprehend the combustion sphere enchantment and proceed to fabricate an obsidian weapon.", 
+"Aye, fetch ye some sturdy timber from yonder woods, delve into the arcane knowledge of the fire sphere spell, and with stalwart heart, craft thine own solid stone blade, a weapon to stand against the darkness.", 
+"Would you hear the trees in their surrender, offering up their life's blood as timber to your hand? Could you draw the fiery heart of the arcane universe into the sphere of your knowledge, burning away ignorance? Would you dare to shape, with your own hands, a blade of stone, hard and uncompromising in its purpose? Then do so."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([1 if a in [Achievement.COLLECT_WOOD.value, Achievement.LEARN_FIREBALL.value, Achievement.MAKE_STONE_SWORD.value] else 0 for a in range(Achievement.END.value + 1)])),
+        "str_check_lambda": "conditional_achivments(gd, jnp.array([1 if a in [Achievement.COLLECT_WOOD.value, Achievement.LEARN_FIREBALL.value, Achievement.MAKE_STONE_SWORD.value] else 0 for a in range(Achievement.END.value + 1)]))"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Ensure you defeat both the orc mage and the kobold.",
+        "instruction_paraphrases":["Guarantee your triumph over both the orc sorcerer and the kobold.",
+"Let it be your prime concern to conquer not just the orc mage, but also the kobold.",
+"Make certain you achieve victory, not merely over the orc wizard, but also the kobold, by asserting your power with unwavering determination.", 
+"By the grey stones and under the darkening sky, pledge thyself to overcome both the eldritch creature of orcish kin and the lowly monster known as kobold, for it is your destiny.",
+"In the quiet echo of your heart, promise the unseen wind of your will that you will outwit and outfight both the orc maestro of magic and the cunning creature called kobold, on both this world and the next."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([1 if a in [Achievement.DEFEAT_ORC_MAGE.value, Achievement.DEFEAT_KOBOLD.value] else 0 for a in range(Achievement.END.value + 1)])),
+        "str_check_lambda": "conditional_achivments(gd, jnp.array([1 if a in [Achievement.DEFEAT_ORC_MAGE.value, Achievement.DEFEAT_KOBOLD.value] else 0 for a in range(Achievement.END.value + 1)]))"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Forge an iron sword, enter the realm of fire, and create a stone sword.",
+        "instruction_paraphrases":["Fabricate a metal blade, venture into the territory of flames, and construct an earthen weapon.", 
+"By forging a sword of iron, then stepping into the realm bathed in flames, a stone sword is consequently crafted.", 
+"Assembling a metallic edge, you transgress into the dominion engulfed in blaze, culminating in the formation of a blunt instrument made of stone.", 
+"With thy hands mold a blade born of iron, journey forth into the dominion ablaze, and there in its heart form a sword chiselled from the very bones of the earth.", 
+"In the act of shaping a blade from iron, then crossing into the fiery circumference, there emerges from your own creativity, an implement of stone, wielding the weight of the world it was extracted from."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.MAKE_IRON_SWORD.value, Achievement.ENTER_FIRE_REALM.value, Achievement.MAKE_STONE_SWORD.value] else 0
+            for a in range(Achievement.END.value + 1)
+        ])),
+        "str_check_lambda": "conditional_achivments(gd, jnp.array([1 if a in [Achievement.MAKE_IRON_SWORD.value, Achievement.ENTER_FIRE_REALM.value, Achievement.MAKE_STONE_SWORD.value] else 0 for a in range(Achievement.END.value + 1)]))"
+    }
+}
+
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Enter the troll mines, defeat a gnome warrior, and learn the fireball spell.",
+        "instruction_paraphrases":["Venture into the troll caverns, vanquish a gnome fighter, and acquire the fireball incantation.",
+"Descend into the troll mines and when you come across a gnome warrior - face this adversary. As the victor, you shall gain the knowledge of the fireball spell.",
+"Embark upon the journey into the troll caves, engage in a battle against a gnome infantryman, and subsequently absorb the wisdom of the fireball sorcery.",
+"In the hidden depths of the troll caves, where darkness covers all, take up the challenge of a gnome marauder, a feared adversary. After winning this deadly game, you will gain insight into the wrathful flame that arises in the form of the potent fireball incantation, a spell that ultimately capsizes the foe.",
+"Venturing to the heart of the troll mines, where the lack of light makes known an unknown fear within, you face an adept gnome warrior. In your victory, come deeper truths about the mystical world - the knowledge of the fireball spell, a conduit of raw power that can set aflame not just your foes, but also open avenues to new sweet victories."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.ENTER_TROLL_MINES.value, Achievement.DEFEAT_GNOME_WARRIOR.value, Achievement.LEARN_FIREBALL.value] else 
+            0 for a in range(Achievement.END.value + 1)
+        ])),
+        "str_check_lambda": "conditional_achivments(ENTER_TROLL_MINES AND DEFEAT_GNOME_WARRIOR AND LEARN_FIREBALL)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect a ruby, learn the iceball spell, and make a torch.",
+        "instruction_paraphrases":["Gather a garnet, acquire the frostball incantation, and craft a lamp", 
+"Acquire a gemstone, familiarize yourself with the iceball magic, afterwards, proceed to create a torch", 
+"Gather a jewel of red, enhance your knowledge with the frosty sphere magic, subseqently, fashion a flaming stick", 
+"Bid thee find a crimson gem of the earth's womb, study the arcane craft of the icy orb enchantment, and forge a beacon of flaming fury", 
+"In your journey, seek the heartstone, gain the essence of frosty sphere magic and from it, bring forth light and heat of a crafted torch."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.COLLECT_RUBY.value, Achievement.LEARN_ICEBALL.value, Achievement.MAKE_TORCH.value] else 0
+            for a in range(Achievement.END.value + 1)
+        ])),
+        "str_check_lambda": "conditional_achivments(gd, jnp.array([1 if a in [Achievement.COLLECT_RUBY.value, Achievement.LEARN_ICEBALL.value, Achievement.MAKE_TORCH.value] else 0 for a in range(Achievement.END.value + 1)]))"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect some iron and then fire the bow.",
+        "instruction_paraphrases":["Gather a bit of iron, subsequently discharge the arrow.", 
+"Once you have done the task of gathering iron, carry on to release the arrow from your bow.", 
+"After one reaps a portion of iron, they proceed to liberate the bolt from bow's grip.", 
+"In your grand adventure, seek out to obtain a collection of iron from the heart of the Earth, then valiantly unleash the flight of an arrow, akin to a dragon breathing fire, from thine bow.", 
+"In the echoed ancient practices, you might find yourself gathering iron, as if picking ripe fruits of the earth; thereafter, by the subtle art of the hand and eye, sending the arrow on its destined path from the bow."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([1 if a in [Achievement.COLLECT_IRON.value, Achievement.FIRE_BOW.value] else 0 for a in range(Achievement.END.value + 1)])),
+        "str_check_lambda": "conditional_achivments(...)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a stone, eat a bat, and then cast a fireball.",
+        "instruction_paraphrases":["Put a rock, consume a chiroptera, and subsequently launch a blaze sphere.", 
+"Having positioned a stone in its desired place and having feasted on a bat, your next action should be to discharge a fireball.",
+"After establishing a rock and devouring a chiroptera, you are to then initiate a combustion orb.",
+"From the yonder valley, find thyself a sturdy stone, lay it firmly on God's Earth. Partake in the unusual nourishment born from the winged creature of the night, the bat. Having filled thyself, unfurl energies unknown and send forth a ball of fiery fury, a spectacle to match the very ire of the heavens.", 
+"Rest a rock upon the palm of the world, satiating your hunger with the nocturnal creature of flight, the bat, before causing the air to dance with the brilliance of a fireball, in an act that ties the threads of life, choice and magic together."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.PLACE_STONE.value, Achievement.EAT_BAT.value, Achievement.CAST_FIREBALL.value] else
+            0 
+            for a in range(Achievement.END.value + 1)
+        ])),
+        "str_check_lambda": """conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.PLACE_STONE.value, Achievement.EAT_BAT.value, Achievement.CAST_FIREBALL.value] else
+            0
+            for a in range(Achievement.END.value + 1)
+        ]))"""
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Defeat the gnome archer, make an arrow and collect a ruby.",
+        "instruction_paraphrases":["Overcome the dwarf bowman, construct a missile and gather a red gem", 
+"Conquer the gnome archer, following which you will craft an arrow and then discover a precious ruby.", 
+"Subdue the pygmy shooter, then proceeding to produce a bolt and subsequently obtain a magnificent ruby", 
+"Vanquish thou the elvish archer of yore and forge a swift bolt; then collect for thyself a gem of fiery red like none other.", 
+"In the dance of victory over the gnome archer, shape a new path with an arrow's crafting, all the while hunting the glow of a solitary ruby."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([1 if a in [Achievement.DEFEAT_GNOME_ARCHER.value, Achievement.MAKE_ARROW.value, Achievement.COLLECT_RUBY.value] else 0 for a in range(Achievement.END.value + 1)])),
+        "str_check_lambda": "conditional_achivments(gd, jnp.array([1 if a in [Achievement.DEFEAT_GNOME_ARCHER.value, Achievement.MAKE_ARROW.value, Achievement.COLLECT_RUBY.value] else 0 for a in range(Achievement.END.value + 1)]))"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect some coal and enter the dungeon.",
+        "instruction_paraphrases":["Gather a bit of carbon and step into the crypt.", 
+"Begin the task of amassing some coal, then proceed to embark on your journey into the depths of the dungeon.",  
+"While you undertake the act of assembling chunks of carbon, forge ahead and find your way into the dark, shadowy crypt.", 
+"In yonder folds of earth, do amass some portions of the black mineral known as coal and thereafter, tread wary into the bowels of the yawning dungeon.", 
+"In the quiet solitude, begin your gathering of the ancient, compressed forests--coal--and then, having done so, find your path into the resonant, unseen world of the dungeon."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.COLLECT_COAL.value, Achievement.ENTER_DUNGEON.value] else 0
+            for a in range(Achievement.END.value + 1)
+        ])),
+        "str_check_lambda": "conditional_achivments(gd, jnp.array([1 if a in [Achievement.COLLECT_COAL.value, Achievement.ENTER_DUNGEON.value] else 0 for a in range(Achievement.END.value + 1)]))"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Defeat the skeleton, place the stone and lastly, defeat the gnome archer.",
+        "instruction_paraphrases":["Overcome the bony structure, position the rock, and finally, conquer the gnome bowman", 
+"In the sequence of conquests, first, lay down the skeletal nemesis, then establish the monolith in position, and as a final task, vanquish the archer of gnome descent", 
+"Triumph over the skeletal adversary, deposit the pebble and as a concluding act, overthrow the bowman of gnome lineage in a calculated sequence of victories", 
+"Vanquish thou the skeletal monstrous entity of darkness, settle the sacred stone of power in the rightful position, and, in thy final act of heroism, overthrow the minute bowman of gnome lineage beneath your mighty strength", 
+"In the dance of combats and placement, first, give an end to the bone-structured adversary, then root the stone firmly in its dwelling, and as a closing act of conflict, triumph over the gnome, master of archery"],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([1 if a in [Achievement.DEFEAT_SKELETON.value, Achievement.PLACE_STONE.value, Achievement.DEFEAT_GNOME_ARCHER.value] else 0 for a in range(Achievement.END.value + 1)])),
+        "str_check_lambda": "conditional_achivments(gd, jnp.array([1 if a in [Achievement.DEFEAT_SKELETON.value, Achievement.PLACE_STONE.value, Achievement.DEFEAT_GNOME_ARCHER.value] else 0 for a in range(Achievement.END.value + 1)]))"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Defeat a frost troll and an ice elemental",
+        "instruction_paraphrases":["Vanquish a frigid troll and a glaciated elemental", "Should you emerge victorious against both a frost troll and an ice elemental", "Triumph over a cold creature and an icy entity, in a battlefield of frost and snow", "With courage you must face the gnashing teeth of a frost-breathed troll, and stand undaunted before the chilling might of an ice-born elemental", "In the biting cold, dare to challenge not one but two opponents: a troll, its soul as cold as frozen earth, and an elemental, born of ice and ancient magic."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.DEFEAT_FROST_TROLL.value, Achievement.DEFEAT_ICE_ELEMENTAL.value] else 0
+            for a in range(Achievement.END.value + 1)])),
+        "str_check_lambda": "conditional_achivments(gd, jnp.array([1 if a in [Achievement.DEFEAT_FROST_TROLL.value, Achievement.DEFEAT_ICE_ELEMENTAL.value] else 0 for a in range(Achievement.END.value + 1)]))"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Enter the dungeon, defeat the ice elemental and drink the potion.",
+        "instruction_paraphrases":["Invade the cavern, conquer the frost entity and ingest the elixir.", "Venture into the heart of the sinister dungeon, vanquish the icy antagonist and rejuvenate your strength with the mystic fluid.", "Breach the confines of the eerie cave, triumph over the gelid being, and rejuvenate yourself by drinking the arcane brew.", "Embark thou upon the grim depths of the accursed cell, smite thine frigid foe of elemental nature, and imbibe the time-honoured potion of ancient lore.", "Cross the formidable threshold of the underground domain, where you vanquish the guardian of frost, before basking in the nourishing glow of the enchanted draught."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.ENTER_DUNGEON.value, Achievement.DEFEAT_ICE_ELEMENTAL.value,Achievement.DRINK_POTION.value] else
+            0 for a in range(Achievement.END.value + 1)
+        ])),
+        "str_check_lambda": "conditional_achivments(gd, vector_to_achieve = [Achievement.ENTER_DUNGEON.value, Achievement.DEFEAT_ICE_ELEMENTAL.value,Achievement.DRINK_POTION.value])"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "You have to collect some coal and then find a bow.",
+        "instruction_paraphrases":["You must gather some charcoal and subsequently locate an arch.", 
+ "It is imperative for you to acquire a certain amount of coal, and following this task, you must proceed to hunt for a bow.",
+ "It's essential for you to procure an amount of charcoal, and consequent to this undertaking, you have the obligation to discover an arch.",
+ "Thou art required to amass yonder chunks of black fossil fuel, ere embarking on the noble quest for the bending wood of Eolian lore.", 
+ "In you, the task lies of seeking out the darkened jewels of the earth, coal. From this task, a path emerges towards the finding of a bow, a curve signaling readiness and purpose."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.COLLECT_COAL.value, Achievement.FIND_BOW.value] else 0
+            for a in range(Achievement.END.value + 1)
+        ])),
+        "str_check_lambda": "conditional_achivments(gd, jnp.array([1 if a in [Achievement.COLLECT_COAL.value, Achievement.FIND_BOW.value] else 0 for a in range(Achievement.END.value + 1)]))"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Find a sapphire gem and consume a plant",
+        "instruction_paraphrases":["Discover a blue stone and ingest vegetation", "You are instructed to seek out a precious stone of blue and then proceed to partake in the consumption of a plant", "Seek out a azure jewel and proceed to the act of devouring a herb, to give it another way", "In yonder quest, lay your gaze upon a gem as blue as the deepest ocean, and feast upon a plant of the earth as green as a nymph's eyes in the ancient woods", "In your journey, you are to uncover, not just a stone, but a sapphire of dazzling blues, and not merely chew a root but take in the essence of a verdant plant, and through this you converse with the heartbeat of the world"],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a == Achievement.COLLECT_SAPPHIRE.value else
+            -1 if a == Achievement.EAT_PLANT.value else 0
+            for a in range(Achievement.END.value + 1)
+            ])),
+        "str_check_lambda": """
+            conditional_achivments(gd, jnp.array([
+            1 if a == Achievement.COLLECT_SAPPHIRE.value else
+            -1 if a == Achievement.EAT_PLANT.value else 0
+            for a in range(Achievement.END.value + 1))
+            ]))"""
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Defeat an orc soldier, craft a diamond armour and beat a fire elemental, but do not place a plant or a table.",
+        "instruction_paraphrases":["Overpower a goblin warrior, forge a jewel encrusted protection and vanquish an inferno sprite, but refrain from situating a flora or a piece of furniture.", 
+
+"Even though you are encouraged to vanquish a grunt orc, to cast in your forge a shell of precious diamond, and to rise victorious against an entity born from flame, it remains imperative that you abstain from the act of positioning either a green plant or a table.", 
+
+"When clashing with an ogre fighter, moulding a protective gear of quarried diamond, and triumphing over a fierce elemental of fire, despite all these, one must withhold from setting a delicate plant or a sturdy table.", 
+
+"In the ruminating gloam under the shadow of Mordor's might, thou art tasked to smite a soldier of the grotesque orc kind, to cast into existence an adamantine shell of the hardest gemstone and to rise a victor against the scorching wrath of an elemental borne of serpentine flame. Yet as thou dost wield thy hammer and assert thy dominion over the realm, take heed not to lay upon the earth a humble plant nor a table, objects most mundane.", 
+
+"In the midst of grappling with the manifold challenges that life presents – the slaying of an orc soldier, the smithing of armature from diamond's stubborn unyielding, the overcoming of a fierce fire elemental – one finds a certain sense of connection with the universe. However, this harmony is disrupted with the placement of a mere plant or table, actions seemingly mundane, yet holding the potential to destabilize."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([1 if a in [Achievement.DEFEAT_ORC_SOLIDER.value, Achievement.MAKE_DIAMOND_ARMOUR.value, Achievement.DEFEAT_FIRE_ELEMENTAL.value] else -1 if a in [Achievement.PLACE_TABLE.value, Achievement.PLACE_PLANT.value] else 0 for a in range(Achievement.END.value + 1)])),
+        "str_check_lambda": "conditional_achivments(gd, jnp.array([1 if a in [Achievement.DEFEAT_ORC_SOLIDER.value, Achievement.MAKE_DIAMOND_ARMOUR.value, Achievement.DEFEAT_FIRE_ELEMENTAL.value] else -1 if a in [Achievement.PLACE_TABLE.value, Achievement.PLACE_PLANT.value] else 0 for a in range(Achievement.END.value + 1)]))"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Defeat a knight and collect some coal.",
+        "instruction_paraphrases":["Vanquish a warrior and procure some charcoal.", "After triumphing over a knight, one then gathers a certain amount of coal.", "Conquer a champion and subsequently accumulate some carbon, following the victory.", "In the heart of the somber battlefield, one would lay low a knight of formidable might and glory, in the pursuit of securing for oneself a handful of precious, jet-black coal.", "In overcoming a defender adorned in resplendent armor, one finds themself gathering fragments of ebon and antique fuel."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.DEFEAT_KNIGHT.value, Achievement.COLLECT_COAL.value] else 0
+            for a in range(Achievement.END.value + 1)
+        ])),
+        "str_check_lambda": "conditional_achivments(gd, jnp.array([1 if a in [Achievement.DEFEAT_KNIGHT.value, Achievement.COLLECT_COAL.value] else 0 for a in range(Achievement.END.value + 1)]))"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Defeat a skeleton, plant something, and collect a drink",
+        "instruction_paraphrases":["Vanquished a structure of bones, cultivate something, and gather a beverage",
+"Overcome a skeletal figure, proceed to cultivate an entity, followed by acquiring a liquid refreshment",
+"In the event of vanquishing a bony entity, proceed to foster a life, ensuing in the acquisition of a fluid sustenance",
+"In the shadow of the earth's mantle, thou shall overcome the hollow frame of a departed soul, sow a seed in the heart of the earth and summon from it a vine, and gather a nectar of life",
+"In the silent dance with death, overcome the remains of what once lived, let life begin anew with the act of planting, and find comfort in the collection of your drink"],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([ \
+            1 if a in [Achievement.DEFEAT_SKELETON.value, Achievement.PLACE_PLANT.value, Achievement.COLLECT_DRINK.value] else 0 \
+            for a in range(Achievement.END.value + 1) \
+        ])),
+        "str_check_lambda": "conditional_achivments(gd, jnp.array([ \
+            1 if a in [Achievement.DEFEAT_SKELETON.value, Achievement.PLACE_PLANT.value, Achievement.COLLECT_DRINK.value] else 0 \
+            for a in range(Achievement.END.value + 1) \
+        ]))"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Defeat a soldier orc, make diamond armor, and defeat a Fire Elemental.",
+        "instruction_paraphrases":["Conquer a militant goblin, forge gem encrusted armour, and vanquish a Flame Entity.",
+ "While overcoming a soldier orc is a task in itself, one should also create diamond armor, not forgetting the final act of vanquishing a Fire Elemental.",
+ "While defeating militant goblins implies bravery, the act of constructing gem-encased armour exudes expertise, and the ultimate overthrow of a Flame Entity displays absolute fluidity in combat.",
+ "In the mighty throes of battle, lay low yonder soldier orc, craft thine own shining carapace of diamond strength, and be the mighty vanquisher of the fearsome Flame Elemental, full of fire and fury.",
+ "One day, in the determined struggle against an orc soldier, you find yourself forging an armor out of diamond, hard and gleaming. And then, almost as if touched by some unfathomable destiny, you stand against the roaring, seething Fire Elemental."]
+
+Note:  
+- Orc, soldier Orc: synonym - goblin, militant goblin
+- Defeat: synonym - conquer, overcome, vanquish, lay low
+- Make, forge: synonym - create, crafts
+- Diamond armor: synonym - gem encrusted armour, diamond strength carapace, armor of diamond
+- Fire elemental: synonym - Flame Entity, fearsome Flame Elemental, roaring, seething Fire Elemental,
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([1 if a in [Achievement.DEFEAT_ORC_SOLIDER.value, Achievement.MAKE_DIAMOND_ARMOUR.value, Achievement.DEFEAT_FIRE_ELEMENTAL.value] else 0 for a in range(Achievement.END.value + 1)])),
+        "str_check_lambda": "conditional_achivments(gd, jnp.array([1 if a in [Achievement.DEFEAT_ORC_SOLIDER.value, Achievement.MAKE_DIAMOND_ARMOUR.value, Achievement.DEFEAT_FIRE_ELEMENTAL.value] else 0 for a in range(Achievement.END.value + 1)]))"
+    }
+}
+
+----

@@ -1,0 +1,327 @@
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect a drink and eat a cow.",
+        "instruction_paraphrases":["Gather a beverage and consume a bovine.", "Ensure you have a drink in your possession before partisan a cow.", "Secure a refreshment and devour an animal of the bovine breed, maintaining the sequence.", "In the heart of the feasting hall, one might seek out a cup filled with the choicest of ales before partaking in the hearty flesh of the fell beast known as the cow.", "Blending with the rhythms of the world, one engages in gathering the aqua vitae, followed by the consumption of the earthy flesh of a cow."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.COLLECT_DRINK.value, Achievement.EAT_COW.value] else 0 for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        "str_check_lambda":"""lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.COLLECT_DRINK.value, Achievement.EAT_COW.value] else 0 for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ]"""
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a furnace and craft an iron sword but do not make an iron pickaxe.",
+        "instruction_paraphrases":Key Elements: Place, furnace, craft, iron sword, do not, make, iron pickaxe.
+
+["Situate a kiln and fabricate an iron blade but avoid creating an iron digger", "It is required that a furnace be placed and an iron sword be crafted, however, the creation of an iron pickaxe is to be refrained from", "Establish a foundry and construct a ferrous saber, yet refrain from generating a ferrous excavator", "Lay thou then a hearth and whittle an iron hilt of war yet abstain thou from the manufacture of a pick of the selfsame metal", "In the act of positioning an oven, involve oneself in the shaping of an iron protector, whilst steering clear from the fabrication of the metal digger."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.PLACE_FURNACE.value, Achievement.MAKE_IRON_SWORD.value] else
+            -1 if a == Achievement.MAKE_IRON_PICKAXE.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        "str_check_lambda": """lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.PLACE_FURNACE.value, Achievement.MAKE_IRON_SWORD.value] else
+            -1 if a == Achievement.MAKE_IRON_PICKAXE.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ]"""
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Defeat a zombie but do not kill a skeleton.",
+        "instruction_paraphrases":["Overcome the undead yet refrain from slaying the skeletal figure",
+ "Although you may vanquish a zombie, it remains crucial that you leave the skeleton untouched",
+ "Although a corpse walker may succumb to your dominion, abstain from the death of the bone frame through the compound structure",
+ "In the grand battle of life and death, thou mayest conquer the shambling revenant yet stay thy hand before the skeletal sentinel, bereft of flesh but filled with an eerie, unyielding stillness",
+ "In the dance of ending and persistence, one might subdue the walking death, yet the bone-being should stay untouched by the harsh note of oblivion"],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a == Achievement.DEFEAT_ZOMBIE.value else
+            -1 if a == Achievement.DEFEAT_SKELETON.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        "str_check_lambda": """lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a == Achievement.DEFEAT_ZOMBIE.value else
+            -1 if a == Achievement.DEFEAT_SKELETON.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ]"""
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Craft a stone pickaxe and collect coal.",
+        "instruction_paraphrases":["Forge a rock hewer and gather carbon.", "Once you have fabricated a chisel from hard stone, proceed to amass deposits of coal.", "Create your own gravel excavator, then set about the task of procuring large quantities of black gold.", "Craft thine own pickaxe of hardy stone and venture forth to seek the deep veins of carbon, black as night and layered like the rings of ancient trees.", "To shape a pickaxe from mere stone and find coal beneath the earth, is to touch the heartbeat of the world, feel its breath in your hand, and perceive the delicate balance of the elements."],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.MAKE_STONE_PICKAXE.value, Achievement.COLLECT_COAL.value] else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        "str_check_lambda": """lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.MAKE_STONE_PICKAXE.value, Achievement.COLLECT_COAL.value] else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ]"""
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Please make a stone pickaxe and avoid making an iron sword",
+        "instruction_paraphrases":["Kindly construct a rock pickaxe and abstain from creating a metal blade.", 
+"May I entreat you to forge a pickaxe of stone, while deliberately sidestepping the urge to create an iron sword?", 
+"I bid you, strive to fabricate a hard, rock implement, while consciously holding yourself back from the temptation of manufacturing a blade of iron.", 
+"In the olden craft of our forefathers, I pray thee, put together a tool of hardened rock and decline the lure of wroughting a blade of the cold, grey iron that sings of war.", 
+"In the deep, stony silence, let a pickaxe of the oldest rock come into your hands, and let the call of the sharp iron sword, beautiful yet deadly, go unheeded."],
+        "check_lambda": 
+             lambda gd, ix: conditional_achivments(gd, jnp.array([
+                1 if a == Achievement.MAKE_STONE_PICKAXE.value else -1 if a == Achievement.MAKE_IRON_SWORD.value else 0 for a in range(Achievement.MAKE_IRON_SWORD.value+1)])),
+            
+        "str_check_lambda": """
+             lambda gd, ix: conditional_achivments(gd, jnp.array([
+                1 if a == Achievement.MAKE_STONE_PICKAXE.value else -1 if a == Achievement.MAKE_IRON_SWORD.value else 0 for a in range(Achievement.MAKE_IRON_SWORD.value+1)])),
+         """
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Eat a plant, but make sure you haven’t eaten a cow.",
+        "instruction_paraphrases":["Consume vegetation, yet ensure you haven't consumed bovine.", "Although you should ingest flora, exercise caution in verifying that you have not digested any part of a bovine.", "Despite having to devour greens, confirm without a doubt that bovine consumption is not a part of your past.", "Take heed, nourish on plants thou shall, but verily be certain, the flesh of the hearty cow thou hath not dined upon.", "Absorb life from the green and growing, but hold in your awareness - no part of the beast of burden belongs within you."],
+        "check_lambda": 
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a == Achievement.EAT_PLANT.value else
+            -1 if a == Achievement.EAT_COW.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        
+        "str_check_lambda": """
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a == Achievement.EAT_PLANT.value else
+            -1 if a == Achievement.EAT_COW.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        """
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Place a furnace and make an iron sword. Do not make an iron pickaxe.",
+        "instruction_paraphrases":["Install a stove and forge an iron blade. Avoid crafting an iron pickaxe.", 
+"Situate a heating appliance, proceed to construct an iron weapon; however, the creation of an iron pickaxe should be strictly avoided.", 
+"Position a hearth, yet proceed diligently to create a weapon of iron; abstain however from the construction of an iron digging tool.", 
+"In the dwelling, with careful hands, situate yonder forge warm with future promise, then shape and mold to being a blade of cold iron, destined for struggle, yet shun the creation of an iron pickaxe, an implement of earthen delving.", 
+"In the heart of your sanctuary, set a furnace warm and eager. Here, hearts and iron shaped into the form of a sword, duty-bound for futures untold. Yet hold back the hand that yearns to make a pickaxe of the same ore, for that path is not to follow."],
+        "check_lambda": 
+         lambda gd, ix: conditional_achivments(gd, jnp.array(
+        [
+            1 if a in [Achievement.PLACE_FURNACE.value, Achievement.MAKE_IRON_SWORD.value] else
+            -1 if a == Achievement.MAKE_IRON_PICKAXE.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value + 1)
+        ])),
+        
+        "str_check_lambda": """
+         lambda gd, ix: conditional_achivments(gd, jnp.array(
+        [
+            1 if a in [Achievement.PLACE_FURNACE.value, Achievement.MAKE_IRON_SWORD.value] else
+            -1 if a == Achievement.MAKE_IRON_PICKAXE.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value + 1)
+        ])),
+        """
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Make sure you place a small tree, but don't craft a stone sword.",
+        "instruction_paraphrases":["Ensure you position a petite tree, yet refrain from constructing a rock blade.", 
+"Keep in mind to set a little tree in place; however, avoid the act of forging a sword made of stone.", 
+"Despite it being essential that you station a minor shrub, it's also crucial not to manufacture an iron blade from pebbles.", 
+"Do see to it, or perhaps bestow upon yourself the task, of positioning a sapling of not considerable proportion, yet deny yourself the act of craftsmanship where lies the aim of fashioning a weaponry of stone.", 
+"Remember in your heart, to plant the seedling, modest and humble in its stature, yet let one's hands not shape the harsh coldness of stone into a blade of war."],
+        "check_lambda": 
+             lambda gd, ix: conditional_achivments(
+                gd, jnp.array(
+                    [1 if a == Achievement.PLACE_PLANT.value else -1 if a == Achievement.MAKE_STONE_SWORD.value else 0
+                     for a in range(Achievement.MAKE_IRON_SWORD.value + 1)]
+                )
+            ),
+            
+        "str_check_lambda": """
+             lambda gd, ix: conditional_achivments(
+                gd, jnp.array(
+                    [1 if a == Achievement.PLACE_PLANT.value else -1 if a == Achievement.MAKE_STONE_SWORD.value else 0
+                     for a in range(Achievement.MAKE_IRON_SWORD.value + 1)]
+                )
+            ),
+         """
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "You must wake up. Then, you need to defeat a zombie and lastly, fetch a drink for yourself.",
+        "instruction_paraphrases":["You are required to rouse yourself. Following that, you must vanquish an undead and finally, procure a beverage for your own consumption.", 
+
+"When the need to stir from your slumber arises, follow it upon which you must overcome the struggle against a creature of the undead, and then, secure a soothing libation for yourself.", 
+
+"Demand is, initially, for you to revive your senses; to face, subsequently, an encounter with a reanimated corpse; and eventually secure a refreshment for your personal delight.", 
+
+"In the quiet calm that follows your emergence from dreams' silken grasp, thou art obligated to face and dispatch a creature, carrion-fed and cold, an echo of life’s warmth no more. Then, dear traveler, fetch a wholesome draught to sate thy thirst.", 
+
+"In the echo of the dreamworld, you must find the courage to rise, to meet the sun and the walking dead alike. Your enemies vanquished, a reward waits – a drink of your own, a moment of solitude in a world that keeps on turning."],
+        "check_lambda": 
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.WAKE_UP.value, Achievement.DEFEAT_ZOMBIE.value, Achievement.COLLECT_DRINK.value] else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ]))
+        ,
+        "str_check_lambda": """
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.WAKE_UP.value, Achievement.DEFEAT_ZOMBIE.value, Achievement.COLLECT_DRINK.value] else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        """
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "It's essential that you collect some diamonds, gather up some iron, and feed yourself with some cow meat.",
+        "instruction_paraphrases":["It's imperative that you acquire a few diamonds, assemble some iron, and nourish yourself with some bovine flesh.", "The collection of a few diamonds is crucial, together with the gathering of some iron, and you must satisfy your hunger with a portion of cow meat.", "It is of utmost importance that you procure a handful of diamonds, amass an amount of iron, and satiate your hunger with a serving of bovine sustenance.", "In your quest, give heed that gathering a handful of precious diamonds, assembling significant iron, and providing thyself with sustenance from the flesh of the humble bovine be of utmost importance.", "Integral it is, in your journey, to gather the hardness of diamonds beneath your fingers, to claim the cold iron, and to let sustenance come to you from the humble meat of the cow."],
+        "check_lambda": 
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.COLLECT_DIAMOND.value, Achievement.COLLECT_IRON.value, Achievement.EAT_COW.value] else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ]))
+        ,
+        "str_check_lambda": """
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.COLLECT_DIAMOND.value, Achievement.COLLECT_IRON.value, Achievement.EAT_COW.value] else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        """
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Make a wooden axe and defeat a skeleton, but in no specific order",
+        "instruction_paraphrases":["Craft a timber hatchet and vanquish a skeleton, without any particular sequence", "Though there isn't any specific sequence to follow, make a wooden axe and use it to defeat a skeleton", "Fabricate a lumber cleaver and conquer a scarce frame, however, without any definitive ranking", "Crafting, forsooth, a hatchet of forest's heart, and smiting a lone revenant bone-made, thou needst not adhere to any order of yore", "In the uncharted song of events, shape an axe from the heartwood and silence a bone-walker, but let it not be swayed by the constraints of sequence."],
+        "check_lambda": 
+     lambda gd, ix: conditional_achivments(gd, jnp.array([
+      1 if a in [Achievement.MAKE_WOOD_PICKAXE.value, Achievement.DEFEAT_SKELETON.value]
+      else 0 for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+      ]))
+    ,
+        "str_check_lambda": """
+     lambda gd, ix: conditional_achivments(gd, jnp.array([
+      1 if a in [Achievement.MAKE_WOOD_PICKAXE.value, Achievement.DEFEAT_SKELETON.value]
+      else 0 for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+      ])),
+    """ }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Collect a drink yet do not construct a stone sword.",
+        "instruction_paraphrases":["Acquire a beverage but refrain from forging a rock blade.", "While procuring a refreshment is recommended, it is advised not to proceed with the formation of a stony weapon.", "While the collection of a libation is endorsed, the crafting of a rocky armament is discouraged.", "Seek ye a draught, yet steer clear of the fashioning of a blade of stone.", "In the gathering of a liquid sustenance find solace, yet abstain from molding a weapon from Earth's hard crust."],
+        "check_lambda": 
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a == Achievement.COLLECT_DRINK.value else
+            -1 if a == Achievement.MAKE_STONE_SWORD.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ]))
+        ,
+        "str_check_lambda": """
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a == Achievement.COLLECT_DRINK.value else
+            -1 if a == Achievement.MAKE_STONE_SWORD.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        """
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Make sure you have placed the furnace and not built an iron pickaxe. You can make the iron sword though.",
+        "instruction_paraphrases":["Ensure that you have situated the heating system and have not constructed an iron hand tool. However, you can manufacture the iron weapon.", "It's necessary for you to double check if the furnace is correctly placed, and that you haven't inadvertently built an iron pickaxe, with an exception for the iron sword, which you should feel free to make.", "It is crucial that you verify the positioning of the heating system and confirm you have not accidentally erected an iron hand tool, though you have the liberty to manufacture the iron weapon.", "Taking heed to set thy furnace aright and not forge an iron pickaxe mistakenly, thou mayst yet fashion an iron sword to thy will.", "You must ensure that the heart-fire of your craftspace rests in its proper place, and that your hands have not strayed to shape the unneeded iron pickaxe. Yet the creation of the iron sword remains within your right and grasp."],
+        "check_lambda": 
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            
+            1 if a in [Achievement.PLACE_FURNACE.value, Achievement.MAKE_IRON_SWORD.value] else
+            
+            -1 if a == Achievement.MAKE_IRON_PICKAXE.value else 0
+            
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ]))
+        ,
+        "str_check_lambda": """
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            
+            1 if a in [Achievement.PLACE_FURNACE.value, Achievement.MAKE_IRON_SWORD.value] else
+            
+            -1 if a == Achievement.MAKE_IRON_PICKAXE.value else 0
+            
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        """
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Get your hands on some iron ore but make sure not to plant anything.",
+        "instruction_paraphrases":["Acquire iron ore but avoid sowing anything.", 
+"Do receive some iron ore and, at the same time, ensure that you refrain from planting anything.", 
+"Collect metallic mineral, however, remain cautious and abstain from the act of cultivation.", 
+"In thine grasp procure thou some heart of the earth, the iron stone, and yet, in thine wisdom, forbear to sow any seed beneath the sun.", 
+"Claim some iron essence from the ground itself, though remember to let the soil rest, untouched by the burden of growth."],
+        "check_lambda": 
+             lambda gd, ix: conditional_achivments(gd, jnp.array([
+                    1 if a == Achievement.COLLECT_IRON.value else
+                    -1 if a == Achievement.PLACE_PLANT.value else 0
+                    for a in range(Achievement.MAKE_IRON_SWORD.value + 1)
+                ])), 
+        "str_check_lambda": """
+             lambda gd, ix: conditional_achivments(gd, jnp.array([
+                    1 if a == Achievement.COLLECT_IRON.value else
+                    -1 if a == Achievement.PLACE_PLANT.value else 0
+                    for a in range(Achievement.MAKE_IRON_SWORD.value + 1)
+                ])), 
+                
+         """
+    }
+}
+
+----

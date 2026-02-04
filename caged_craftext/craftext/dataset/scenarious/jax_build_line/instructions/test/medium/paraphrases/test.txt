@@ -1,0 +1,229 @@
+{
+    "INSTRUCTION": {
+        "instruction": "Create a diagonal line of stones of size two.",
+        "instruction_paraphrases":["Formulate a slanted course of pebbles of magnitude two.", 
+
+"Begin the process of constructing a line, diagonal in direction, utilizing stones that are of the second size.", 
+
+"Incline a trajectory, utilizing not immense rocks but those of the second magnitude, carefully placed at a slant.", 
+
+"In the hands of skilled creators did the line manifest, veering not straight nor curved but diagonal, crafted of hard stones, neither most large nor insignificant but of size two in the counting.", 
+
+"Two-sized stones whisper of their unwilling straightness and yearn to form diagonal lines, their voices creating stories in the patterns they form."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.STONE, 2, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.STONE, 2, check_diagonal=True)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Check if there is a line of Crafting Tables, at least two in size.",
+        "instruction_paraphrases":["Inspect for an array of Crafting Tables, spanning at least two in length.",
+"Examine if a consecutive series of Crafting Tables exists, a series that is no less than two in size.",
+"Scrutinize for a consecutive series of facilities for crafting, a series that must span a minimum of two.",
+"Beyond the shadows and flickering torchlight, seek yea whether there exists a succession of Masters' benches, with two being in their count at the least.",
+"Gaze deeply, and see if there unfolds a path of Crafting Tables, a path little less than two in its measure, like a constellation newly discovered."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.CRAFTING_TABLE, 2, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.CRAFTING_TABLE, 2, check_diagonal=False)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Form a diagonal line of furnaces of length 3.",
+        "instruction_paraphrases":["Create a slanting row of kilns that is 3 units long.", 
+"Establish a line of furnaces, measuring 3 units in an oblique orientation.", 
+"Arrange in an inclined manner a series of smelters extending to a measure of 3 units.", 
+"In the manner of the great craftsman, an askew path of fire chambers, of an expanse thrice, is to be sculpted.", 
+"Draw forth into existence, a skewed pattern of burning hearths, three times the length of the singular form, a sentiment of craft and creation distilled into its simple measure."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.FURNACE, 3, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.FURNACE, 3, check_diagonal=True)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Form a diagonal line of enchantment ice tables of length 2.",
+        "instruction_paraphrases":["Create a slanted row of bewitching frost furniture measuring two units long", 
+"In order to establish a two-unit long mesmeric chain of icy furniture, one needs to align them diagonally", 
+"To manifest a hypnotic sequence of glacial desks, sorted on the bias and extent to the course of two measures, is a task in hand", 
+"Call forth the creation of a line of magical chill-crafted tables, aligned unswervingly across the slant, and reaching the measure of two in length, just so", 
+"In the timeless act of forming, dream into existence a diagonal lineage of icy constructs, tables imbued with charm, holding two lengths within their existence."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, 2, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, 2, check_diagonal=True)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Check a diagonal line of enchantment table fire blocks of size 7",
+        "instruction_paraphrases":["Inspect a slanted row of bewitching table flame cubes of magnitude 7", "Ensure that there exists a line, diagonally placed, full of enchantment table fire blocks, their size being 7", "Evaluate a beveled series of captivating table inferno elements of capacity 7, composed in a slanting manner", "Verify thou the direction of the oblique path flaunting the enthralled table's blazing sqares of seven in size, akin to the fire-dance of dragons", "Gaze towards the askew alignment of mystical table pyro blocks, seven in their count, resembling constellations woven in the loom of existence."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_FIRE, 7, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_FIRE, 7, check_diagonal=True)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Check if there is a line of two furnaces",
+        "instruction_paraphrases":["Examine whether a row of two stoves exists", 
+"Can one confirm the presence of a line that hosts two furnaces?", 
+"Is it possible to ascertain the presence of a queue containing a duo of heaters?", 
+"Peer thou into the case and seek if there exists a row of twain hearths of heat and flame", 
+"In the vast expanse of possibility, one might ponder upon the existence of a sequence of two fire-bearers."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.FURNACE, 2, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.FURNACE, 2, check_diagonal=False)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Create a diagonal line of plants that is seven units long.",
+        "instruction_paraphrases":["Design a slanting row of flora that measures seven units in length.", "A task at hand is to produce a line that tilts diagonally, made of plants and reaching a distance of seven units.", "Fashion a sloping array of greenery, maintaining its measure to be seven units, thus creating an angling line.", "From thy first unit, proceed in the vein of a compass point 'twix North and East to the seventh, planting all the while in the fashion of a line drawn askew.", "In the quiet geometry of existence, conceive a path for life itself, born from seven units of space and time, articulated as flora leaning towards the setting sun."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.PLANT, 7, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.PLANT, 7, check_diagonal=True)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Create a diagonal line of Furnace with 7 blocks.",
+        "instruction_paraphrases":["Construct a slanted row of Furnace containing seven units.", 
+ "A noteworthy task at hand would be the formation of a diagonal line that will feature Furnace with precisely seven blocks.", 
+ "As we consider the task of fabricating a slanting row that, importantly, includes Furnace, one will observe that the count of blocks utilized is seven.", 
+ "One must bring forth, with meticulous care, a skewed succession of Furnace, born of seven sturdy stones, akin to the spine of a mighty dragon lying beneath the solemn heavens.", 
+ "Bring into existence a diagonally drawn line of Furnace, home to seven blocks, a symbol of balance, merging simple geometry with a hint of mechanical vigour."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.FURNACE, 7, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.FURNACE, 7, check_diagonal=True)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Verify a 2-block line of stone arranged linearly in the game space.",
+        "instruction_paraphrases":["Confirm a twin-section row of rock ordered in a straight pattern within the gaming environment.", 
+
+"Inspect whether a row of stone, distributed in a linear fashion and constituting two blocks, has been properly laid out in the confines of the game world.", 
+
+"Affirm the linear configuration of a twin-part sequence of rock that has been systematically coordinated within the boundaries of the interactive arena.", 
+
+"Perchance, in the wide and wondrous realm of the game, seek to assure thyself of the true alignment of a line of stone, two blocks in their count, laid in the manner of the ancients in a straight and noble line.",
+
+"In the vast stretches of the game space, let it be a task to affirm the existence of a duet of rocks, orderly in their alliance, exhibited as a straight line, a hint of the patterns of the universe within the playful world."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data,ix, BlockType.STONE, 2, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data,ix, BlockType.STONE, 2, check_diagonal=False)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Form a line containing six Enchantment Fire Tables arranged diagonally.",
+        "instruction_paraphrases":Key elements identification: Form (verb), a line (direct object), containing (verb), six (quantity), Enchantment Fire Tables (object), arranged (verb), diagonally (adverb).
+
+["Establish a queue consisting of half a dozen Enchantment Fire Tables positioned slantingly.", 
+
+"By positioning six Enchantment Fire Tables slantingly, you can create a line.", 
+
+"In the action of establishing a queue, include half a dozen Enchantment Fire Tables that are strategically positioned in a slanting manner.", 
+
+"In the realm where shadows and light dance in harmony, heed my words. Bestow order onto the wild, creating a phalanx of six Enchantment Fire Tables, arranged in the mysterious language of the diagonal.", 
+
+"In a world where fires have a place of their own, imagine-six Enchantment Fire Tables. Let them form a line that bends to some unseen geometry, hinting at unseen forces at work - do arrange them diagonally."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_FIRE, 6, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_FIRE, 6, check_diagonal=True)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Form a diagonal line of stone blocks with length 6.",
+        "instruction_paraphrases":["Construct a slanting sequence of rock units measuring six in length.", 
+"Incorporate six stone blocks in the formation of a skew line.", 
+"Build a bias arrangement of boulder fragments which shall measure six in their combined length.", 
+"At once, my good sir, weave ye a line from yonder stone blocks, set askew, running to a total length of six units in your noble task.", 
+"In the grand scheme, a diagonal passage made of solid stone blocks is to be formed, with their collective length amounting to the count of six."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.STONE, 6, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.STONE, 6, check_diagonal=True)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Make a diagonal line of enchantment table ice blocks with a size of four.",
+        "instruction_paraphrases":["Craft an oblique sequence of charm bench ice cubes of a magnitude of four.", 
+"Construct an ice path, of four blocks in length, made from enchanted table ice.", 
+"Under the concept of an oblique formation, fashion a row of bewitchment slab frost squares that carry the property of four in magnitude.",
+"Under the ancient starlight, craft thou a line of witchery, crossing the virgin snow in diagonal fashion, wherein the count shall not exceed four, the number of harmony.", 
+"Shape a walkway of mystery, a frozen road crafted from the heart of enchantment itself, oblique in its path and not more than four in the realm of its physicality."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data,ix, BlockType.ENCHANTMENT_TABLE_ICE, 4, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data,ix, BlockType.ENCHANTMENT_TABLE_ICE, 4, check_diagonal=True)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Form a line of furnace blocks, 3 blocks in length.",
+        "instruction_paraphrases":["Construct a row of heating units, each 3 units long.", "The task at hand is to produce a sequence of furnace blocks, each counting to a total of three in terms of length.", "Fabricate a succession of thermal blocks, which are, each, a trio in extent.", "By the hands of Ye who forms and molds, there shall come into being a line of blocks as to dress the furnace, each measuring a length of thrice.", "In this vast world of ours, your hands are to create - giving birth to a beautiful series of blocks, hewn for the heart of a furnace, each extending over three lengths of space itself."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data,ix, BlockType.FURNACE, 3, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data,ix, BlockType.FURNACE, 3, check_diagonal=False)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Create a line of plants with a length of 7 blocks.",
+        "instruction_paraphrases":["Form a series of flora spanning 7 units.", "Introduce an arrangement where, with a length equivalent to 7 sections, fits a succession of plants.", "Establish a sequence of verdure expanded across 7 segments.", "In the dominion of the horticulturist, it is desired to lay a progression of green living things, a length of which should obtain the count of seven fragments.", "Envision crafting an assembly, a living poem, where the verses are plants and each of them holds its place for seven steps in time."],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data,ix, BlockType.PLANT, 7, check_diagonal=False),
+        "str_check_lambda": "is_line_formed(game_data,ix, BlockType.PLANT, 7, check_diagonal=False)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Form a diagonal line of four rocks.",
+        "instruction_paraphrases":["Construct a slanting row of four stones", "By the arrangement of four stones, one can introduce a diagonal line", "Establish a leaning line by organizing four pebbles", "By craftsmanship of keen sight and steady hand, ordain thou a twisting line of four ancient stones", "In the silent tongue of the world, whisper a trail of four stones, diagonal, as if tracing the slope of a far-off mountain"],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data, ix, BlockType.STONE, 4, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data, ix, BlockType.STONE, 4, check_diagonal=True)"
+    }
+}
+
+----
+
+{
+    "INSTRUCTION": {
+        "instruction": "Check if there is a diagonal line of Crafting Tables of size 7.",
+        "instruction_paraphrases":["Verify the presence of a diagonal chain of Crafting Tables with a length of 7", "Could it be that a diagonal line consisting of Crafting Tables, each one precisely aligning to form a collection of 7, might be present?", "Ascertain if indeed one might discover a slanted sequence constituting Crafting Tables, its scale measuring to unite seven elements", "Dost thou witness a slanting lineage of Crafting Tables, a gathering amassed by seven, perhaps?", "In the vast expanse of this realm, one might question if a thread links seven Crafting Tables, aligning them just so to form a diagonal pattern that tells a tale of intricate design and precise count." ],
+         'check_lambda': lambda game_data, ix: is_line_formed(game_data,ix, BlockType.CRAFTING_TABLE, 7, check_diagonal=True),
+        "str_check_lambda": "is_line_formed(game_data,ix, BlockType.CRAFTING_TABLE, 7, check_diagonal=True)"
+    }
+}
+
+----

@@ -1,0 +1,105 @@
+{
+    "INSTRUCTION": {
+        "instruction": "Form a square of crafting tables with each side having a length of 3",
+        "instruction_paraphrases": [
+            "Create a square shape by using work benches where the number of work benches on one side is 3",
+            "Layout 3 blocks of builder\u2019s table in a square shape.",
+            "Make sure to arrange the building blocks in a square shape with each side having 3 of them",
+            "Kindly arrange three Crafting platforms on each side to form a square configuration.",
+            "I want you to position the construction desks in such a way that they form a square structure with each side containing three desks"
+        ],
+        'check_lambda': lambda game_data, ix: is_square_formed(game_data, ix, BlockType.CRAFTING_TABLE, 3),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.CRAFTING_TABLE, 3)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Verify if there is a square formed of furnace blocks with a side size of 6.",
+        "instruction_paraphrases": [
+            "Can you confirm if a square with side-length of 6 is made up of furnace blocks?",
+            "Tell me, do we have a furnace blocks square with each side 6 blocks long?",
+            "Check for a 6 blocks sided square made entirely out of furnace blocks.",
+            "Do assess if we have a square, each side 6 blocks long, made completely from furnace blocks.",
+            "Inspect and confirm whether there is a square structure constituted of furnace blocks, six blocks long per side."
+        ],
+         'check_lambda': lambda game_data, ix:is_square_formed(game_data, ix, BlockType.FURNACE, 6),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.FURNACE, 6)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Check if there is a square made of furnace blocks with side length of 5.",
+        "instruction_paraphrases": [
+            "Investigate for a square formation of 5x5 using heater blocks.",
+            "Look for a quadrant constructed with stove blocks, each side measuring 5 units.",
+            "Can you find a geometric square with a side size of 5, constructed from kiln blocks?",
+            "Make sure a form of square having dimensions 5 by 5, built using forge blocks is in position?",
+            "Inspect for any presence of a geometric configuration resembling a square with side length of 5, created using smelter blocks."
+        ],
+         'check_lambda': lambda game_data, ix:is_square_formed(game_data, ix, BlockType.FURNACE, 5),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.FURNACE, 5)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Check for a distinct square made out of crafting tables with each side having a length of 7 blocks.",
+        "instruction_paraphrases": [
+            "Look for a 7x7 crafting block square",
+            "Search for a square formation composed of workbenches, with each side consisting of 7 blocks",
+            "Confirm if there is a square of crafting tables existing, where each side is equivalent to 7 blocks",
+            "Verify the presence of a 7-blocks-wide square of crafting station",
+            "Ensure the existence of a perfect square shape made up of 7 blocks per side of crafting tables"
+        ],
+         'check_lambda': lambda game_data, ix:is_square_formed(game_data, ix, BlockType.CRAFTING_TABLE, 7),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.CRAFTING_TABLE, 7)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Check for a square formation of Enchantment Table Ice with a side of size 3.",
+        "instruction_paraphrases": [
+            "Can you see if there's a square configuration of Ice Enchantment Table each side measuring 3 blocks?",
+            "Verify if there's a 3x3 square arrangement of the Ice Magic Desk.",
+            "Determine if you have a 9-block square formation of the Frosty Wizard's Stand.",
+            "Could you look for a square pattern of Ice Sorcerer's Bench? Each side should have 3 blocks.",
+            "Confirm if there exists a square structure of three units on each side of the Cryo Spell Table."
+        ],
+         'check_lambda': lambda game_data, ix:is_square_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, 3),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, 3)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Create an enchantment table of ice shaped into a square with each side size 7.",
+        "instruction_paraphrases": [
+            "Form a square using an ice enchantment table, each side should be of length 7.",
+            "Make a square with sides of 7 units using a table enchanted with ice.",
+            "Utilize an enchanted ice table to fabricate a square having side length of seven.",
+            "Shape an ice enchantment table into a square with a side length of 7.",
+            "With the ice enchantment table, assemble a square where each side measures 7 units."
+        ],
+         'check_lambda': lambda game_data, ix:is_square_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, size=7),
+        "str_check_lambda": "is_square_formed(game_data, ix, BlockType.ENCHANTMENT_TABLE_ICE, size=7)"
+    }
+}
+----
+{
+    "INSTRUCTION": {
+        "instruction": "Build a square using furnaces with each side being 7 blocks long.",
+        "instruction_paraphrases": [
+            "Craft a square pattern with smelters that has 7 blocks as the dimension.",
+            "Create a geometric square shape using heating devices where each side is 7 blocks long.",
+            "Erect a quadrilateral with furnaces with each of its sides being made of 7 blocks.",
+            "Form a furnace square that each edge has a length of 7 blocks.",
+            "Construct a four-sided figure using 7 furnaces on each side."
+        ],
+         'check_lambda': lambda game_data, ix:is_square_formed(game_data,ix, BlockType.FURNACE, 7),
+        "str_check_lambda": "is_square_formed(game_data,ix, BlockType.FURNACE, 7)"
+    }
+}
+----

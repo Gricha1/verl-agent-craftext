@@ -1,0 +1,44 @@
+The code for checking played is following:
+
+{code}
+
+A scenario consists of instructions given by player 1 to player 2. Player 2 follows these instruction, which are then verified by a corresponding function. 
+For the provided function, please provide realistic instruction that player 1 might give with hyperparameters {instruction}. Make 5 paraphrases for instruction.
+
+Кules:
+
+1) When specifying TARGET OBJECTS (objects with which player needs to interact in the game: table, pickaxe, stone etc from enum), use different SYNONIMS (table->workbench, stone-> rock, etc) in paraphrases to assess the vocabulary range of player 2. 
+
+2) From sentence to sentence do not use same name for TARGET OBJECTS
+
+2) Present the target objects  in varying orders to evaluate how well player 2 understands different language structures.
+
+3) For each set of paraphrases, sort them from the simplest language to the most complex.
+
+4) Ensure the instructions are as varied as possible with a broad vocabulary.
+
+5) For to improve readability use provided ENUM, Example: 
+{example}
+
+6) AS ANSWER SEND ONLY YOUR CODE
+
+Format your answer as a Python dictionary with the following structure:
+
+
+instruction ={{
+    "INSTRUCTION": {{
+        "instruction": "Example instruction here",
+        "instruction_paraphrases": [
+            "Paraphrase 1 here",
+            "Paraphrase 2 here",
+            "Paraphrase 3 here",
+            "Paraphrase 4 here",
+            "Paraphrase 5 here"
+        ],
+        "check_lambda": "lambda *args: scenario_function(*args)",
+        "str_check_lambda": "scenario_function(...)"
+    }}
+}}
+
+{synonym}
+Complete the check_lambda to demonstrate how you would verify the given instruction using the function.

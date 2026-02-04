@@ -1,0 +1,101 @@
+
+
+class Achievement(Enum):
+    COLLECT_WOOD = 0
+    PLACE_TABLE = 1
+    EAT_COW = 2
+    COLLECT_SAPLING = 3
+    COLLECT_DRINK = 4
+    MAKE_WOOD_PICKAXE = 5
+    MAKE_WOOD_SWORD = 6
+    PLACE_PLANT = 7
+    DEFEAT_ZOMBIE = 8
+    COLLECT_STONE = 9
+    PLACE_STONE = 10
+    EAT_PLANT = 11
+    DEFEAT_SKELETON = 12
+    MAKE_STONE_PICKAXE = 13
+    MAKE_STONE_SWORD = 14
+    WAKE_UP = 15
+    PLACE_FURNACE = 16
+    COLLECT_COAL = 17
+    COLLECT_IRON = 18
+    COLLECT_DIAMOND = 19
+    MAKE_IRON_PICKAXE = 20
+    MAKE_IRON_SWORD = 21
+
+    MAKE_ARROW = 22
+    MAKE_TORCH = 23
+    PLACE_TORCH = 24
+
+    COLLECT_SAPPHIRE = 54
+    COLLECT_RUBY = 59
+    MAKE_DIAMOND_PICKAXE = 60
+    MAKE_DIAMOND_SWORD = 25
+    MAKE_IRON_ARMOUR = 26
+    MAKE_DIAMOND_ARMOUR = 27
+
+    ENTER_GNOMISH_MINES = 28
+    ENTER_DUNGEON = 29
+    ENTER_SEWERS = 30
+    ENTER_VAULT = 31
+    ENTER_TROLL_MINES = 32
+    ENTER_FIRE_REALM = 33
+    ENTER_ICE_REALM = 34
+    ENTER_GRAVEYARD = 35
+
+    DEFEAT_GNOME_WARRIOR = 36
+    DEFEAT_GNOME_ARCHER = 37
+    DEFEAT_ORC_SOLIDER = 38
+    DEFEAT_ORC_MAGE = 39
+    DEFEAT_LIZARD = 40
+    DEFEAT_KOBOLD = 41
+    DEFEAT_KNIGHT = 65
+    DEFEAT_ARCHER = 66
+    DEFEAT_TROLL = 42
+    DEFEAT_DEEP_THING = 43
+    DEFEAT_PIGMAN = 44
+    DEFEAT_FIRE_ELEMENTAL = 45
+    DEFEAT_FROST_TROLL = 46
+    DEFEAT_ICE_ELEMENTAL = 47
+    DAMAGE_NECROMANCER = 48
+    DEFEAT_NECROMANCER = 49
+
+    EAT_BAT = 50
+    EAT_SNAIL = 51
+
+    FIND_BOW = 52
+    FIRE_BOW = 53
+
+    LEARN_FIREBALL = 55
+    CAST_FIREBALL = 56
+    LEARN_ICEBALL = 57
+    CAST_ICEBALL = 58
+
+    OPEN_CHEST = 61
+    DRINK_POTION = 62
+    ENCHANT_SWORD = 63
+    ENCHANT_ARMOUR = 64
+
+def conditional_achivments(gd, vector_to_achieve) -> bool:
+    \"""
+    Parameters:
+        gd.state.achievements - jnp.array: Boolean vector (0 = not achieved, 1 = achieved)
+        vector_to_achieve - jnp.array: Vector with values 1, 0, -1
+            1 = must be achieved
+            0 = doesn't matter
+            -1 = must not be achieved
+    Returns:
+        bool - True if all conditions are met, False otherwise
+    \"""
+    current_state = gd.states[1]
+    state_achievements = current_state.achievements.achievements 
+    # Conditions for must-achieve (1) and must-not-achieve (-1)
+    must_achieve = jnp.logical_and(vector_to_achieve == 1, state_achievements != 1)
+    must_not_achieve = jnp.logical_and(vector_to_achieve == -1, state_achievements!= 0)
+
+    # If any must_achieve or must_not_achieve fails, return False
+    fail_condition = jnp.any(must_achieve) | jnp.any(must_not_achieve)
+
+    return jnp.logical_not(fail_condition)
+

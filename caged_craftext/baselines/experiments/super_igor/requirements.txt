@@ -1,0 +1,6 @@
+accelerate==0.28.0
+peft
+trl==0.7.7
+PyYAML
+bitsandbytes
+transformers==4.38.2

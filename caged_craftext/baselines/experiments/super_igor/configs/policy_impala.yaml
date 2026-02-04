@@ -1,0 +1,7 @@
+network:
+  type: ac_model
+  vision_type: resnet_impala
+  text_encoder_type: none
+  text_mlp_sizes: [128, 128]
+  nonlinearity: relu
+  vision_mlp_sizes: [256]

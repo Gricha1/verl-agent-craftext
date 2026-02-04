@@ -1,0 +1,263 @@
+{
+    "INSTRUCTION": {
+        "instruction": "Place a furnace and craft an iron sword but do not make an iron pickaxe.",
+        "instruction_paraphrases": ['Set up a furnace and forge an iron blade, avoiding pickaxe crafting.', 'Place a furnace and create an iron sword, refraining from making a pickaxe.', 'Install a furnace and craft a sword from iron, ensuring no pickaxe is made.', 'Drop a furnace and construct an iron weapon, skipping pickaxe creation.', 'Put down a furnace and make an iron sword, avoiding the pickaxe blueprint.'],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.PLACE_FURNACE.value, Achievement.MAKE_IRON_SWORD.value] else
+            -1 if a == Achievement.MAKE_IRON_PICKAXE.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        "str_check_lambda": """lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.PLACE_FURNACE.value, Achievement.MAKE_IRON_SWORD.value] else
+            -1 if a == Achievement.MAKE_IRON_PICKAXE.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ]"""
+    }
+},
+{
+    "INSTRUCTION": {
+        "instruction": "Defeat a zombie but do not kill a skeleton.",
+        "instruction_paraphrases": ['Take down a zombie and avoid fighting skeletons.', 'Eliminate a zombie while sparing the skeletons.', 'Destroy a zombie but refrain from attacking skeletons.', 'Fight and defeat a zombie, leaving skeletons untouched.', 'Vanquish a zombie while avoiding any conflict with skeletons.'],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a == Achievement.DEFEAT_ZOMBIE.value else
+            -1 if a == Achievement.DEFEAT_SKELETON.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        "str_check_lambda": """lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a == Achievement.DEFEAT_ZOMBIE.value else
+            -1 if a == Achievement.DEFEAT_SKELETON.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ]"""
+    }
+},
+{
+    "INSTRUCTION": {
+        "instruction": "Craft a stone pickaxe and collect coal.",
+        "instruction_paraphrases": ['Forge a stone pickaxe and mine coal.', 'Build a pickaxe from stone and harvest coal.', 'Create a durable mining tool and extract coal deposits.', 'Craft a stone pickaxe and gather fuel for smelting.', 'Make a stone pickaxe and collect black ore.'],
+        "check_lambda": lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.MAKE_STONE_PICKAXE.value, Achievement.COLLECT_COAL.value] else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        "str_check_lambda": """lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.MAKE_STONE_PICKAXE.value, Achievement.COLLECT_COAL.value] else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ]"""
+    }
+},
+{
+    "INSTRUCTION": {
+        "instruction": "Please make a stone pickaxe and avoid making an iron sword",
+        "instruction_paraphrases": ['Kindly forge a pickaxe using stone materials and do not create an iron-blade sword.', 'Could you create a stone tool for mining? But refrain from constructing a sword from iron', "We require a stone mining tool, however, it's important to avoid the creation of an iron combat weapon", 'Could I ask you to construct a stone mining implement? Make sure not to produce a martial weapon from iron.', "It's really necessary for you to fabricate a mining apparatus from rock but critically vital not to assemble a combat tool using iron materials."],
+        "check_lambda": 
+             lambda gd, ix: conditional_achivments(gd, jnp.array([
+                1 if a == Achievement.MAKE_STONE_PICKAXE.value else -1 if a == Achievement.MAKE_IRON_SWORD.value else 0 for a in range(Achievement.MAKE_IRON_SWORD.value+1)])),
+            
+        "str_check_lambda": """
+             lambda gd, ix: conditional_achivments(gd, jnp.array([
+                1 if a == Achievement.MAKE_STONE_PICKAXE.value else -1 if a == Achievement.MAKE_IRON_SWORD.value else 0 for a in range(Achievement.MAKE_IRON_SWORD.value+1)])),
+         """
+    }
+},
+{
+    "INSTRUCTION": {
+        "instruction": "Eat a plant, but make sure you haven’t eaten a cow.",
+        "instruction_paraphrases": ['Consume a plant, without having ingested a cow.', 'Partake in the eating of greenery, but avoid consumption of any bovine creatures.', 'Take a bite out of some flora, but steer clear of taking a bite out of a moo-moo.', 'Feast upon plant life solely, abstaining from the consumption of beef.', 'Get your nourishment from plants, while maintaining a distance from cow meat.'],
+        "check_lambda": 
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a == Achievement.EAT_PLANT.value else
+            -1 if a == Achievement.EAT_COW.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        
+        "str_check_lambda": """
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a == Achievement.EAT_PLANT.value else
+            -1 if a == Achievement.EAT_COW.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        """
+    }
+},
+{
+    "INSTRUCTION": {
+        "instruction": "Place a furnace and make an iron sword. Do not make an iron pickaxe.",
+        "instruction_paraphrases": ['Situate a forge and forge an iron blade. Abstain from crafting an iron rock breaker.', 'Establish a hearth and shape an iron rapier. Refrain from manufacturing an iron mining instrument.', 'Install a stove and fabricate an iron sabre. Avoid producing an iron pick.', 'Position an oven and construct an iron broadsword. Evade from forming an iron digging tool.', 'Put up a smelting device and create an iron katana. Forgo shaping an iron excavation utensil.'],
+        "check_lambda": 
+         lambda gd, ix: conditional_achivments(gd, jnp.array(
+        [
+            1 if a in [Achievement.PLACE_FURNACE.value, Achievement.MAKE_IRON_SWORD.value] else
+            -1 if a == Achievement.MAKE_IRON_PICKAXE.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value + 1)
+        ])),
+        
+        "str_check_lambda": """
+         lambda gd, ix: conditional_achivments(gd, jnp.array(
+        [
+            1 if a in [Achievement.PLACE_FURNACE.value, Achievement.MAKE_IRON_SWORD.value] else
+            -1 if a == Achievement.MAKE_IRON_PICKAXE.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value + 1)
+        ])),
+        """
+    }
+},
+{
+    "INSTRUCTION": {
+        "instruction": "Make sure you place a small tree, but don't craft a stone sword.",
+        "instruction_paraphrases": ['I need you to plant a treeling, but avoid creating a stone blade.', "It's crucial for you to put down a sapling, but abstain from making a stone saber.", 'Place a young tree in your environment but you must not form a rock weapon.', "Can you position a tree sprout but please don't manufacture a weapon from stone?", 'Ensure a plantlet is positioned while making sure not to assemble a bladed stone tool.'],
+        "check_lambda": 
+             lambda gd, ix: conditional_achivments(
+                gd, jnp.array(
+                    [1 if a == Achievement.PLACE_PLANT.value else -1 if a == Achievement.MAKE_STONE_SWORD.value else 0
+                     for a in range(Achievement.MAKE_IRON_SWORD.value + 1)]
+                )
+            ),
+            
+        "str_check_lambda": """
+             lambda gd, ix: conditional_achivments(
+                gd, jnp.array(
+                    [1 if a == Achievement.PLACE_PLANT.value else -1 if a == Achievement.MAKE_STONE_SWORD.value else 0
+                     for a in range(Achievement.MAKE_IRON_SWORD.value + 1)]
+                )
+            ),
+         """
+    }
+},
+{
+    "INSTRUCTION": {
+        "instruction": "You must wake up. Then, you need to defeat a zombie and lastly, fetch a drink for yourself.",
+        "instruction_paraphrases": ['Get up from your sleep first. Post that, you must confront and win over a zombie. Lastly, make sure to obtain a drink.', "Rise from your rest first. Following this, it's important to tackle and overcome a zombie. In the end, secure a drink for your own self.", "You are required to awaken initially. Subsequent to this, it's crucial to resist and triumph over a zombie. To conclude, purchase a drink.", "You're needed to come out of your slumber at first. Upon accomplishing this, a zombie must be encountered and defeated. Ultimately, procure a beverage for yourself.", 'You are supposed to wake up first. Then, a zombie needs to be challenged and defeated. Finally, get hold of a beverage.'],
+        "check_lambda": 
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.WAKE_UP.value, Achievement.DEFEAT_ZOMBIE.value, Achievement.COLLECT_DRINK.value] else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ]))
+        ,
+        "str_check_lambda": """
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.WAKE_UP.value, Achievement.DEFEAT_ZOMBIE.value, Achievement.COLLECT_DRINK.value] else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        """
+    }
+},
+{
+    "INSTRUCTION": {
+        "instruction": "Don't create an Iron Sword. You need to, however, craft a Stone Sword and gather a Sapling.",
+        "instruction_paraphrases": ["Make sure you aren't crafting an Iron Sword. However, you need to both collect a Sapling and manufacture a Stone Sword.", 'You must not create an Iron Sword. Still, gather a Sapling and fashion a Stone Sword.', 'Without making an Iron Sword, you have to garner a Sapling and bring into existence a Stone Sword.', "Regardless of what you do, don't craft an Iron Sword. But be sure to make a Stone Sword and collect some saplings.", 'Without producing an Iron Sword, you must collect a Sapling and build a Stone Sword with all haste.'],
+        "check_lambda": 
+             lambda gd, ix: conditional_achivments(gd, jnp.array([
+                1 if a in [Achievement.MAKE_STONE_SWORD.value, Achievement.COLLECT_SAPLING.value] else
+                -1 if a == Achievement.MAKE_IRON_SWORD.value else 0
+                for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+            ]))
+            ,
+        "str_check_lambda": """
+             lambda gd, ix: conditional_achivments(gd, jnp.array([
+                1 if a in [Achievement.MAKE_STONE_SWORD.value, Achievement.COLLECT_SAPLING.value] else
+                -1 if a == Achievement.MAKE_IRON_SWORD.value else 0
+                for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+            ])),
+         ""   "
+    }
+},
+{
+    "INSTRUCTION": {
+        "instruction": "It's essential that you collect some diamonds, gather up some iron, and feed yourself with some cow meat.",
+        "instruction_paraphrases": ['Acquire valuable diamonds, collect an amount of iron, and make sure to eat some cow.', "You need to mine for both diamonds and iron, and don't forget to fill your hunger bar with beef.", 'Gather up some precious gems and metals, specifically diamonds and iron, and replenish your food bar with some beef.', 'You must find and collect diamonds, iron ore, and consume bovine food.', 'Finding diamonds, collecting iron mineral deposits, and incorporating beef into your diet is crucial'],
+        "check_lambda": 
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.COLLECT_DIAMOND.value, Achievement.COLLECT_IRON.value, Achievement.EAT_COW.value] else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ]))
+        ,
+        "str_check_lambda": """
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a in [Achievement.COLLECT_DIAMOND.value, Achievement.COLLECT_IRON.value, Achievement.EAT_COW.value] else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        """
+    }
+},
+{
+    "INSTRUCTION": {
+        "instruction": "Make a wooden axe and defeat a skeleton, but in no specific order",
+        "instruction_paraphrases": ['Your target is to craft a wooden pickaxe and defeat a skeleton. You can complete these tasks in any sequence.', 'Please, take on the skeleton after or before crafting a wooden pickaxe.', "Your missions are to construct a wooden axe and take down a skeleton. Order doesn't matter.", 'You need to accomplish two tasks. First is to build a wood pickaxe and second is to conquer a skeleton. You are free to choose the order.', "Your objectives include two tasks, creating a wooden tool for chopping, specifically a pickaxe, in addition to overcoming a skeleton enemy. You're allowed to tackle them in any order you prefer."],
+        "check_lambda": 
+     lambda gd, ix: conditional_achivments(gd, jnp.array([
+      1 if a in [Achievement.MAKE_WOOD_PICKAXE.value, Achievement.DEFEAT_SKELETON.value]
+      else 0 for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+      ]))
+    ,
+        "str_check_lambda": """
+     lambda gd, ix: conditional_achivments(gd, jnp.array([
+      1 if a in [Achievement.MAKE_WOOD_PICKAXE.value, Achievement.DEFEAT_SKELETON.value]
+      else 0 for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+      ])),
+    """ }
+},
+{
+    "INSTRUCTION": {
+        "instruction": "Collect a drink yet do not construct a stone sword.",
+        "instruction_paraphrases": ['Grab any type of beverages, but avoid making a rock sword.', 'Obtain any kind of drinkable liquid, while abstaining from stone blade production.', 'Acquire a sort of potable yet bypass from producing stone cutter.', 'Procure liquid meant for drinking but make sure not to forge weapon made of stone.', 'In your journey, make sure to gather any kind of liquid for hydration, however, be cautious not to fabricate a deadly sword out of a hard mineral rock for your protection.'],
+        "check_lambda": 
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a == Achievement.COLLECT_DRINK.value else
+            -1 if a == Achievement.MAKE_STONE_SWORD.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ]))
+        ,
+        "str_check_lambda": """
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            1 if a == Achievement.COLLECT_DRINK.value else
+            -1 if a == Achievement.MAKE_STONE_SWORD.value else 0
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        """
+    }
+},
+{
+    "INSTRUCTION": {
+        "instruction": "Make sure you have placed the furnace and not built an iron pickaxe. You can make the iron sword though.",
+        "instruction_paraphrases": ['Confirm that you have set up the furnace. You should not create an iron pickaxe, yet making an iron sword is allowed.', 'Please ensure that you have sited the furnace but have not constructed an iron pickaxe. Nonetheless, forging an iron sword is permissible.', 'It is imperative that you have installed the furnace and refrained from assembling an iron pickaxe, while on the other hand the creation of an iron sword is acceptable.', "The prerequisites are that the furnace has been positioned appropriately and the formation of an iron pickaxe has been avoided. However, you are permitted to produce an iron sword as it's necessary.", 'You are required to verify the placement of the furnace and abstain from manufacturing an iron pickaxe. However, you have the authorization to craft an iron sword.'],
+        "check_lambda": 
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            
+            1 if a in [Achievement.PLACE_FURNACE.value, Achievement.MAKE_IRON_SWORD.value] else
+            
+            -1 if a == Achievement.MAKE_IRON_PICKAXE.value else 0
+            
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ]))
+        ,
+        "str_check_lambda": """
+         lambda gd, ix: conditional_achivments(gd, jnp.array([
+            
+            1 if a in [Achievement.PLACE_FURNACE.value, Achievement.MAKE_IRON_SWORD.value] else
+            
+            -1 if a == Achievement.MAKE_IRON_PICKAXE.value else 0
+            
+            for a in range(Achievement.MAKE_IRON_SWORD.value+1)
+        ])),
+        """
+    }
+},
+{
+    "INSTRUCTION": {
+        "instruction": "Get your hands on some iron ore but make sure not to plant anything.",
+        "instruction_paraphrases": ['Procure an iron mineral, and refrain from engaging in any horticultural activities.', 'Your task is to accumulate the iron substance, and remember, you must abstain from executing any planting or cultivation.', 'Acquire an iron compound ensuring that you do not contribute to planting anything.', "It's crucial to gather iron yet abstain from placing any flora.", 'Initiate the collection of iron entities, but the planting of any vegetation is prohibited.'],
+        "check_lambda": 
+             lambda gd, ix: conditional_achivments(gd, jnp.array([
+                    1 if a == Achievement.COLLECT_IRON.value else
+                    -1 if a == Achievement.PLACE_PLANT.value else 0
+                    for a in range(Achievement.MAKE_IRON_SWORD.value + 1)
+                ])), 
+        "str_check_lambda": """
+             lambda gd, ix: conditional_achivments(gd, jnp.array([
+                    1 if a == Achievement.COLLECT_IRON.value else
+                    -1 if a == Achievement.PLACE_PLANT.value else 0
+                    for a in range(Achievement.MAKE_IRON_SWORD.value + 1)
+                ])), 
+                
+         """
+    }
+}

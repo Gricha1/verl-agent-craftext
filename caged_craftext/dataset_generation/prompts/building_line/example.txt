@@ -1,0 +1,4 @@
+ """
+ 'check_lambda': lambda game_data, ix: is_line_formed(game_data,ix, BlockType.CRAFTING_TABLE, 2, check_diagonal=False),
+        'str_check_lambda': "is_line_formed(game_data,ix, BlockType.CRAFTING_TABLE, 2, check_diagonal=False)"
+"""
