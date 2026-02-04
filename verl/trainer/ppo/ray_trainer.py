@@ -751,6 +751,7 @@ class RayPPOTrainer:
                                                     actor_rollout_wg=self.actor_rollout_wg,
                                                     envs=self.val_envs,
                                                     is_train=False,
+                                                    world_model_trainer=self.world_model_trainer,
                                                     )
             print('validation generation end')
             del test_batch
@@ -898,6 +899,22 @@ class RayPPOTrainer:
         # we should create rollout at the end so that vllm can have a better estimation of kv cache memory
         self.actor_rollout_wg = all_wg["actor_rollout"]
         self.actor_rollout_wg.init_model()
+        
+        # Initialize world model trainer if enabled
+        self.world_model_trainer = None
+        self.world_model_loss_coef = 1.0
+        if self.config.trainer.get("world_model", {}).get("enable", False):
+            from verl.trainer.world_model import WorldModelTrainer
+            world_model_config = self.config.trainer.world_model
+            self.world_model_loss_coef = world_model_config.get("loss_coef", 1.0)
+            self.world_model_trainer = WorldModelTrainer(
+                actor_rollout_wg=self.actor_rollout_wg,
+                tokenizer=self.tokenizer,
+                max_latent_tokens=world_model_config.get("max_latent_tokens", 64),
+                encoder_prompt=world_model_config.get("encoder_prompt", "Преобразуй наблюдение среды во внутреннее латентное состояние.\nВерни ТОЛЬКО латентные токены в формате:\n<LATENT> ... </LATENT>"),
+                transition_prompt=world_model_config.get("transition_prompt", "Предскажи следующее латентное состояние среды."),
+                device=self.device_name,
+            )
 
         # create async rollout manager and request scheduler
         self.async_rollout_mode = False
@@ -1085,6 +1102,7 @@ class RayPPOTrainer:
                                                                 actor_rollout_wg=self.actor_rollout_wg,
                                                                 envs=self.envs,
                                                                 is_train=True,
+                                                                world_model_trainer=self.world_model_trainer,
                                                                 )
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
                         with _timer("gen_max", timing_raw):
@@ -1250,11 +1268,27 @@ class RayPPOTrainer:
 
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
-                        # update actor
+                        # Train world model (Step 3: LLM as world model)
+                        # NOTE: World model loss is computed BEFORE PPO update so that gradients
+                        # from both losses are accumulated and applied together in optimizer.step()
+                        # This ensures: L_total = L_PPO + loss_coef * L_world_model
+                        if self.config.trainer.get("world_model", {}).get("enable", False):
+                            with _timer("update_world_model", timing_raw):
+                                world_model_metrics = self._train_world_model(batch, loss_coef=self.world_model_loss_coef)
+                                if world_model_metrics:
+                                    metrics.update(world_model_metrics)
+                                    print(f"[World Model Debug] Added {len(world_model_metrics)} metrics: {list(world_model_metrics.keys())}")
+                                else:
+                                    print("[World Model Debug] Warning: _train_world_model returned empty dict - no metrics to log")
+                        
+                        # update actor (PPO update)
+                        # This will call optimizer.step() which applies gradients from both PPO and world model
                         with _timer("update_actor", timing_raw):
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
                             actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
+                        metrics.update(actor_output_metrics)
+                        
                         metrics.update(actor_output_metrics)
 
                     # Log rollout generations if enabled
@@ -1302,6 +1336,12 @@ class RayPPOTrainer:
 
                 # TODO: make a canonical logger that supports various backend
                 # Логируем с шагами среды вместо шагов PPO
+                # Debug: check if world model metrics are present
+                world_model_keys = [k for k in metrics.keys() if k.startswith("world_model/")]
+                if world_model_keys:
+                    print(f"[World Model Debug] Metrics before logging: {world_model_keys}")
+                else:
+                    print("[World Model Debug] Warning: No world_model/* metrics found in metrics dict before logging")
                 logger.log(data=metrics, step=self.total_env_steps)
 
                 progress_bar.update(1)
@@ -1310,3 +1350,115 @@ class RayPPOTrainer:
                     pprint(f"Final validation metrics: {last_val_metrics}")
                     progress_bar.close()
                     return
+    
+    def _train_world_model(self, batch: DataProto, loss_coef: float = 1.0) -> Dict[str, float]:
+        """
+        Train world model on collected experience.
+        
+        Args:
+            batch: Batch of experience data containing observations, actions, and next_obs
+            loss_coef: Coefficient for world model loss (for combining with PPO loss)
+            
+        Returns:
+            Dictionary of world model training metrics
+        """
+        if self.world_model_trainer is None:
+            return {}
+        
+        # Extract observations, actions, and next observations from batch
+        # Observations are in batch.non_tensor_batch['raw_prompt'] or similar
+        # Actions are in batch.batch['responses'] (decoded)
+        # Next observations should be in batch.non_tensor_batch['next_obs_text']
+        
+        # Get observations (current state)
+        if 'raw_prompt' in batch.non_tensor_batch:
+            # Extract text from raw_prompt
+            raw_prompts = batch.non_tensor_batch['raw_prompt']
+            observations = []
+            for prompt in raw_prompts:
+                if isinstance(prompt, list) and len(prompt) > 0:
+                    # Extract text content from prompt
+                    if isinstance(prompt[0], dict) and 'content' in prompt[0]:
+                        observations.append(prompt[0]['content'])
+                    else:
+                        observations.append(str(prompt[0]))
+                else:
+                    observations.append(str(prompt))
+        else:
+            # Fallback: decode from input_ids
+            observations = self.tokenizer.batch_decode(
+                batch.batch['input_ids'],
+                skip_special_tokens=True
+            )
+        
+        # Get actions (responses from agent)
+        actions = self.tokenizer.batch_decode(
+            batch.batch['responses'],
+            skip_special_tokens=True
+        )
+        
+        # Get next observations
+        if 'next_obs_text' in batch.non_tensor_batch:
+            next_observations = batch.non_tensor_batch['next_obs_text'].tolist()
+            print(f"[World Model Debug] Found next_obs_text in batch, shape: {len(next_observations)}")
+        else:
+            # If next_obs_text is not available, skip world model training for this batch
+            print(f"[World Model Debug] Warning: next_obs_text not found in batch. Available keys in non_tensor_batch: {list(batch.non_tensor_batch.keys())}")
+            return {}
+        
+        # Filter out samples where next_obs is None or empty
+        valid_indices = [
+            i for i, (obs, next_obs, action) in enumerate(zip(observations, next_observations, actions))
+            if obs and next_obs and action and len(obs) > 0 and len(next_obs) > 0 and len(action) > 0
+        ]
+        
+        if len(valid_indices) == 0:
+            return {}
+        
+        observations = [observations[i] for i in valid_indices]
+        next_observations = [next_observations[i] for i in valid_indices]
+        actions = [actions[i] for i in valid_indices]
+        
+        # Get optimizer for world model (use actor optimizer)
+        # The world model shares parameters with the actor model
+        # So we use the actor's optimizer
+        # Note: We need to access the optimizer from the worker group
+        # This might require adding a method to get the optimizer
+        # For now, we'll try to get it from the actor_rollout_wg
+        try:
+            # Try to get optimizer from worker group
+            # This might not be directly accessible, so we might need to modify the worker
+            optimizer = None
+            if hasattr(self.actor_rollout_wg, 'get_optimizer'):
+                optimizer = self.actor_rollout_wg.get_optimizer()
+            elif hasattr(self.actor_rollout_wg, 'optimizer'):
+                optimizer = self.actor_rollout_wg.optimizer
+            
+            if optimizer is None:
+                print("Warning: Optimizer not available for world model training")
+                return {}
+            
+            # Train world model
+            # Note: This computes loss and calls backward(), but NOT optimizer.step()
+            # The optimizer.step() is called in update_actor(), so gradients from
+            # both PPO and world model are combined: L_total = L_PPO + loss_coef * L_world_model
+            metrics = self.world_model_trainer.train_step(
+                observations=observations,
+                next_observations=next_observations,
+                actions=actions,
+                optimizer=optimizer,
+                loss_coef=loss_coef,
+            )
+            
+            # Debug: print metrics to ensure they are returned
+            if metrics:
+                print(f"[World Model] Metrics returned: {list(metrics.keys())}")
+            else:
+                print("[World Model] Warning: No metrics returned from train_step")
+            
+            return metrics
+        except Exception as e:
+            print(f"Error training world model: {e}")
+            import traceback
+            traceback.print_exc()
+            return {}

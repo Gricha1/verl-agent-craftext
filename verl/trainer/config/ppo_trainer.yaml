@@ -283,6 +283,14 @@ trainer:
   # The timeout for ray worker group to wait for the register center to be ready
   ray_wait_register_center_timeout: 300
   device: cuda
+  # World Model training configuration
+  world_model:
+    enable: False  # Set to True to enable world model training
+    use_latent_in_policy: False  # Set to True to use latent state zt in agent's prompt during rollout and training
+    max_latent_tokens: 64  # Maximum number of latent tokens to generate
+    encoder_prompt: "Преобразуй наблюдение среды во внутреннее латентное состояние.\nВерни ТОЛЬКО латентные токены в формате:\n<LATENT> ... </LATENT>"  # Prompt for encoder mode
+    transition_prompt: "Предскажи следующее латентное состояние среды."  # Prompt for transition model mode
+    loss_coef: 1.0  # Coefficient for world model loss: L_total = L_PPO + loss_coef * L_world_model
 
 ray_init:
   num_cpus: null # `None` means using all CPUs, which might cause hang if limited in systems like SLURM. Please set to a number allowed then.

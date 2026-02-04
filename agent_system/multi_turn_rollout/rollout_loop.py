@@ -24,7 +24,7 @@ import uuid
 from verl.models.transformers.qwen2_vl import get_rope_index
 from agent_system.multi_turn_rollout.utils import process_image, to_list_of_dict, torch_to_numpy, filter_group_data
 from agent_system.environments import EnvironmentManagerBase
-from typing import List, Dict
+from typing import List, Dict, Optional
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
 
 class TrajectoryCollector:
@@ -46,6 +46,7 @@ class TrajectoryCollector:
         item: int,
         gen_batch: DataProto,
         obs: Dict,
+        latent_state: Optional[List[int]] = None,
     ):
         """
         Process a single observation sample, organizing environment observations (text and/or images) 
@@ -85,6 +86,11 @@ class TrajectoryCollector:
             obs_content += obs_text
         else:
             print(f"Warning: No text observation found!")
+        
+        # Add latent state zt to prompt if available
+        if latent_state is not None:
+            latent_text = self.tokenizer.decode(latent_state, skip_special_tokens=False)
+            obs_content += f"\n\nЛатентное состояние среды: {latent_text}"
 
         
         chat = np.array([{
@@ -182,7 +188,8 @@ class TrajectoryCollector:
     def preprocess_batch(
         self,
         gen_batch: DataProto, 
-        obs: Dict, 
+        obs: Dict,
+        latent_states: Optional[List[List[int]]] = None,
     ) -> DataProto:
         """
         Process a batch of observation samples, converting environment observations into model-processable format.
@@ -203,10 +210,12 @@ class TrajectoryCollector:
         # Process each sample in parallel
         for item in range(batch_size):
             # Extract per-sample observations
+            latent_state = latent_states[item] if latent_states is not None else None
             processed = self.preprocess_single_sample(
                 item=item,
                 gen_batch=gen_batch,
                 obs=obs,
+                latent_state=latent_state,
             )
             processed_samples.append(processed)
         
@@ -282,6 +291,7 @@ class TrajectoryCollector:
             gen_batch: DataProto, 
             actor_rollout_wg, 
             envs: EnvironmentManagerBase,
+            world_model_trainer=None,
             ) -> DataProto:
         """
         Collects trajectories through parallel agent-environment agent_loop.
@@ -368,7 +378,24 @@ class TrajectoryCollector:
         for _step in range(self.config.env.max_steps):
             active_masks = np.logical_not(is_done)
 
-            batch = self.preprocess_batch(gen_batch=gen_batch, obs=obs)
+            # Get latent state zt through encoder if world model is enabled and use_latent_in_policy is True
+            latent_states = None
+            use_latent_in_policy = self.config.trainer.get("world_model", {}).get("use_latent_in_policy", False)
+            if use_latent_in_policy and world_model_trainer is not None:
+                # Extract observation texts
+                obs_texts = obs.get('text', None)
+                if obs_texts is not None:
+                    # Encode observations to get latent states zt
+                    latent_states = world_model_trainer.encode_observation(
+                        observations=obs_texts,
+                        with_grad=False  # No gradients during rollout
+                    )
+
+            batch = self.preprocess_batch(gen_batch=gen_batch, obs=obs, latent_states=latent_states)
+            
+            # Store latent states for later use (decode to text for storage)
+            if latent_states is not None:
+                batch.non_tensor_batch['latent_states'] = np.array([self.tokenizer.decode(zt, skip_special_tokens=False) for zt in latent_states], dtype=object)
 
             batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
             non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
@@ -467,6 +494,19 @@ class TrajectoryCollector:
             batch.non_tensor_batch['rewards'] = torch_to_numpy(rewards, is_object=True)
             batch.non_tensor_batch['active_masks'] = torch_to_numpy(active_masks, is_object=True)
             
+            # Store next observations for world model training
+            # Convert next_obs to a format that can be stored
+            if isinstance(next_obs, dict):
+                # Store next observation text for world model
+                if 'text' in next_obs and next_obs['text'] is not None:
+                    batch.non_tensor_batch['next_obs_text'] = np.array(next_obs['text'], dtype=object)
+                # Store next observation image if available
+                if 'image' in next_obs and next_obs['image'] is not None:
+                    batch.non_tensor_batch['next_obs_image'] = torch_to_numpy(next_obs['image'], is_object=True)
+            else:
+                # If next_obs is not a dict, store it as is
+                batch.non_tensor_batch['next_obs'] = torch_to_numpy(next_obs, is_object=True)
+            
             # Update episode lengths for active environments
             batch_list: list[dict] = to_list_of_dict(batch)
 
@@ -509,6 +549,7 @@ class TrajectoryCollector:
             gen_batch: DataProto, 
             actor_rollout_wg, 
             envs: EnvironmentManagerBase,
+            world_model_trainer=None,
             ) -> DataProto:
         """
         Conduct dynamic rollouts until a target batch size is met. 
@@ -582,6 +623,7 @@ class TrajectoryCollector:
             actor_rollout_wg, 
             envs: EnvironmentManagerBase,
             is_train: bool = True,
+            world_model_trainer=None,
             ) -> DataProto:
         """
         Select and run the appropriate rollout loop (dynamic or vanilla).
@@ -606,6 +648,7 @@ class TrajectoryCollector:
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
                 envs=envs,
+                world_model_trainer=world_model_trainer,
             )
         else:
             # Vanilla Sampling   
@@ -614,6 +657,7 @@ class TrajectoryCollector:
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
                 envs=envs,
+                world_model_trainer=world_model_trainer,
             )
         assert len(total_batch_list) == len(total_episode_rewards)
         assert len(total_batch_list) == len(total_episode_lengths)
