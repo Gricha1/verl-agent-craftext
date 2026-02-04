@@ -37,7 +37,7 @@ shift 2 2>/dev/null || shift 1 2>/dev/null || true
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
 num_cpus_per_env_worker=0.03
-train_data_size=16
+train_data_size=32
 val_data_size=8
 
 export RUN_NAME="run_saute_ppo_qwen2.5_1.5b_caged_craftext_energy_collect_wood_$(date +%Y%m%d-%H%M%S)"
@@ -87,8 +87,8 @@ python -m verl.trainer.main_ppo \
   critic.optim.lr=1e-5 \
   critic.model.use_remove_padding=True \
   critic.model.path=Qwen/Qwen2.5-1.5B-Instruct \
-  critic.model.lora_rank=64 \
-  critic.model.lora_alpha=64 \
+  critic.model.lora_rank=0 \
+  critic.model.lora_alpha=16 \
   critic.model.enable_gradient_checkpointing=True \
   critic.ppo_mini_batch_size=16 \
   critic.ppo_micro_batch_size_per_gpu=8 \

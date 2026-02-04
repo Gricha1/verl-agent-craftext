@@ -1,5 +1,0 @@
-dataset_key: jax_build
-subset_key: medium
-base_environment: Craftax-Pixels-v1-Text
-use_parafrases: True
-

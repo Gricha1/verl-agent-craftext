@@ -1,0 +1,88 @@
+name: sg-safe-training-craftext
+desc: Training SG-Safe with A100 - PPO on Craftext
+
+cmd: >
+  echo "=== Removing problematic directory with long paths ===" &&
+  rm -rf agent_system/environments/env_package/craftext/CrafText-super_igor_env_build || echo "Directory already removed or not found" &&
+  echo "=== Creating Python 3.10 env (DataSphere image has Python 3.13; vllm needs <3.13) ===" &&
+  . /opt/conda/etc/profile.d/conda.sh &&
+  echo "=== Accepting Anaconda channel Terms of Service (non-interactive) ===" &&
+  (yes | conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main) || true &&
+  (yes | conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r) || true &&
+  conda env list | grep -q "^ds_py310" || conda create -y -n ds_py310 python=3.10.13 pip &&
+  conda env list | grep -q "^ds_py310" || (echo "ERROR: failed to create conda env ds_py310" && exit 1) &&
+  conda run -n ds_py310 python -c "import sys; print('Using Python:', sys.version)" &&
+  conda run -n ds_py310 python -m pip install -U pip setuptools wheel &&
+  echo "=== Base installs (same order as your notebook) ===" &&
+  conda run -n ds_py310 python -m pip install -e . &&
+  conda run -n ds_py310 python -m pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 torchdata==0.11.0 tensordict==0.6.2 --index-url https://download.pytorch.org/whl/cu124 &&
+  conda run -n ds_py310 python -m pip install vllm==0.8.5 &&
+  conda run -n ds_py310 python -m pip install psutil packaging &&
+  conda run -n ds_py310 python -m pip install datasets tensorboard comet_ml &&
+  conda run -n ds_py310 python -m pip install "ray[default]" msgspec cachetools openai gym gymnasium &&
+  echo "=== Installing caged_craftext (with --no-deps to prevent craftax/jax conflicts) ===" &&
+  conda run -n ds_py310 python -m pip install --no-deps -e caged_craftext &&
+  echo "=== Installing craftext wrapper (with --no-deps to prevent craftax/jax conflicts) ===" &&
+  conda run -n ds_py310 python -m pip install --no-deps -e agent_system/environments/env_package/craftext &&
+  (conda run -n ds_py310 python -c "import craftext; from craftext.environment.craftext_wrapper import InstructionWrapper; print('craftext OK')" || echo "Warning: craftext check failed, but continuing...") &&
+  echo "=== Craftax/JAX reset (codex path) ===" &&
+  conda run -n ds_py310 python -m pip uninstall -y craftax flax jax jaxlib jax-cuda12-pjrt jax-cuda12-plugin chex optax orbax-checkpoint distrax tensorstore ml_dtypes numpy pandas scikit-learn scipy || true &&
+  echo "=== Installing JAX ecosystem FIRST (before craftax) ===" &&
+  conda run -n ds_py310 python -m pip install --no-cache-dir "jax==0.4.30" "jaxlib==0.4.30" "flax==0.10.4" "chex==0.1.90" "optax==0.2.5" "orbax-checkpoint==0.6.4" "distrax==0.1.5" "tensorstore==0.1.78" "ml_dtypes==0.5.3" "numpy==1.26.2" &&
+  echo "=== Installing craftax AFTER jax (with --no-deps to prevent jax upgrade) ===" &&
+  conda run -n ds_py310 python -m pip install --no-cache-dir --no-deps craftax==1.4.3 &&
+  echo "=== Installing craftax dependencies (excluding jax/jaxlib which are already installed) ===" &&
+  conda run -n ds_py310 python -m pip install imageio matplotlib seaborn pygame gymnax treescope black pre-commit || echo "Warning: some craftax dependencies may have failed" &&
+  conda run -n ds_py310 python -m pip install -U pandas scikit-learn scipy &&
+  echo "=== Sanity checks before training ===" &&
+  conda run -n ds_py310 python -c "import numpy, pandas; print('numpy', numpy.__version__, 'pandas', pandas.__version__)" &&
+  conda run -n ds_py310 python -c "import ray, tensordict; print('ray', ray.__version__, 'tensordict', tensordict.__version__)" &&
+  conda run -n ds_py310 python -c "import vllm; import vllm.lora.models; print('vllm OK', vllm.__version__)" &&
+  conda run -n ds_py310 python -c "import os; os.environ['CRAFTAX_RELOAD_TEXTURES']='True'; import craftax; print('craftax OK')" &&
+  echo "=== Skipping flash-attn in requirements.txt (will install separately, with --no-deps to prevent conflicts) ===" &&
+  grep -v "^flash-attn" requirements.txt > /tmp/requirements_no_flash.txt &&
+  grep -v "^craftax" /tmp/requirements_no_flash.txt > /tmp/requirements_no_conflicts.txt || cp /tmp/requirements_no_flash.txt /tmp/requirements_no_conflicts.txt &&
+  grep -v "^jax" /tmp/requirements_no_conflicts.txt > /tmp/requirements_final.txt || cp /tmp/requirements_no_conflicts.txt /tmp/requirements_final.txt &&
+  conda run -n ds_py310 python -m pip install --no-deps -r /tmp/requirements_final.txt &&
+  echo "=== Installing flash-attn LAST (required by verl.workers.critic, must be after all other deps) ===" &&
+  conda run -n ds_py310 python -m pip install --no-deps flash-attn==2.7.4.post1 --no-build-isolation &&
+  conda run -n ds_py310 python -c "import flash_attn; print('flash-attn OK')" || (echo "ERROR: flash-attn installation/import failed!" && conda run -n ds_py310 python -m pip show flash-attn && exit 1) &&
+  echo "=== Fixing typo: creating symlink enviroment -> environment ===" &&
+  ln -sfn /job/caged_craftext/craftext/environment /job/caged_craftext/craftext/enviroment || echo "Warning: symlink creation failed, but continuing..." &&
+  echo "=== Creating patch file and sitecustomize.py ===" &&
+  conda run -n ds_py310 python -c "import os; site_packages = '/opt/conda/envs/ds_py310/lib/python3.10/site-packages'; os.makedirs(site_packages, exist_ok=True); patch_file = '/tmp/craftext_patch.py'; lines = ['# Patch for InstructionWrapper to ignore sample_range argument', 'import sys', 'import os', 'import builtins', '', '# Add paths', 'for path in [\"/job/caged_craftext/craftext\", \"/job/agent_system/environments/env_package/craftext\"]:', '    if path not in sys.path and os.path.exists(path):', '        sys.path.insert(0, path)', '', '# Apply patch immediately if module already imported', 'if \"craftext.environment.craftext_wrapper\" in sys.modules:', '    try:', '        from craftext.environment.craftext_wrapper import InstructionWrapper', '        if not hasattr(InstructionWrapper.__init__, \"_patched\"):', '            original_init = InstructionWrapper.__init__', '            def patched_init(self, env, config_name=None, scenario_handler_class=None, encode_model_class=None, encode_form=None, **kwargs):', '                kwargs.pop(\"sample_range\", None)', '                return original_init(self, env, config_name=config_name, scenario_handler_class=scenario_handler_class, encode_model_class=encode_model_class, encode_form=encode_form)', '            patched_init._patched = True', '            InstructionWrapper.__init__ = patched_init', '    except:', '        pass', '', '# Hook into import system to patch InstructionWrapper', '_original_import = builtins.__import__', '', 'def _patched_import(name, globals=None, locals=None, fromlist=(), level=0):', '    module = _original_import(name, globals, locals, fromlist, level)', '    if name == \"craftext.environment.craftext_wrapper\" or (hasattr(module, \"__name__\") and module.__name__ == \"craftext.environment.craftext_wrapper\"):', '        try:', '            if hasattr(module, \"InstructionWrapper\"):', '                InstructionWrapper = module.InstructionWrapper', '                if not hasattr(InstructionWrapper.__init__, \"_patched\"):', '                    original_init = InstructionWrapper.__init__', '                    def patched_init(self, env, config_name=None, scenario_handler_class=None, encode_model_class=None, encode_form=None, **kwargs):', '                        kwargs.pop(\"sample_range\", None)', '                        return original_init(self, env, config_name=config_name, scenario_handler_class=scenario_handler_class, encode_model_class=encode_model_class, encode_form=encode_form)', '                    patched_init._patched = True', '                    InstructionWrapper.__init__ = patched_init', '        except:', '            pass', '    return module', '', 'builtins.__import__ = _patched_import']; open(patch_file, 'w').write('\\n'.join(lines)); sitecustomize_file = os.path.join(site_packages, 'sitecustomize.py'); open(sitecustomize_file, 'w').write('import sys; exec(open(\"/tmp/craftext_patch.py\").read())\\n'); print(f'Created patch at {patch_file} and sitecustomize.py at {sitecustomize_file}')" &&
+  export PYTHONPATH=/job:/job/caged_craftext/craftext:/job/agent_system/environments/env_package/craftext:$PYTHONPATH &&
+  export CRAFTAX_RELOAD_TEXTURES=True &&
+  echo "=== Setting up package ===" &&
+  chmod +x examples/ppo_trainer/run_craftext_lora_job.sh &&
+  echo "=== Starting training (CRAFTAX_RELOAD_TEXTURES=$CRAFTAX_RELOAD_TEXTURES) ===" &&
+  conda run -n ds_py310 bash -c "cd /job && echo '#!/bin/bash' > /tmp/run_craftext_fixed.sh && echo 'ENGINE=\$1' >> /tmp/run_craftext_fixed.sh && echo 'shift' >> /tmp/run_craftext_fixed.sh && echo 'export VLLM_ATTENTION_BACKEND=XFORMERS' >> /tmp/run_craftext_fixed.sh && echo 'num_cpus_per_env_worker=0.03' >> /tmp/run_craftext_fixed.sh && echo 'train_data_size=32' >> /tmp/run_craftext_fixed.sh && echo 'val_data_size=8' >> /tmp/run_craftext_fixed.sh && echo 'export RUN_NAME=run_ppo_qwen2.5_1.5b_achievements_collect_wood_\$(date +%Y%m%d-%H%M%S)' >> /tmp/run_craftext_fixed.sh && echo 'python -m examples.data_preprocess.prepare --mode text --train_data_size \$train_data_size --val_data_size \$val_data_size' >> /tmp/run_craftext_fixed.sh && echo 'python -c \"import sys; sys.path.insert(0, \\\"/job/caged_craftext/craftext\\\"); sys.path.insert(0, \\\"/job/agent_system/environments/env_package/craftext\\\"); exec(open(\\\"/tmp/craftext_patch.py\\\").read())\" && python -m verl.trainer.main_ppo algorithm.adv_estimator=gae data.train_files=\$HOME/data/verl-agent/text/train.parquet data.val_files=\$HOME/data/verl-agent/text/test.parquet data.train_batch_size=\$train_data_size data.val_batch_size=\$val_data_size data.max_prompt_length=2048 data.max_response_length=512 data.filter_overlong_prompts=True data.truncation=error data.return_raw_chat=True actor_rollout_ref.model.path=Qwen/Qwen2.5-1.5B-Instruct actor_rollout_ref.model.lora_rank=64 actor_rollout_ref.model.lora_alpha=64 actor_rollout_ref.actor.optim.lr=1e-6 actor_rollout_ref.model.use_remove_padding=True actor_rollout_ref.actor.ppo_mini_batch_size=16 actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=8 actor_rollout_ref.actor.use_kl_loss=True actor_rollout_ref.actor.kl_loss_coef=0.01 actor_rollout_ref.actor.kl_loss_type=low_var_kl actor_rollout_ref.model.enable_gradient_checkpointing=True actor_rollout_ref.actor.fsdp_config.param_offload=False actor_rollout_ref.actor.fsdp_config.optimizer_offload=False actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 actor_rollout_ref.rollout.tensor_model_parallel_size=2 actor_rollout_ref.rollout.name=\$ENGINE actor_rollout_ref.rollout.gpu_memory_utilization=0.6 actor_rollout_ref.rollout.enable_chunked_prefill=False actor_rollout_ref.rollout.enforce_eager=False actor_rollout_ref.rollout.free_cache_engine=False actor_rollout_ref.rollout.val_kwargs.temperature=0.4 actor_rollout_ref.rollout.val_kwargs.do_sample=True actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 actor_rollout_ref.ref.fsdp_config.param_offload=True actor_rollout_ref.actor.use_invalid_action_penalty=True actor_rollout_ref.actor.invalid_action_penalty_coef=0.1 critic.optim.lr=1e-5 critic.model.use_remove_padding=True critic.model.path=Qwen/Qwen2.5-1.5B-Instruct critic.model.enable_gradient_checkpointing=True critic.ppo_mini_batch_size=16 critic.ppo_micro_batch_size_per_gpu=8 critic.model.fsdp_config.param_offload=False critic.model.fsdp_config.optimizer_offload=False algorithm.use_kl_in_reward=False env.env_name=craftext/CraftextEnv +env.craftext_settings=achievements_collect_wood +env.observation_type=ascii env.seed=0 env.max_steps=50 env.history_length=0 env.resources_per_worker.num_cpus=\$num_cpus_per_env_worker trainer.critic_warmup=0 trainer.logger=[console,tensorboard,comet] trainer.project_name=verl_agent_craftext trainer.experiment_name=\$RUN_NAME trainer.n_gpus_per_node=2 trainer.nnodes=1 trainer.save_freq=100 trainer.test_freq=10 trainer.total_epochs=500 trainer.val_before_train=True \"\$@\"' >> /tmp/run_craftext_fixed.sh && chmod +x /tmp/run_craftext_fixed.sh && /tmp/run_craftext_fixed.sh vllm actor_rollout_ref.rollout.tensor_model_parallel_size=2 trainer.n_gpus_per_node=2 actor_rollout_ref.rollout.gpu_memory_utilization=0.65 actor_rollout_ref.rollout.enforce_eager=True"
+
+inputs:
+  - examples/
+  - verl/
+  - agent_system/
+  - recipe/
+  - gigpo/
+  - caged_craftext/
+  - setup.py
+  - requirements.txt
+  - pyproject.toml
+  - README.md
+
+env:
+  docker:
+    image: trololoeeev/safe_llm_img:latest
+  vars:
+    CRAFTAX_RELOAD_TEXTURES: "True"
+    PYTHONPATH: "/job:/job/caged_craftext/craftext:/job/agent_system/environments/env_package/craftext"
+
+cloud-instance-types:
+  - g2.2
+
+working-storage:
+  type: SSD
+  size: 200Gb
+
+flags:
+  - attach-project-disk

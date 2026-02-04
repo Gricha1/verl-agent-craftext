@@ -12,7 +12,7 @@ ENGINE=${1:-vllm}
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
 num_cpus_per_env_worker=0.03
-train_data_size=8
+train_data_size=32
 val_data_size=8
 
 export RUN_NAME="run_ppo_qwen2.5_1.5b_achievements_collect_wood_$(date +%Y%m%d-%H%M%S)"

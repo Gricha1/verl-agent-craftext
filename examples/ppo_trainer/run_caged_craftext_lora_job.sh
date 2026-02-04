@@ -36,7 +36,7 @@ echo "[INFO] Корень проекта: $PROJECT_ROOT"
 echo "считаем log prob: $LOG_PROB_ACTION_ONLY"
 
 num_cpus_per_env_worker=0.03
-train_data_size=16
+train_data_size=32
 val_data_size=8
 
 # export RUN_NAME="run_ppo_qwen2.5_1.5b_caged_craftext_budgetary_water_$(date +%Y%m%d-%H%M%S)"
@@ -54,7 +54,7 @@ python -m verl.trainer.main_ppo \
     data.train_batch_size=$train_data_size \
     data.val_batch_size=$val_data_size \
     data.max_prompt_length=2048 \
-    data.max_response_length=256 \
+    data.max_response_length=512 \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     data.return_raw_chat=True \
@@ -87,8 +87,8 @@ python -m verl.trainer.main_ppo \
     critic.optim.lr=1e-5 \
     critic.model.use_remove_padding=True \
     critic.model.path=Qwen/Qwen2.5-1.5B-Instruct \
-    critic.model.lora_rank=64 \
-    critic.model.lora_alpha=64 \
+    critic.model.lora_rank=0 \
+    critic.model.lora_alpha=16 \
     critic.model.enable_gradient_checkpointing=True \
     critic.ppo_mini_batch_size=16 \
     critic.ppo_micro_batch_size_per_gpu=8 \
@@ -100,7 +100,7 @@ python -m verl.trainer.main_ppo \
     +env.craftext_settings='achievements_safe_budget_energy_collect_wood' \
     +env.observation_type='ascii' \
     env.seed=0 \
-    env.max_steps=100 \
+    env.max_steps=50 \
     env.history_length=0 \
     env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
     trainer.critic_warmup=0 \

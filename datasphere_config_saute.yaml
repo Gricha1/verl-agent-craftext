@@ -1,0 +1,80 @@
+name: sg-safe-training-saute
+desc: Training SG-Safe with A100 - Saute-PPO on Caged Craftext
+
+cmd: >
+  echo "=== Removing problematic directory with long paths ===" &&
+  rm -rf agent_system/environments/env_package/craftext/CrafText-super_igor_env_build || echo "Directory already removed or not found" &&
+  echo "=== Creating Python 3.10 env (DataSphere image has Python 3.13; vllm needs <3.13) ===" &&
+  . /opt/conda/etc/profile.d/conda.sh &&
+  echo "=== Accepting Anaconda channel Terms of Service (non-interactive) ===" &&
+  (yes | conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main) || true &&
+  (yes | conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r) || true &&
+  conda env list | grep -q "^ds_py310" || conda create -y -n ds_py310 python=3.10.13 pip &&
+  conda env list | grep -q "^ds_py310" || (echo "ERROR: failed to create conda env ds_py310" && exit 1) &&
+  conda run -n ds_py310 python -c "import sys; print('Using Python:', sys.version)" &&
+  conda run -n ds_py310 python -m pip install -U pip setuptools wheel &&
+  echo "=== Base installs (same order as your notebook) ===" &&
+  conda run -n ds_py310 python -m pip install -e . &&
+  conda run -n ds_py310 python -m pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 torchdata==0.11.0 tensordict==0.6.2 --index-url https://download.pytorch.org/whl/cu124 &&
+  conda run -n ds_py310 python -m pip install vllm==0.8.5 &&
+  conda run -n ds_py310 python -m pip install psutil packaging &&
+  conda run -n ds_py310 python -m pip install datasets tensorboard comet_ml &&
+  conda run -n ds_py310 python -m pip install "ray[default]" msgspec cachetools openai gym gymnasium &&
+  echo "=== Installing craftext (with --no-deps to prevent craftax/jax conflicts) ===" &&
+  conda run -n ds_py310 python -m pip install --no-deps -e agent_system/environments/env_package/craftext/craftext &&
+  echo "=== Craftax/JAX reset (codex path) ===" &&
+  conda run -n ds_py310 python -m pip uninstall -y craftax flax jax jaxlib jax-cuda12-pjrt jax-cuda12-plugin chex optax orbax-checkpoint distrax tensorstore ml_dtypes numpy pandas scikit-learn scipy || true &&
+  echo "=== Installing JAX ecosystem FIRST (before craftax) ===" &&
+  conda run -n ds_py310 python -m pip install --no-cache-dir "jax==0.4.30" "jaxlib==0.4.30" "flax==0.10.4" "chex==0.1.90" "optax==0.2.5" "orbax-checkpoint==0.6.4" "distrax==0.1.5" "tensorstore==0.1.78" "ml_dtypes==0.5.3" "numpy==1.26.2" &&
+  echo "=== Installing craftax AFTER jax (with --no-deps to prevent jax upgrade) ===" &&
+  conda run -n ds_py310 python -m pip install --no-cache-dir --no-deps craftax==1.4.3 &&
+  echo "=== Installing craftax dependencies (excluding jax/jaxlib which are already installed) ===" &&
+  conda run -n ds_py310 python -m pip install imageio matplotlib seaborn pygame gymnax treescope black pre-commit || echo "Warning: some craftax dependencies may have failed" &&
+  conda run -n ds_py310 python -m pip install -U pandas scikit-learn scipy &&
+  echo "=== Sanity checks before training ===" &&
+  conda run -n ds_py310 python -c "import numpy, pandas; print('numpy', numpy.__version__, 'pandas', pandas.__version__)" &&
+  conda run -n ds_py310 python -c "import ray, tensordict; print('ray', ray.__version__, 'tensordict', tensordict.__version__)" &&
+  conda run -n ds_py310 python -c "import vllm; import vllm.lora.models; print('vllm OK', vllm.__version__)" &&
+  conda run -n ds_py310 python -c "import os; os.environ['CRAFTAX_RELOAD_TEXTURES']='True'; import craftax; print('craftax OK')" &&
+  echo "=== Skipping flash-attn in requirements.txt (will install separately, with --no-deps to prevent conflicts) ===" &&
+  grep -v "^flash-attn" requirements.txt > /tmp/requirements_no_flash.txt &&
+  grep -v "^craftax" /tmp/requirements_no_flash.txt > /tmp/requirements_no_conflicts.txt || cp /tmp/requirements_no_flash.txt /tmp/requirements_no_conflicts.txt &&
+  grep -v "^jax" /tmp/requirements_no_conflicts.txt > /tmp/requirements_final.txt || cp /tmp/requirements_no_conflicts.txt /tmp/requirements_final.txt &&
+  conda run -n ds_py310 python -m pip install --no-deps -r /tmp/requirements_final.txt &&
+  echo "=== Installing flash-attn LAST (required by verl.workers.critic, must be after all other deps) ===" &&
+  conda run -n ds_py310 python -m pip install --no-deps flash-attn==2.7.4.post1 --no-build-isolation &&
+  conda run -n ds_py310 python -c "import flash_attn; print('flash-attn OK')" || (echo "ERROR: flash-attn installation/import failed!" && conda run -n ds_py310 python -m pip show flash-attn && exit 1) &&
+  export PYTHONPATH=/job:$PYTHONPATH &&
+  export CRAFTAX_RELOAD_TEXTURES=True &&
+  echo "=== Setting up package ===" &&
+  chmod +x examples/ppo_trainer/run_caged_craftext_saute_ppo_lora_job.sh &&
+  echo "=== Starting training (CRAFTAX_RELOAD_TEXTURES=$CRAFTAX_RELOAD_TEXTURES) ===" &&
+  conda run -n ds_py310 bash examples/ppo_trainer/run_caged_craftext_saute_ppo_lora_job.sh vllm false actor_rollout_ref.rollout.tensor_model_parallel_size=2 trainer.n_gpus_per_node=2 actor_rollout_ref.rollout.gpu_memory_utilization=0.65 actor_rollout_ref.rollout.enforce_eager=True
+
+inputs:
+  - examples/
+  - verl/
+  - agent_system/
+  - recipe/
+  - gigpo/
+  - caged_craftext/
+  - setup.py
+  - requirements.txt
+  - pyproject.toml
+  - README.md
+
+env:
+  docker:
+    image: trololoeeev/safe_llm_img:latest
+  vars:
+    CRAFTAX_RELOAD_TEXTURES: "True"
+
+cloud-instance-types:
+  - g2.2
+
+working-storage:
+  type: SSD
+  size: 200Gb
+
+flags:
+  - attach-project-disk
