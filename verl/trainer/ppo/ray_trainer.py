@@ -708,11 +708,11 @@ class RayPPOTrainer:
             if self.config.reward_model.enable and test_batch[0].non_tensor_batch["reward_model"]["style"] == "model":
                 return {}
 
-            # Store original inputs
+            # Store original inputs (before multi_turn_loop, may not include latent state)
             input_ids = test_batch.batch["input_ids"]
             # TODO: Can we keep special tokens except for padding tokens?
             input_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in input_ids]
-            sample_inputs.extend(input_texts)
+            # Don't extend sample_inputs here - we'll do it after multi_turn_loop to include latent state
 
             batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
             non_tensor_batch_keys_to_pop = ["raw_prompt_ids", "data_source"]
@@ -756,6 +756,28 @@ class RayPPOTrainer:
             print('validation generation end')
             del test_batch
             test_batch = test_output_gen_batch
+            
+            # Store actual inputs used (after multi_turn_loop, includes latent state if enabled)
+            # The input_ids in test_output_gen_batch contain prompts with latent state (if enabled)
+            if "input_ids" in test_output_gen_batch.batch:
+                actual_input_ids = test_output_gen_batch.batch["input_ids"]
+                # Decode input_ids to get the actual prompts that were used (including latent state)
+                actual_input_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in actual_input_ids]
+                sample_inputs.extend(actual_input_texts)
+            elif "latent_states" in test_output_gen_batch.non_tensor_batch:
+                # If latent states were used, reconstruct the prompt with latent state
+                # This is a fallback if input_ids are not available
+                latent_states_texts = test_output_gen_batch.non_tensor_batch["latent_states"]
+                for i, (orig_input, latent_text) in enumerate(zip(input_texts, latent_states_texts)):
+                    if latent_text:
+                        prompt_with_latent = f"{orig_input}\n\nЛатентное состояние среды: {latent_text}"
+                        sample_inputs.append(prompt_with_latent)
+                    else:
+                        sample_inputs.append(orig_input)
+            else:
+                # Fallback to original inputs if neither input_ids nor latent_states are available
+                sample_inputs.extend(input_texts)
+            
             # Store generated outputs
             output_ids = test_output_gen_batch.batch["responses"]
             output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
