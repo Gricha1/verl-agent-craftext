@@ -15,10 +15,14 @@ pip install comet_ml
 
 ENGINE=${1:-vllm}
 # LOG_PROB_ACTION_ONLY: если true, log_prob считается только для токенов внутри <action> тегов (без reasoning)
-# Использование: bash run_caged_craftext_lora_job.sh vllm true
+# NO_REASONING: если true, агент не будет генерировать reasoning, только action
+# TRAIN_DATA_SIZE: размер обучающей выборки (по умолчанию 32, можно задать 64)
+# Использование: bash run_caged_craftext_lora_job.sh vllm false false 32
 LOG_PROB_ACTION_ONLY=${2:-false}
+NO_REASONING=${3:-false}
+train_data_size=${4:-32}
 # Убираем аргументы скрипта, чтобы они не передавались в Hydra
-shift 2 2>/dev/null || shift 1 2>/dev/null || true
+shift 4 2>/dev/null || shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/dev/null || true
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
 # Путь к пакету caged_craftext (должен содержать модуль craftext.environment)
@@ -33,10 +37,12 @@ export CAGED_CRAFTEXT_PATH="${CAGED_CRAFTEXT_PATH:-$DEFAULT_CAGED_PATH}"
 export PYTHONPATH="${CAGED_CRAFTEXT_PATH}:${PYTHONPATH}"
 echo "[INFO] CAGED_CRAFTEXT_PATH установлен: $CAGED_CRAFTEXT_PATH"
 echo "[INFO] Корень проекта: $PROJECT_ROOT"
-echo "считаем log prob: $LOG_PROB_ACTION_ONLY"
+echo "[INFO] ENGINE: $ENGINE"
+echo "[INFO] LOG_PROB_ACTION_ONLY: $LOG_PROB_ACTION_ONLY"
+echo "[INFO] NO_REASONING: $NO_REASONING"
+echo "[INFO] TRAIN_DATA_SIZE: $train_data_size"
 
 num_cpus_per_env_worker=0.03
-train_data_size=32
 val_data_size=8
 
 # export RUN_NAME="run_ppo_qwen2.5_1.5b_caged_craftext_budgetary_water_$(date +%Y%m%d-%H%M%S)"
@@ -74,7 +80,7 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
     actor_rollout_ref.rollout.name=$ENGINE \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.85 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=False \
@@ -97,6 +103,7 @@ python -m verl.trainer.main_ppo \
     algorithm.use_kl_in_reward=False \
     +algorithm.log_prob_action_only=$LOG_PROB_ACTION_ONLY \
     env.env_name='caged_craftext/CagedCraftextEnv' \
+    +env.enable_reasoning=$(if [ "$NO_REASONING" = "true" ]; then echo "False"; else echo "True"; fi) \
     +env.craftext_settings='achievements_safe_budget_energy_collect_wood' \
     +env.observation_type='ascii' \
     env.seed=0 \

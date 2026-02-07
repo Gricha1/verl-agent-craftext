@@ -32,8 +32,11 @@ TEXT_TO_ACTION_ID = {text.lower().replace("_", " "): i for i, text in enumerate(
 AVAILABLE_ACTIONS_STR = ", ".join([text.lower().replace("_", " ") for text in ACTION_TO_TEXT])
 
 
-# <--- НОВОЕ: Обновляем шаблоны промптов
-CRAFTEXT_TEMPLATE = f"""
+# <--- Функции для получения шаблонов с reasoning или без
+def get_craftext_template(enable_reasoning: bool = True) -> str:
+    """Возвращает шаблон промпта с reasoning или без."""
+    if enable_reasoning:
+        return f"""
 Your goal is to complete the following task:
 **TASK:** {{task_description}}
 
@@ -47,6 +50,52 @@ This is what you currently see:
 First, think about what to do next. Then, choose one of the available actions and write it in the <action> tag.
 Your available actions are: {AVAILABLE_ACTIONS_STR}
 """
+    else:
+        return f"""
+Your goal is to complete the following task:
+**TASK:** {{task_description}}
+
+You have taken {{step_count}} actions so far. Here is the history of your recent actions:
+{{action_history}}
+
+You are now at step {{current_step}}.
+This is what you currently see:
+{{current_observation}}
+
+Choose one of the available actions and write it in the <action> tag.
+Your available actions are: {AVAILABLE_ACTIONS_STR}
+"""
+
+
+def get_craftext_template_no_his(enable_reasoning: bool = True) -> str:
+    """Возвращает шаблон промпта без истории с reasoning или без."""
+    if enable_reasoning:
+        return f"""
+Your goal is to complete the following task:
+**TASK:** {{task_description}}
+
+This is what you currently see:
+{{current_observation}}
+
+First, think about what to do next. Then, choose one of the available actions and write it in the <action> tag.
+Your available actions are: {AVAILABLE_ACTIONS_STR}
+"""
+    else:
+        return f"""
+Your goal is to complete the following task:
+**TASK:** {{task_description}}
+
+This is what you currently see:
+{{current_observation}}
+
+Choose one of the available actions and write it in the <action> tag.
+Your available actions are: {AVAILABLE_ACTIONS_STR}
+"""
+
+
+# Для обратной совместимости - используем reasoning по умолчанию
+CRAFTEXT_TEMPLATE = get_craftext_template(enable_reasoning=True)
+CRAFTEXT_TEMPLATE_NO_HIS = get_craftext_template_no_his(enable_reasoning=True)
 
 
 CRAFTEXT_TEMPLATE_NO_HIS = f"""
@@ -56,11 +105,14 @@ Your goal is to complete the following task:
 This is what you currently see:
 {{current_observation}}
 
-First, think about what to do next. Then, choose one of the available actions and write it in the <action> tag.
+Choose one of the available actions and write it in the <action> tag.
 Your available actions are: {AVAILABLE_ACTIONS_STR}
 """
 
-CRAFTEXT_VL_TEMPLATE_NO_HIS = f"""
+def get_craftext_vl_template_no_his(enable_reasoning: bool = True) -> str:
+    """Возвращает визуальный шаблон промпта без истории с reasoning или без."""
+    if enable_reasoning:
+        return f"""
 Your goal is to complete the following task:
 **TASK:** {{task_description}}
 
@@ -71,11 +123,29 @@ Picture 1: <image>
 First, think about what to do next. Then, choose one of the available actions and write it in the <action> tag.
 Your available actions are: {AVAILABLE_ACTIONS_STR}
 """
+    else:
+        return f"""
+Your goal is to complete the following task:
+**TASK:** {{task_description}}
+
+You currently see visual observation:
+
+Picture 1: <image>
+
+Choose one of the available actions and write it in the <action> tag.
+Your available actions are: {AVAILABLE_ACTIONS_STR}
+"""
+
+# Для обратной совместимости
+CRAFTEXT_VL_TEMPLATE_NO_HIS = get_craftext_vl_template_no_his(enable_reasoning=True)
 
 # Subtask-aware templates for subtask-based GiGPO
 VALID_SUBTASKS_STR = "collect_wood, place_table, make_wood_pickaxe, make_wood_sword"
 
-CRAFTEXT_SUBTASK_TEMPLATE_NO_HIS = f"""
+def get_craftext_subtask_template_no_his(enable_reasoning: bool = True) -> str:
+    """Возвращает subtask шаблон промпта без истории с reasoning или без."""
+    reasoning_text = "First, think about what subtask you're working on, then " if enable_reasoning else ""
+    return f"""
 Your goal is to complete the following task:
 **TASK:** {{task_description}}
 
@@ -92,11 +162,17 @@ This is what you currently see:
 <subtask>subtask_name</subtask>
 <action>your_action_here</action>
 
-First, think about what subtask you're working on, then choose one of the available actions.
+{reasoning_text}Choose one of the available actions and write it in the <action> tag.
 Your available actions are: {AVAILABLE_ACTIONS_STR}
 """
 
-CRAFTEXT_SUBTASK_VL_TEMPLATE_NO_HIS = f"""
+# Для обратной совместимости
+CRAFTEXT_SUBTASK_TEMPLATE_NO_HIS = get_craftext_subtask_template_no_his(enable_reasoning=True)
+
+def get_craftext_subtask_vl_template_no_his(enable_reasoning: bool = True) -> str:
+    """Возвращает визуальный subtask шаблон промпта без истории с reasoning или без."""
+    reasoning_text = "First, think about what subtask you're working on, then " if enable_reasoning else ""
+    return f"""
 Your goal is to complete the following task:
 **TASK:** {{task_description}}
 
@@ -114,9 +190,12 @@ Picture 1: <image>
 <subtask>subtask_name</subtask>
 <action>your_action_here</action>
 
-First, think about what subtask you're working on, then choose one of the available actions.
+{reasoning_text}Choose one of the available actions and write it in the <action> tag.
 Your available actions are: {AVAILABLE_ACTIONS_STR}
 """
+
+# Для обратной совместимости
+CRAFTEXT_SUBTASK_VL_TEMPLATE_NO_HIS = get_craftext_subtask_vl_template_no_his(enable_reasoning=True)
 
 # Невалидное действие, которое среда точно не примет.
 # Оно будет использоваться, если LLM сгенерирует что-то непонятное.

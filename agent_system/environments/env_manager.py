@@ -612,7 +612,9 @@ from agent_system.environments.env_package.craftext.projection_oracle import (
 # Импортируем шаблоны для caged_craftext (используем те же, что и для обычного craftext)
 from agent_system.environments.env_package.caged_craftext.projection import (
     CRAFTEXT_TEMPLATE, 
-    CRAFTEXT_TEMPLATE_NO_HIS
+    CRAFTEXT_TEMPLATE_NO_HIS,
+    get_craftext_template,
+    get_craftext_template_no_his
 )
 
 
@@ -785,8 +787,13 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
         Строит текстовые наблюдения из рендеров и инфо.
         Для Caged Craftext также может включать информацию о constraint.
         """
-        # Используем базовый метод из CraftextEnvironmentManager
-        # Но можно добавить поддержку constraint, если нужно
+        # Получаем параметр enable_reasoning из config (по умолчанию True для обратной совместимости)
+        enable_reasoning = getattr(self.config.env, 'enable_reasoning', True)
+        
+        # Получаем нужные шаблоны в зависимости от enable_reasoning
+        template = get_craftext_template(enable_reasoning=enable_reasoning)
+        template_no_his = get_craftext_template_no_his(enable_reasoning=enable_reasoning)
+        
         final_prompts = []
         
         for i, (text_render, info) in enumerate(zip(text_renders, infos)):
@@ -802,10 +809,10 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
                 action_hist = [h.get('action', '') for h in history[-5:]]  # Последние 5 действий
                 action_history_str = "\n".join([f"Step {j+1}: {act}" for j, act in enumerate(action_hist)])
             
-            # Строим промпт (используем те же шаблоны, что и для обычного craftext)
+            # Строим промпт (используем шаблоны с учетом enable_reasoning)
             if self.config.env.history_length == 0:
                 if action_history_str:
-                    prompt = CRAFTEXT_TEMPLATE.format(
+                    prompt = template.format(
                         task_description=task,
                         step_count=len(history) if history else 0,
                         action_history=action_history_str,
@@ -813,12 +820,12 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
                         current_observation=text_render
                     )
                 else:
-                    prompt = CRAFTEXT_TEMPLATE_NO_HIS.format(
+                    prompt = template_no_his.format(
                         task_description=task,
                         current_observation=text_render
                     )
             else:
-                prompt = CRAFTEXT_TEMPLATE.format(
+                prompt = template.format(
                     task_description=task,
                     step_count=len(history) if history else 0,
                     action_history=action_history_str if action_history_str else "No actions taken yet.",

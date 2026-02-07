@@ -115,7 +115,7 @@ python -m verl.trainer.main_ppo \
   trainer.val_before_train=False \
   +algorithm.saute.enabled=True \
   +algorithm.saute.gamma=1.0 \
-  +algorithm.saute.safety_budget=1.0 \
+  +algorithm.saute.safety_budget=0.1 \
   +algorithm.saute.unsafe_reward=-10.0 \
   +algorithm.saute.violation_threshold=0.0 \
   +algorithm.saute.append_safety_info_to_obs=True \
