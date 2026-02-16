@@ -12,6 +12,9 @@ export COMET_API_KEY="3OfuYHwcRgIwG7DzgzJ190igY"
 export JAX_PLATFORMS=cpu
 export RAY_TEMP_DIR="/home/jovyan/nsorokin/ray_temp"
 
+source /home/jovyan/nsorokin/miniconda3/etc/profile.d/conda.sh
+conda activate /home/jovyan/nsorokin/verl-agent-craftext/verl-agent-conda-venv-311/
+
 # НЕ устанавливаем CUDA_VISIBLE_DEVICES="" здесь, так как это мешает Ray видеть GPU
 # Encoder'ы в caged_craftext уже исправлены и проверяют torch.cuda.is_available() перед использованием CUDA
 
