@@ -1,5 +1,9 @@
 #!/bin/bash
 # set -x
+
+source /home/jovyan/nsorokin/miniconda3/etc/profile.d/conda.sh
+conda activate /home/jovyan/nsorokin/verl-agent-craftext/verl-agent-conda-venv-311/
+
 export COMET_API_KEY="3OfuYHwcRgIwG7DzgzJ190igY"
 
 export JAX_PLATFORMS=cpu
