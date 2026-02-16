@@ -17,12 +17,15 @@ ENGINE=${1:-vllm}
 # LOG_PROB_ACTION_ONLY: если true, log_prob считается только для токенов внутри <action> тегов (без reasoning)
 # NO_REASONING: если true, агент не будет генерировать reasoning, только action
 # TRAIN_DATA_SIZE: размер обучающей выборки (по умолчанию 32, можно задать 64)
+# MAX_RESPONSE_LENGTH: макс. длина ответа (по умолчанию 512)
 # Использование: bash run_caged_craftext_lora_job.sh vllm false false 32
+# С no_reasoning и ответом 32: bash run_caged_craftext_lora_job.sh vllm true true 32 32
 LOG_PROB_ACTION_ONLY=${2:-false}
 NO_REASONING=${3:-false}
 train_data_size=${4:-32}
+max_response_length=${5:-512}
 # Убираем аргументы скрипта, чтобы они не передавались в Hydra
-shift 4 2>/dev/null || shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/dev/null || true
+shift 5 2>/dev/null || shift 4 2>/dev/null || shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/dev/null || true
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
 # Путь к пакету caged_craftext (должен содержать модуль craftext.environment)
@@ -41,6 +44,7 @@ echo "[INFO] ENGINE: $ENGINE"
 echo "[INFO] LOG_PROB_ACTION_ONLY: $LOG_PROB_ACTION_ONLY"
 echo "[INFO] NO_REASONING: $NO_REASONING"
 echo "[INFO] TRAIN_DATA_SIZE: $train_data_size"
+echo "[INFO] max_response_length: $max_response_length"
 
 num_cpus_per_env_worker=0.03
 val_data_size=8
@@ -60,7 +64,7 @@ python -m verl.trainer.main_ppo \
     data.train_batch_size=$train_data_size \
     data.val_batch_size=$val_data_size \
     data.max_prompt_length=2048 \
-    data.max_response_length=512 \
+    data.max_response_length=$max_response_length \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     data.return_raw_chat=True \
