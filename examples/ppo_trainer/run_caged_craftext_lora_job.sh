@@ -22,14 +22,17 @@ ENGINE=${1:-vllm}
 # NO_REASONING: если true, агент не будет генерировать reasoning, только action
 # TRAIN_DATA_SIZE: размер обучающей выборки (по умолчанию 32, можно задать 64)
 # MAX_RESPONSE_LENGTH: макс. длина ответа (по умолчанию 512)
+# AUTO_RESET: если true, среды автоматически перезапускаются при завершении эпизода, чтобы собрать полный rollout (max_steps шагов)
 # Использование: bash run_caged_craftext_lora_job.sh vllm false false 32
 # С no_reasoning и ответом 32: bash run_caged_craftext_lora_job.sh vllm true true 32 32
+# С auto reset: bash run_caged_craftext_lora_job.sh vllm false false 32 512 true
 LOG_PROB_ACTION_ONLY=${2:-false}
 NO_REASONING=${3:-false}
-train_data_size=${4:-32}
+train_data_size=${4:-16}
 max_response_length=${5:-512}
+AUTO_RESET=${6:-false}
 # Убираем аргументы скрипта, чтобы они не передавались в Hydra
-shift 5 2>/dev/null || shift 4 2>/dev/null || shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/dev/null || true
+shift 6 2>/dev/null || shift 5 2>/dev/null || shift 4 2>/dev/null || shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/dev/null || true
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
 # Путь к пакету caged_craftext (должен содержать модуль craftext.environment)
@@ -49,6 +52,7 @@ echo "[INFO] LOG_PROB_ACTION_ONLY: $LOG_PROB_ACTION_ONLY"
 echo "[INFO] NO_REASONING: $NO_REASONING"
 echo "[INFO] TRAIN_DATA_SIZE: $train_data_size"
 echo "[INFO] max_response_length: $max_response_length"
+echo "[INFO] AUTO_RESET: $AUTO_RESET"
 
 num_cpus_per_env_worker=0.03
 val_data_size=8
@@ -114,6 +118,7 @@ python -m verl.trainer.main_ppo \
     +env.enable_reasoning=$(if [ "$NO_REASONING" = "true" ]; then echo "False"; else echo "True"; fi) \
     +env.craftext_settings='achievements_safe_budget_energy_collect_wood' \
     +env.observation_type='ascii' \
+    +env.auto_reset=$(if [ "$AUTO_RESET" = "true" ]; then echo "True"; else echo "False"; fi) \
     env.seed=0 \
     env.max_steps=50 \
     env.history_length=0 \

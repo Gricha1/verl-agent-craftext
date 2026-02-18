@@ -334,6 +334,18 @@ class TrajectoryCollector:
         episode_rewards = np.zeros(batch_size, dtype=np.float32)
         episode_costs = np.zeros(batch_size, dtype=np.float32)  # Для Caged Craftext - накопление cost
         tool_callings = np.zeros(batch_size, dtype=np.float32)
+        
+        # Auto reset: проверяем, включен ли auto reset
+        auto_reset_enabled = self.config.env.get('auto_reset', False)
+        
+        # Для auto reset: отслеживаем количество шагов для каждой среды
+        if auto_reset_enabled:
+            steps_per_env = np.zeros(batch_size, dtype=np.int32)  # Количество собранных шагов для каждой среды
+            max_steps_per_env = int(self.config.env.max_steps)  # Максимальное количество шагов на среду
+            # Для auto reset: храним награды и длины эпизодов отдельно для каждого эпизода
+            current_episode_rewards = np.zeros(batch_size, dtype=np.float32)
+            current_episode_lengths = np.zeros(batch_size, dtype=np.float32)
+            current_episode_costs = np.zeros(batch_size, dtype=np.float32)
 
         # -------------------------
         # Saute-style safety shaping (optional)
@@ -375,9 +387,24 @@ class TrajectoryCollector:
             violation_counts = None
 
         # Trajectory collection loop
-        for _step in range(self.config.env.max_steps):
-            active_masks = np.logical_not(is_done)
-
+        # Если auto reset включен, используем while цикл, иначе обычный for цикл
+        _step = 0
+        while True:
+            # Определяем активные среды
+            if auto_reset_enabled:
+                # В режиме auto reset активны среды, которые еще не собрали достаточно шагов
+                active_masks = steps_per_env < max_steps_per_env
+                # Проверяем условие выхода для while цикла
+                if np.all(steps_per_env >= max_steps_per_env):
+                    break
+            else:
+                # В обычном режиме активны среды, которые еще не завершены
+                active_masks = np.logical_not(is_done)
+                # Проверяем условие выхода для for цикла
+                if _step >= self.config.env.max_steps:
+                    break
+                _step += 1
+            
             # Get latent state zt through encoder if world model is enabled and use_latent_in_policy is True
             latent_states = None
             use_latent_in_policy = self.config.trainer.get("world_model", {}).get("use_latent_in_policy", False)
@@ -486,7 +513,12 @@ class TrajectoryCollector:
                 batch.non_tensor_batch['episode_cost'] = episode_costs_from_info
             
             # Create reward tensor, only assign rewards for active environments
-            # episode_rewards += torch_to_numpy(rewards) * torch_to_numpy(active_masks)
+            # Обновляем награды и длины для текущего эпизода
+            if auto_reset_enabled:
+                current_episode_rewards[active_masks] += torch_to_numpy(rewards)[active_masks]
+                current_episode_lengths[active_masks] += 1
+            
+            # Обновляем общие счетчики (накапливаем для всех эпизодов)
             episode_rewards[active_masks] += torch_to_numpy(rewards)[active_masks]
             episode_lengths[active_masks] += 1
 
@@ -514,8 +546,55 @@ class TrajectoryCollector:
                 total_batch_list[i].append(batch_list[i])
                 total_infos[i].append(infos[i])
 
-            # Update done states
+            # Обновляем счетчики шагов для активных сред (если auto reset включен)
+            if auto_reset_enabled:
+                steps_per_env[active_masks] += 1
+            
+            # Update done states (для текущего эпизода)
             is_done = np.logical_or(is_done, dones)
+            
+            # Auto reset: перезапускаем среды, которые завершились, но еще не собрали достаточно шагов
+            if auto_reset_enabled:
+                need_reset = np.logical_and(dones, steps_per_env < max_steps_per_env)
+                if np.any(need_reset):
+                    # Сбрасываем счетчики эпизодов для перезапускаемых сред
+                    current_episode_rewards[need_reset] = 0.0
+                    current_episode_lengths[need_reset] = 0
+                    current_episode_costs[need_reset] = 0.0
+                    is_done[need_reset] = False
+                    
+                    # Сбрасываем safety state для Saute, если используется
+                    if saute_enabled:
+                        safety_obs[need_reset] = 1.0
+                        violation_counts[need_reset] = 0
+                    
+                    # Перезапускаем среды
+                    # Примечание: reset() перезапускает все среды, но мы обновим наблюдения
+                    # только для тех сред, которые еще активны (не достигли max_steps)
+                    reset_obs, reset_infos = envs.reset(kwargs=None)
+                    
+                    # Обновляем наблюдения для всех активных сред (которые еще не достигли max_steps)
+                    # Это необходимо, так как reset() перезапускает все среды
+                    active_envs = steps_per_env < max_steps_per_env
+                    if isinstance(next_obs, dict) and isinstance(reset_obs, dict):
+                        for i in range(batch_size):
+                            if active_envs[i]:
+                                # Обновляем наблюдения для активных сред
+                                if 'text' in reset_obs and reset_obs['text'] is not None:
+                                    next_obs['text'][i] = reset_obs['text'][i]
+                                if 'image' in reset_obs and reset_obs['image'] is not None:
+                                    next_obs['image'][i] = reset_obs['image'][i]
+                                if 'anchor' in reset_obs and reset_obs['anchor'] is not None:
+                                    next_obs['anchor'][i] = reset_obs['anchor'][i]
+                    elif not isinstance(next_obs, dict):
+                        # Если next_obs не словарь, обновляем напрямую
+                        for i in range(batch_size):
+                            if active_envs[i]:
+                                next_obs[i] = reset_obs[i]
+                    
+                    # НЕ генерируем новые traj_uid для перезапущенных сред
+                    # Все шаги одного rollout (включая перезапущенные эпизоды) должны иметь одинаковый traj_uid
+                    # Это необходимо для правильной работы gather_rollout_data
                 
             # Update observations for next step
             if saute_enabled and append_safety_info_to_obs:
@@ -530,10 +609,6 @@ class TrajectoryCollector:
                                 + f"\n\n[SAFETY] Violations so far: {int(violation_counts[i])} | Safety state: {float(safety_obs[i]):.4f}"
                             )
             obs = next_obs
-
-            # Break if all environments are done
-            if is_done.all():
-                break
         
         success: Dict[str, np.ndarray] = envs.success_evaluator(
                     total_infos=total_infos,
