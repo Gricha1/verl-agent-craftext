@@ -124,6 +124,29 @@ def create_huggingface_critic(model_name: str, override_config_kwargs=None, auto
     return critic_module
 
 
+def create_huggingface_actor_with_action_head(model_name: str, num_actions: int, override_config_kwargs=None, automodel_kwargs=None) -> nn.Module:
+    """
+    Создает actor модель с action head вместо text generation head.
+    Аналогично critic, но выдает распределение над действиями (num_actions выходов).
+
+    Args:
+        model_name: имя модели HuggingFace
+        num_actions: количество действий (размерность action space)
+        override_config_kwargs: дополнительные параметры конфигурации
+        automodel_kwargs: дополнительные параметры для AutoModelForCausalLM
+
+    Returns:
+        Модель с action head вместо lm_head
+    """
+    actor_module: nn.Module = create_huggingface_actor(model_name, override_config_kwargs=override_config_kwargs, automodel_kwargs=automodel_kwargs)
+    if automodel_kwargs is None:
+        automodel_kwargs = {}
+    torch_dtype = automodel_kwargs.get("torch_dtype", torch.float32)
+    # Заменяем lm_head на action_head, который выдает логиты для каждого действия
+    actor_module.lm_head = nn.Linear(actor_module.config.hidden_size, num_actions, dtype=torch_dtype)
+    return actor_module
+
+
 def get_model_size(model: nn.Module, scale="auto"):
     n_params = sum(p.numel() for p in model.parameters())
 

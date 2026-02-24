@@ -25,24 +25,36 @@ import torch
 import torch.distributed as dist
 
 from verl.utils.logger.aggregate_logger import DecoratorLoggerBase
-from verl.utils.device import get_torch_device
+from verl.utils.device import get_torch_device, is_cuda_available, is_npu_available
 
 
 def _get_current_mem_info(unit: str = "GB", precision: int = 2) -> Tuple[str]:
     """Get current memory usage."""
     assert unit in ["GB", "MB", "KB"]
     divisor = 1024**3 if unit == "GB" else 1024**2 if unit == "MB" else 1024
-    mem_allocated = get_torch_device().memory_allocated()
-    mem_reserved = get_torch_device().memory_reserved()
-    # use get_torch_device().mem_get_info to profile device memory
-    # since vllm's sleep mode works below pytorch
-    # see https://github.com/vllm-project/vllm/pull/11743#issuecomment-2754338119
-    mem_free, mem_total = get_torch_device().mem_get_info()
-    mem_used = mem_total - mem_free
-    mem_allocated = f"{mem_allocated / divisor:.{precision}f}"
-    mem_reserved = f"{mem_reserved / divisor:.{precision}f}"
-    mem_used = f"{mem_used / divisor:.{precision}f}"
-    mem_total = f"{mem_total / divisor:.{precision}f}"
+    
+    # Проверяем, доступно ли GPU/NPU для получения информации о памяти
+    if is_cuda_available or is_npu_available:
+        torch_device = get_torch_device()
+        mem_allocated = torch_device.memory_allocated()
+        mem_reserved = torch_device.memory_reserved()
+        # use get_torch_device().mem_get_info to profile device memory
+        # since vllm's sleep mode works below pytorch
+        # see https://github.com/vllm-project/vllm/pull/11743#issuecomment-2754338119
+        mem_free, mem_total = torch_device.mem_get_info()
+        mem_used = mem_total - mem_free
+        mem_allocated = f"{mem_allocated / divisor:.{precision}f}"
+        mem_reserved = f"{mem_reserved / divisor:.{precision}f}"
+        mem_used = f"{mem_used / divisor:.{precision}f}"
+        mem_total = f"{mem_total / divisor:.{precision}f}"
+    else:
+        # На CPU нет методов для получения информации о памяти устройства
+        # Используем фиктивные значения
+        mem_allocated = "0.00"
+        mem_reserved = "0.00"
+        mem_used = "0.00"
+        mem_total = "0.00"
+    
     return mem_allocated, mem_reserved, mem_used, mem_total
 
 

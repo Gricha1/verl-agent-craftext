@@ -23,16 +23,30 @@ ENGINE=${1:-vllm}
 # TRAIN_DATA_SIZE: размер обучающей выборки (по умолчанию 32, можно задать 64)
 # MAX_RESPONSE_LENGTH: макс. длина ответа (по умолчанию 512)
 # AUTO_RESET: если true, среды автоматически перезапускаются при завершении эпизода, чтобы собрать полный rollout (max_steps шагов)
+# USE_ACTION_HEAD: если true, actor использует action head (распределение над действиями) вместо text generation
 # Использование: bash run_caged_craftext_lora_job.sh vllm false false 32
 # С no_reasoning и ответом 32: bash run_caged_craftext_lora_job.sh vllm true true 32 32
 # С auto reset: bash run_caged_craftext_lora_job.sh vllm false false 32 512 true
+# С action head: bash run_caged_craftext_lora_job.sh vllm false false 32 512 false true
+# total_epochs: количество эпох (по умолчанию 4000)
+# USE_ACTOR_LORA: true — actor с LoRA (lora_rank=64, lora_alpha=64), false — обучение без LoRA
 LOG_PROB_ACTION_ONLY=${2:-false}
 NO_REASONING=${3:-false}
 train_data_size=${4:-16}
 max_response_length=${5:-512}
 AUTO_RESET=${6:-false}
+USE_ACTION_HEAD=${7:-false}
+total_epochs=${8:-4000}
+USE_ACTOR_LORA=${9:-true}
 # Убираем аргументы скрипта, чтобы они не передавались в Hydra
-shift 6 2>/dev/null || shift 5 2>/dev/null || shift 4 2>/dev/null || shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/dev/null || true
+shift 9 2>/dev/null || shift 8 2>/dev/null || shift 7 2>/dev/null || shift 6 2>/dev/null || shift 5 2>/dev/null || shift 4 2>/dev/null || shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/dev/null || true
+
+# Если используется action head, max_response_length должен быть 1 (одно действие)
+if [ "$USE_ACTION_HEAD" = "true" ]; then
+    max_response_length=1
+    echo "[INFO] USE_ACTION_HEAD=true, устанавливаем max_response_length=1"
+fi
+
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
 # Путь к пакету caged_craftext (должен содержать модуль craftext.environment)
@@ -53,6 +67,9 @@ echo "[INFO] NO_REASONING: $NO_REASONING"
 echo "[INFO] TRAIN_DATA_SIZE: $train_data_size"
 echo "[INFO] max_response_length: $max_response_length"
 echo "[INFO] AUTO_RESET: $AUTO_RESET"
+echo "[INFO] USE_ACTION_HEAD: $USE_ACTION_HEAD"
+echo "[INFO] total_epochs: $total_epochs"
+echo "[INFO] USE_ACTOR_LORA: $USE_ACTOR_LORA"
 
 num_cpus_per_env_worker=0.03
 val_data_size=8
@@ -77,8 +94,8 @@ python -m verl.trainer.main_ppo \
     data.truncation='error' \
     data.return_raw_chat=True \
     actor_rollout_ref.model.path=Qwen/Qwen2.5-1.5B-Instruct \
-    actor_rollout_ref.model.lora_rank=64 \
-    actor_rollout_ref.model.lora_alpha=64 \
+    actor_rollout_ref.model.lora_rank=$(if [ "$USE_ACTOR_LORA" = "true" ]; then echo "64"; else echo "0"; fi) \
+    actor_rollout_ref.model.lora_alpha=$(if [ "$USE_ACTOR_LORA" = "true" ]; then echo "64"; else echo "0"; fi) \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=16 \
@@ -119,6 +136,8 @@ python -m verl.trainer.main_ppo \
     +env.craftext_settings='achievements_safe_budget_energy_collect_wood' \
     +env.observation_type='ascii' \
     +env.auto_reset=$(if [ "$AUTO_RESET" = "true" ]; then echo "True"; else echo "False"; fi) \
+    +actor_rollout_ref.model.use_action_head=$(if [ "$USE_ACTION_HEAD" = "true" ]; then echo "True"; else echo "False"; fi) \
+    +actor_rollout_ref.model.num_actions=17 \
     env.seed=0 \
     env.max_steps=50 \
     env.history_length=0 \
@@ -131,5 +150,5 @@ python -m verl.trainer.main_ppo \
     trainer.nnodes=1 \
     trainer.save_freq=100 \
     trainer.test_freq=0 \
-    trainer.total_epochs=500 \
+    trainer.total_epochs=$total_epochs \
     trainer.val_before_train=False $@

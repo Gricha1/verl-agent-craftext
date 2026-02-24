@@ -111,7 +111,13 @@ class ActorRolloutRefWorker(Worker):
         if not torch.distributed.is_initialized():
             rank = int(os.environ.get("RANK", 0))
             world_size = int(os.environ.get("WORLD_SIZE", 1))
-            torch.distributed.init_process_group(backend="cpu:gloo,cuda:nccl" if is_cuda_available else "cpu:gloo,npu:hccl", rank=rank, world_size=world_size)
+            if is_cuda_available:
+                backend = "cpu:gloo,cuda:nccl"
+            elif is_npu_available:
+                backend = "hccl"
+            else:
+                backend = "gloo"
+            torch.distributed.init_process_group(backend=backend, rank=rank, world_size=world_size)
 
         # build device mesh for FSDP
         world_size = torch.distributed.get_world_size()
@@ -182,7 +188,7 @@ class ActorRolloutRefWorker(Worker):
         role="actor",
         enable_activation_offload=False,
     ):
-        from torch import optim
+        from torch import optim, nn
         from torch.distributed.fsdp import CPUOffload, MixedPrecision
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
         from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForVision2Seq
@@ -207,7 +213,9 @@ class ActorRolloutRefWorker(Worker):
             torch_dtype = PrecisionType.to_dtype(torch_dtype)
 
         # override model kwargs
-        actor_model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=trust_remote_code, attn_implementation="flash_attention_2")
+        # Используем flash_attention_2 только если CUDA доступна
+        attn_impl = "flash_attention_2" if is_cuda_available else "eager"
+        actor_model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=trust_remote_code, attn_implementation=attn_impl)
                 
         # patch for kimi-vl
         if getattr(actor_model_config, "model_type", None) == "kimi_vl":
@@ -272,6 +280,26 @@ class ActorRolloutRefWorker(Worker):
                     'bias': "none"
                 }
                 actor_module = get_peft_model(actor_module, LoraConfig(**lora_config))
+            
+            # Заменяем lm_head на action_head, если включен режим action head
+            # Делаем это после всех преобразований dtype, чтобы action head имел правильный dtype
+            if self.config.model.get("use_action_head", False):
+                num_actions = self.config.model.get("num_actions", 17)  # По умолчанию 17 действий для caged_craftext
+                if self.rank == 0:
+                    print(f"Replacing lm_head with action_head (num_actions={num_actions})")
+                # Заменяем lm_head на action_head
+                # Используем тот же dtype, что и у модели (torch_dtype)
+                # После этого action head будет преобразован вместе с моделью через .to(torch_dtype)
+                action_head = nn.Linear(
+                    actor_module.config.hidden_size, 
+                    num_actions, 
+                    dtype=torch_dtype
+                )
+                # Перемещаем на то же устройство, что и модель
+                action_head = action_head.to(next(actor_module.parameters()).device)
+                actor_module.lm_head = action_head
+                # Убеждаемся, что action head имеет правильный dtype после .to(torch_dtype)
+                # Это будет сделано автоматически через actor_module.to(torch_dtype) ниже
         torch.distributed.barrier()
 
         if self.rank == 0:
@@ -303,22 +331,34 @@ class ActorRolloutRefWorker(Worker):
         fsdp_mesh = self.device_mesh
         sharding_strategy = get_sharding_strategy(fsdp_mesh)
 
+        # Перемещаем модель на GPU перед FSDP, если CUDA доступна
+        # FSDP с sync_module_states=True требует, чтобы параметры были на GPU
+        if is_cuda_available:
+            device = torch.device(f"cuda:{get_torch_device().current_device()}")
+            actor_module = actor_module.to(device)
+        elif is_npu_available:
+            device = torch.device(f"npu:{get_torch_device().current_device()}")
+            actor_module = actor_module.to(device)
+
         # TODO: add transformer policy
         # We force reference policy to use CPUOffload to save memory.
         # We force turn off CPUOffload for actor because it causes incorrect results when using grad accumulation
         cpu_offload = None if role == "actor" else CPUOffload(offload_params=True)
         fsdp_strategy = self.config.actor.strategy
         if fsdp_strategy == "fsdp":
+            # sync_module_states требует GPU, поэтому отключаем на CPU
+            sync_module_states = is_cuda_available or is_npu_available
+            device_id = get_torch_device().current_device() if (is_cuda_available or is_npu_available) else None
             actor_module_fsdp = FSDP(
                 actor_module,
                 cpu_offload=cpu_offload,
                 param_init_fn=init_fn,
                 use_orig_params=False,
                 auto_wrap_policy=auto_wrap_policy,
-                device_id=get_torch_device().current_device(),
+                device_id=device_id,
                 sharding_strategy=sharding_strategy,  # zero3
                 mixed_precision=mixed_precision,
-                sync_module_states=True,
+                sync_module_states=sync_module_states,
                 device_mesh=self.device_mesh,
                 forward_prefetch=False,
             )
@@ -347,6 +387,31 @@ class ActorRolloutRefWorker(Worker):
 
         if enable_activation_offload:
             enable_activation_offloading(actor_module_fsdp, fsdp_strategy, enable_gradient_checkpointing)
+
+        # После FSDP обертки убеждаемся, что action head имеет правильный dtype
+        # FSDP mixed precision может изменить dtype параметров на param_dtype (обычно bfloat16)
+        if self.config.model.get("use_action_head", False) and role == "actor":
+            # Получаем unwrapped module для доступа к lm_head
+            if fsdp_strategy == "fsdp":
+                if fsdp_version(actor_module_fsdp) == 1:
+                    unwrapped_module = actor_module_fsdp._fsdp_wrapped_module
+                else:
+                    unwrapped_module = actor_module_fsdp
+            else:
+                unwrapped_module = actor_module_fsdp
+            
+            # Получаем правильный dtype из mixed precision config
+            if mixed_precision_config is not None:
+                target_dtype = PrecisionType.to_dtype(mixed_precision_config.get("param_dtype", "bf16"))
+            else:
+                target_dtype = torch.bfloat16
+            
+            # Убеждаемся, что action head имеет правильный dtype
+            if hasattr(unwrapped_module, 'lm_head'):
+                # Преобразуем action head к правильному dtype
+                unwrapped_module.lm_head = unwrapped_module.lm_head.to(dtype=target_dtype)
+                if self.rank == 0:
+                    print(f"Action head dtype after FSDP: {next(unwrapped_module.lm_head.parameters()).dtype}")
 
         log_gpu_memory_usage(f"After {role} FSDP init", logger=logger)
 
@@ -643,6 +708,10 @@ class ActorRolloutRefWorker(Worker):
 
         assert self._is_rollout
 
+        # Проверяем, включен ли action head режим
+        if self.config.model.get("use_action_head", False):
+            return self.generate_actions(prompts)
+
         meta_info = {
             "eos_token_id": self.generation_config.eos_token_id if self.generation_config is not None else self.tokenizer.eos_token_id,
             "pad_token_id": self.generation_config.pad_token_id if self.generation_config is not None else self.tokenizer.pad_token_id,
@@ -664,12 +733,299 @@ class ActorRolloutRefWorker(Worker):
         get_torch_device().empty_cache()
         return output
 
+    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
+    @torch.no_grad()
+    def generate_actions(self, prompts: DataProto):
+        """
+        Генерирует действия используя action head вместо text generation.
+        Получает hidden states для последнего токена промпта и применяет action head.
+        """
+        from torch.nn.functional import softmax
+        
+        assert self._is_rollout
+        assert self.config.model.get("use_action_head", False), "Action head mode must be enabled"
+        
+        num_actions = self.config.model.get("num_actions", 17)
+        temperature = prompts.meta_info.get("temperature", 1.0)
+        do_sample = prompts.meta_info.get("do_sample", True)
+        
+        # Получаем hidden states из модели для последнего токена каждого промпта
+        with self.rollout_sharding_manager:
+            prompts_sharded = self.rollout_sharding_manager.preprocess_data(prompts)
+            
+            input_ids = prompts_sharded.batch["input_ids"]  # (batch_size, seq_len)
+            attention_mask = prompts_sharded.batch.get("attention_mask", None)
+            position_ids = prompts_sharded.batch.get("position_ids", None)
+            batch_size = input_ids.shape[0]
+            
+            # Получаем правильный dtype для forward pass
+            # FSDP mixed precision использует param_dtype (обычно bfloat16)
+            # Получаем dtype из первого параметра модели
+            model_param_dtype = next(self.actor_module_fsdp.parameters()).dtype
+            
+            # Убеждаемся, что используем bfloat16 для FlashAttention
+            # FlashAttention требует bfloat16 или float16, поэтому принудительно используем bfloat16
+            if model_param_dtype not in (torch.bfloat16, torch.float16):
+                # Если модель не в bfloat16/fp16, принудительно используем bfloat16 для autocast
+                autocast_dtype = torch.bfloat16
+            else:
+                autocast_dtype = model_param_dtype
+            
+            # Forward pass через модель для получения hidden states
+            # Нужно получить hidden states для последнего токена каждого промпта
+            # Используем autocast для автоматического приведения типов hidden states
+            # FlashAttention требует bfloat16 или float16, поэтому используем autocast
+            with torch.autocast(device_type='cuda', dtype=autocast_dtype, enabled=True):
+                outputs = self.actor_module_fsdp(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    output_hidden_states=True,
+                )
+            
+            # Получаем hidden states (последний слой)
+            if hasattr(outputs, 'hidden_states') and outputs.hidden_states is not None:
+                hidden_states = outputs.hidden_states[-1]  # (batch_size, seq_len, hidden_size)
+            elif hasattr(outputs, 'last_hidden_state'):
+                hidden_states = outputs.last_hidden_state  # (batch_size, seq_len, hidden_size)
+            else:
+                # Если hidden_states нет, используем outputs напрямую (для некоторых моделей)
+                # Нужно получить hidden states из base model
+                # Получаем unwrapped module для доступа к base model
+                if fsdp_version(self.actor_module_fsdp) == 1:
+                    unwrapped_module = self.actor_module_fsdp._fsdp_wrapped_module
+                else:
+                    unwrapped_module = self.actor_module_fsdp
+                
+                if hasattr(unwrapped_module, 'model'):
+                    base_model = unwrapped_module.model
+                elif hasattr(unwrapped_module, 'base_model'):
+                    base_model = unwrapped_module.base_model
+                else:
+                    base_model = unwrapped_module
+                
+                # Получаем dtype из base_model
+                base_model_param_dtype = next(base_model.parameters()).dtype
+                
+                # Убеждаемся, что используем bfloat16 для FlashAttention
+                if base_model_param_dtype not in (torch.bfloat16, torch.float16):
+                    autocast_dtype_base = torch.bfloat16
+                else:
+                    autocast_dtype_base = base_model_param_dtype
+                
+                # Используем autocast для автоматического приведения типов
+                with torch.autocast(device_type='cuda', dtype=autocast_dtype_base, enabled=True):
+                    base_outputs = base_model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        position_ids=position_ids,
+                        output_hidden_states=True,
+                    )
+                hidden_states = base_outputs.hidden_states[-1] if hasattr(base_outputs, 'hidden_states') else base_outputs.last_hidden_state
+            
+            # Получаем hidden state для последнего токена каждого промпта
+            # Находим индекс последнего не-padding токена для каждого промпта
+            if attention_mask is not None:
+                # Используем attention_mask для определения последнего токена
+                last_token_indices = attention_mask.sum(dim=1) - 1  # (batch_size,)
+                last_token_hidden = hidden_states[torch.arange(batch_size, device=hidden_states.device), last_token_indices]  # (batch_size, hidden_size)
+            else:
+                # Если нет attention_mask, используем последний токен
+                last_token_hidden = hidden_states[:, -1, :]  # (batch_size, hidden_size)
+            
+            # Применяем action head (lm_head) к hidden states
+            # Получаем unwrapped module для доступа к lm_head
+            if fsdp_version(self.actor_module_fsdp) == 1:
+                unwrapped_module = self.actor_module_fsdp._fsdp_wrapped_module
+            else:
+                unwrapped_module = self.actor_module_fsdp
+            
+            # Если используется PEFT (LoRA), нужно получить доступ к base_model
+            if hasattr(unwrapped_module, 'base_model'):
+                # PEFT обертывает модель, нужно получить доступ к base_model
+                if hasattr(unwrapped_module.base_model, 'lm_head'):
+                    action_head = unwrapped_module.base_model.lm_head
+                elif hasattr(unwrapped_module.base_model, 'model') and hasattr(unwrapped_module.base_model.model, 'lm_head'):
+                    action_head = unwrapped_module.base_model.model.lm_head
+                else:
+                    action_head = unwrapped_module.lm_head
+            elif hasattr(unwrapped_module, 'model') and hasattr(unwrapped_module.model, 'lm_head'):
+                action_head = unwrapped_module.model.lm_head
+            else:
+                action_head = unwrapped_module.lm_head
+            
+            # Убеждаемся, что hidden states и action head имеют одинаковый dtype
+            # Получаем dtype из action head
+            # Проверяем, есть ли параметры в action head
+            try:
+                if hasattr(action_head, 'weight') and action_head.weight is not None:
+                    action_head_dtype = action_head.weight.dtype
+                elif hasattr(action_head, 'parameters'):
+                    action_head_params = list(action_head.parameters())
+                    if len(action_head_params) > 0:
+                        action_head_dtype = action_head_params[0].dtype
+                    else:
+                        # Если нет параметров, используем dtype из модели
+                        action_head_dtype = model_param_dtype
+                else:
+                    # Если нет weight и parameters, используем dtype из модели
+                    action_head_dtype = model_param_dtype
+            except (StopIteration, AttributeError):
+                # Если не удалось получить dtype из action head, используем dtype из модели
+                action_head_dtype = model_param_dtype
+            
+            # Приводим hidden states к тому же dtype
+            last_token_hidden = last_token_hidden.to(dtype=action_head_dtype)
+            
+            action_logits = action_head(last_token_hidden)  # (batch_size, num_actions)
+            
+            # Применяем softmax для получения вероятностей
+            action_probs = softmax(action_logits / temperature, dim=-1)  # (batch_size, num_actions)
+            
+            # Сэмплируем действие
+            if do_sample:
+                action_ids = torch.multinomial(action_probs, num_samples=1).squeeze(-1)  # (batch_size,)
+            else:
+                action_ids = torch.argmax(action_probs, dim=-1)  # (batch_size,)
+            
+            # Преобразуем action IDs в текст (используем ACTION_TO_TEXT из projection)
+            from agent_system.environments.env_package.caged_craftext.projection import ACTION_TO_TEXT
+            
+            # Ограничиваем action_ids допустимым диапазоном [0, len(ACTION_TO_TEXT)-1]
+            max_action_id = len(ACTION_TO_TEXT) - 1
+            action_ids = torch.clamp(action_ids, min=0, max=max_action_id)
+            
+            text_actions = [ACTION_TO_TEXT[action_id.item()] for action_id in action_ids]
+            
+            # Создаем фиктивные responses (токены) для совместимости с существующим кодом
+            # Используем специальный токен или кодируем текст действия
+            # Кодируем каждое действие отдельно, так как они могут иметь разную длину
+            response_ids_list = []
+            for text_action in text_actions:
+                encoded = self.tokenizer(
+                    text_action,
+                    return_tensors="pt",
+                    add_special_tokens=False,
+                )
+                response_ids_list.append(encoded["input_ids"][0].to(action_ids.device))
+            
+            # Получаем максимальную длину response и паддим до одинаковой длины
+            # Используем max_response_length из конфигурации или максимальную длину в batch
+            max_response_length = self.config.rollout.get("response_length", None)
+            if max_response_length is None:
+                # Если не указано, используем максимальную длину в batch
+                max_response_length = max(len(ids) for ids in response_ids_list)
+            
+            # Паддим response_ids до одинаковой длины
+            pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
+            
+            # Паддим каждый тензор до max_response_length
+            import torch.nn.functional as F
+            padded_response_ids_list = []
+            for ids in response_ids_list:
+                current_length = ids.shape[0]
+                if current_length < max_response_length:
+                    # Паддим справа
+                    padding = max_response_length - current_length
+                    padded_ids = F.pad(ids, (0, padding), value=pad_token_id)
+                elif current_length > max_response_length:
+                    # Обрезаем, если слишком длинный (не должно происходить)
+                    padded_ids = ids[:max_response_length]
+                else:
+                    padded_ids = ids
+                padded_response_ids_list.append(padded_ids)
+            
+            # Теперь все тензоры имеют одинаковую длину, можно делать stack
+            response_ids = torch.stack(padded_response_ids_list)  # (batch_size, max_response_length)
+            response_length = response_ids.shape[1]
+            
+            # Создаем rollout_log_probs с правильной формой (batch_size, response_length)
+            # Для action head у нас одно действие, поэтому log prob одинаковый для всех токенов
+            # Используем rollout_log_probs вместо old_log_probs, так как old_log_probs будет пересчитан позже через compute_log_prob
+            action_log_probs = torch.log(action_probs.gather(1, action_ids.unsqueeze(-1))).squeeze(-1)  # (batch_size,)
+            # Расширяем до (batch_size, response_length) для совместимости
+            rollout_log_probs = action_log_probs.unsqueeze(-1).expand(-1, response_length)  # (batch_size, response_length)
+            
+            # Получаем исходные промпты для создания полной последовательности
+            prompts_ids = input_ids  # (batch_size, prompt_length)
+            prompt_length = prompts_ids.shape[1]
+            
+            # Создаем полную последовательность (prompt + response)
+            input_ids_full = torch.cat([prompts_ids, response_ids], dim=-1)  # (batch_size, prompt_length + response_length)
+            
+            # Создаем attention_mask для полной последовательности
+            # Промпт уже имеет attention_mask, нужно добавить маску для response
+            if attention_mask is not None:
+                response_attention_mask = torch.ones(
+                    (batch_size, response_length),
+                    dtype=attention_mask.dtype,
+                    device=attention_mask.device
+                )
+                attention_mask_full = torch.cat([attention_mask, response_attention_mask], dim=-1)
+            else:
+                attention_mask_full = torch.ones_like(input_ids_full, dtype=torch.long)
+            
+            # Создаем position_ids для полной последовательности
+            if position_ids is not None:
+                response_position_ids = position_ids[:, -1:] + torch.arange(
+                    1, response_length + 1, device=position_ids.device
+                ).unsqueeze(0).expand(batch_size, -1)
+                position_ids_full = torch.cat([position_ids, response_position_ids], dim=-1)
+            else:
+                position_ids_full = torch.arange(
+                    input_ids_full.shape[1], device=input_ids_full.device
+                ).unsqueeze(0).expand(batch_size, -1)
+            
+            # Создаем DataProto с результатами
+            # DataProto ожидает TensorDict, а не обычный словарь
+            # Используем DataProto.from_dict для правильного создания
+            # Используем rollout_log_probs вместо old_log_probs, так как old_log_probs будет пересчитан позже
+            output = DataProto.from_dict(
+                tensors={
+                    "prompts": prompts_ids,
+                    "responses": response_ids,
+                    "input_ids": input_ids_full,  # Полная последовательность (prompt + response)
+                    "rollout_log_probs": rollout_log_probs,  # Используем rollout_log_probs, old_log_probs будет пересчитан позже
+                    "attention_mask": attention_mask_full,
+                    "position_ids": position_ids_full,
+                },
+                meta_info=prompts.meta_info if hasattr(prompts, 'meta_info') else {}
+            )
+            output = self.rollout_sharding_manager.postprocess_data(output)
+        
+        output = output.to("cpu")
+        get_torch_device().empty_cache()
+        return output
+
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def compute_log_prob(self, data: DataProto):
         # when is_lora is True, we use the actor without lora applied to calculate the log_prob
         # which is mostly used for ref log_prob calculation
         assert self._is_actor
+        
+        # Если включен action head режим, используем уже вычисленные rollout_log_probs
+        if self.config.model.get("use_action_head", False):
+            # Для action head режима используем rollout_log_probs, которые уже были вычислены
+            if "rollout_log_probs" in data.batch:
+                rollout_log_probs = data.batch["rollout_log_probs"]
+                # Вычисляем энтропию из rollout_log_probs (для action head это просто константа)
+                # Энтропия для дискретного распределения: H = -sum(p * log(p))
+                # Но для action head у нас уже есть log_probs, поэтому энтропия не нужна
+                # Создаем фиктивную энтропию для совместимости
+                batch_size = rollout_log_probs.shape[0]
+                entropys = torch.zeros_like(rollout_log_probs)  # Фиктивная энтропия
+                
+                output = DataProto.from_dict(
+                    tensors={"old_log_probs": rollout_log_probs, "entropys": entropys},
+                    meta_info={"temperature": self.config.rollout.temperature},
+                )
+                return output
+            else:
+                # Если rollout_log_probs нет, создаем их из action head
+                # Это не должно происходить, но на всякий случай
+                raise ValueError("rollout_log_probs not found in data for action head mode")
+        
         if self._is_offload_param:
             load_fsdp_model_to_gpu(self.actor_module_fsdp)
 
@@ -801,7 +1157,13 @@ class CriticWorker(Worker):
         import torch.distributed
 
         if not torch.distributed.is_initialized():
-            torch.distributed.init_process_group(backend="nccl" if is_cuda_available else "hccl")
+            if is_cuda_available:
+                backend = "nccl"
+            elif is_npu_available:
+                backend = "hccl"
+            else:
+                backend = "gloo"
+            torch.distributed.init_process_group(backend=backend)
         self.config = config
 
         # build device mesh for Ulysses Sequence Parallel
@@ -872,7 +1234,9 @@ class CriticWorker(Worker):
 
         from transformers import AutoConfig, AutoModelForTokenClassification
 
-        critic_model_config = AutoConfig.from_pretrained(local_path, attn_implementation="flash_attention_2", trust_remote_code=config.model.get("trust_remote_code", False))
+        # Используем flash_attention_2 только если CUDA доступна
+        attn_impl = "flash_attention_2" if is_cuda_available else "eager"
+        critic_model_config = AutoConfig.from_pretrained(local_path, attn_implementation=attn_impl, trust_remote_code=config.model.get("trust_remote_code", False))
         critic_model_config.num_labels = 1
         # patch for kimi-vl
         if getattr(critic_model_config, "model_type", None) == "kimi_vl":
@@ -943,17 +1307,29 @@ class CriticWorker(Worker):
         fsdp_mesh = self.device_mesh
         sharding_strategy = get_sharding_strategy(fsdp_mesh)
 
+        # Перемещаем модель на GPU перед FSDP, если CUDA доступна
+        # FSDP с sync_module_states=True требует, чтобы параметры были на GPU
+        if is_cuda_available:
+            device = torch.device(f"cuda:{get_torch_device().current_device()}")
+            critic_module = critic_module.to(device)
+        elif is_npu_available:
+            device = torch.device(f"npu:{get_torch_device().current_device()}")
+            critic_module = critic_module.to(device)
+
         # Note: We force turn off CPUOffload for critic because it causes incorrect results when using grad accumulation
         if config.strategy == "fsdp":
+            # sync_module_states требует GPU, поэтому отключаем на CPU
+            sync_module_states = is_cuda_available or is_npu_available
+            device_id = get_torch_device().current_device() if (is_cuda_available or is_npu_available) else None
             critic_module = FSDP(
                 critic_module,
                 param_init_fn=init_fn,
                 use_orig_params=False,
                 auto_wrap_policy=auto_wrap_policy,
-                device_id=get_torch_device().current_device(),
+                device_id=device_id,
                 sharding_strategy=sharding_strategy,
                 mixed_precision=mixed_precision,
-                sync_module_states=True,
+                sync_module_states=sync_module_states,
                 forward_prefetch=False,
                 device_mesh=self.device_mesh,
                 cpu_offload=None,
@@ -1139,7 +1515,13 @@ class RewardModelWorker(Worker):
         import torch.distributed
 
         if not torch.distributed.is_initialized():
-            torch.distributed.init_process_group(backend="nccl" if is_cuda_available else "hccl")
+            if is_cuda_available:
+                backend = "nccl"
+            elif is_npu_available:
+                backend = "hccl"
+            else:
+                backend = "gloo"
+            torch.distributed.init_process_group(backend=backend)
         self.config = config
 
         # build device mesh for Ulysses Sequence Parallel
@@ -1183,7 +1565,9 @@ class RewardModelWorker(Worker):
             self.tokenizer = hf_tokenizer(local_path, trust_remote_code=config.model.get("trust_remote_code", False))
 
         trust_remote_code = config.model.get("trust_remote_code", False)
-        model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=trust_remote_code)
+        # Используем flash_attention_2 только если CUDA доступна
+        attn_impl = "flash_attention_2" if is_cuda_available else "eager"
+        model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=trust_remote_code, attn_implementation=attn_impl)
         model_config.num_labels = 1
 
         # note that we have to create model in fp32. Otherwise, the optimizer is in bf16, which is incorrect
@@ -1196,7 +1580,6 @@ class RewardModelWorker(Worker):
                 pretrained_model_name_or_path=local_path,
                 config=model_config,
                 torch_dtype=torch.bfloat16,
-                attn_implementation="flash_attention_2",
                 trust_remote_code=trust_remote_code,
             )
 
