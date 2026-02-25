@@ -120,6 +120,41 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
     valid_returns = torch.masked_select(returns, response_mask)
     unique_traj_uid, unique_idx = np.unique(batch.non_tensor_batch['traj_uid'], return_index=True)
 
+    # Метрики по завершённым эпизодам (среднее по эпизодам, как в caged_craftext baselines)
+    meta = getattr(batch, "meta_info", None) or {}
+    completed_returns = meta.get("completed_episode_returns")
+    completed_lengths = meta.get("completed_episode_lengths")
+    completed_costs = meta.get("completed_episode_costs")
+    if completed_returns is not None and len(completed_returns) > 0:
+        completed_returns = np.asarray(completed_returns)
+        episode_reward_mean = float(np.mean(completed_returns))
+        episode_reward_max = float(np.max(completed_returns))
+        episode_reward_min = float(np.min(completed_returns))
+    else:
+        episode_reward_mean = batch.non_tensor_batch["episode_rewards"][unique_idx].mean().item()
+        episode_reward_max = batch.non_tensor_batch["episode_rewards"][unique_idx].max().item()
+        episode_reward_min = batch.non_tensor_batch["episode_rewards"][unique_idx].min().item()
+    if completed_lengths is not None and len(completed_lengths) > 0:
+        completed_lengths = np.asarray(completed_lengths)
+        episode_length_mean = float(np.mean(completed_lengths))
+        episode_length_max = float(np.max(completed_lengths))
+        episode_length_min = float(np.min(completed_lengths))
+    else:
+        episode_length_mean = batch.non_tensor_batch["episode_lengths"][unique_idx].mean().item()
+        episode_length_max = batch.non_tensor_batch["episode_lengths"][unique_idx].max().item()
+        episode_length_min = batch.non_tensor_batch["episode_lengths"][unique_idx].min().item()
+    if completed_costs is not None and len(completed_costs) > 0:
+        completed_costs = np.asarray(completed_costs)
+        episode_cost_mean = float(np.mean(completed_costs))
+        episode_cost_max = float(np.max(completed_costs))
+        episode_cost_min = float(np.min(completed_costs))
+    else:
+        episode_cost_mean = episode_cost_max = episode_cost_min = 0.0
+        if "episode_costs" in batch.non_tensor_batch:
+            episode_cost_mean = batch.non_tensor_batch["episode_costs"][unique_idx].mean().item()
+            episode_cost_max = batch.non_tensor_batch["episode_costs"][unique_idx].max().item()
+            episode_cost_min = batch.non_tensor_batch["episode_costs"][unique_idx].min().item()
+
     if use_critic:
         values = batch.batch["values"]
         valid_values = torch.masked_select(values, response_mask)
@@ -165,19 +200,13 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
         "prompt_length/max": torch.max(prompt_length).detach().item(),
         "prompt_length/min": torch.min(prompt_length).detach().item(),
         "prompt_length/clip_ratio": torch.mean(torch.eq(prompt_length, max_prompt_length).float()).detach().item(),
-        # episode
-        "episode/reward/mean": 
-            batch.non_tensor_batch["episode_rewards"][unique_idx].mean().item(),
-        "episode/reward/max": 
-            batch.non_tensor_batch["episode_rewards"][unique_idx].max().item(),
-        "episode/reward/min": 
-            batch.non_tensor_batch["episode_rewards"][unique_idx].min().item(),
-        "episode/length/mean": 
-            batch.non_tensor_batch["episode_lengths"][unique_idx].mean().item(),
-        "episode/length/max":
-            batch.non_tensor_batch["episode_lengths"][unique_idx].max().item(),
-        "episode/length/min": 
-            batch.non_tensor_batch["episode_lengths"][unique_idx].min().item(),
+        # episode (reward/length по завершённым эпизодам, если есть completed_episode_* в meta_info)
+        "episode/reward/mean": episode_reward_mean,
+        "episode/reward/max": episode_reward_max,
+        "episode/reward/min": episode_reward_min,
+        "episode/length/mean": episode_length_mean,
+        "episode/length/max": episode_length_max,
+        "episode/length/min": episode_length_min,
         "episode/tool_call_count/mean": 
             batch.non_tensor_batch["tool_callings"][unique_idx].mean().item(),
         "episode/tool_call_count/max":
@@ -185,16 +214,10 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
         "episode/tool_call_count/min":
             batch.non_tensor_batch["tool_callings"][unique_idx].min().item(),
         **({f"episode/{k}": v[0].item() for k, v in batch.non_tensor_batch.items() if "success_rate" in k}),
-        # episode cost (для Caged Craftext, если есть)
-        **(
-            {
-                "episode/cost/mean": batch.non_tensor_batch["episode_costs"][unique_idx].mean().item(),
-                "episode/cost/max": batch.non_tensor_batch["episode_costs"][unique_idx].max().item(),
-                "episode/cost/min": batch.non_tensor_batch["episode_costs"][unique_idx].min().item(),
-            }
-            if "episode_costs" in batch.non_tensor_batch
-            else {}
-        ),
+        # episode cost (по завершённым эпизодам, если есть completed_episode_costs в meta_info)
+        "episode/cost/mean": episode_cost_mean,
+        "episode/cost/max": episode_cost_max,
+        "episode/cost/min": episode_cost_min,
     }
     return metrics
 

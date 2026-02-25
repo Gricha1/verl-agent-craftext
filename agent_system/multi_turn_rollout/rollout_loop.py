@@ -351,6 +351,10 @@ class TrajectoryCollector:
         episode_rewards = np.zeros(batch_size, dtype=np.float32)
         episode_costs = np.zeros(batch_size, dtype=np.float32)  # Для Caged Craftext - накопление cost
         tool_callings = np.zeros(batch_size, dtype=np.float32)
+        # Списки завершённых эпизодов для метрик (среднее по эпизодам, как в caged_craftext baselines)
+        completed_episode_returns = []
+        completed_episode_lengths = []
+        completed_episode_costs = []
         
         # Auto reset: проверяем, включен ли auto reset
         auto_reset_enabled = self.config.env.get('auto_reset', False)
@@ -522,12 +526,23 @@ class TrajectoryCollector:
                     batch.non_tensor_batch['saute/violation_count'] = torch_to_numpy(violation_counts.astype(np.float32), is_object=True)
             
             # Извлекаем episode_cost из info (если есть, используется как итоговая стоимость эпизода)
-            # При завершении эпизода (done=True) обновляем episode_costs значением из info
-            if 'episode_cost' in infos[0]:
-                episode_costs_from_info = np.array([info.get('episode_cost', 0.0) for info in infos], dtype=np.float32)
-                # Используем episode_cost из info для завершенных эпизодов
+            # При завершении эпизода (done=True) обновляем episode_costs значением из info и записываем в списки завершённых эпизодов
+            episode_costs_from_info = np.array([info.get('episode_cost', 0.0) for info in infos], dtype=np.float32) if infos and 'episode_cost' in infos[0] else None
+            if episode_costs_from_info is not None:
                 episode_costs[dones] = episode_costs_from_info[dones]
                 batch.non_tensor_batch['episode_cost'] = episode_costs_from_info
+            # Записываем завершённые эпизоды в списки для метрик (среднее по эпизодам)
+            for i in range(batch_size):
+                if dones[i]:
+                    if auto_reset_enabled:
+                        completed_episode_returns.append(float(current_episode_rewards[i]))
+                        completed_episode_lengths.append(float(current_episode_lengths[i]))
+                        cost_val = float(episode_costs_from_info[i]) if episode_costs_from_info is not None else float(current_episode_costs[i])
+                        completed_episode_costs.append(cost_val)
+                    else:
+                        completed_episode_returns.append(float(episode_rewards[i]))
+                        completed_episode_lengths.append(float(episode_lengths[i]))
+                        completed_episode_costs.append(float(episode_costs[i]))
             
             # Create reward tensor, only assign rewards for active environments
             # Обновляем награды и длины для текущего эпизода
@@ -637,6 +652,13 @@ class TrajectoryCollector:
                             )
             obs = next_obs
         
+        # Без auto_reset: один эпизод на env — добавляем в списки завершённых эпизодов
+        if not auto_reset_enabled:
+            for i in range(batch_size):
+                completed_episode_returns.append(float(episode_rewards[i]))
+                completed_episode_lengths.append(float(episode_lengths[i]))
+                completed_episode_costs.append(float(episode_costs[i]))
+        
         success: Dict[str, np.ndarray] = envs.success_evaluator(
                     total_infos=total_infos,
                     total_batch_list=total_batch_list,
@@ -644,7 +666,7 @@ class TrajectoryCollector:
                     episode_lengths=episode_lengths,
                     )
 
-        return total_batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings, validation_video_frames, validation_video_prompts, validation_video_actions
+        return total_batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings, validation_video_frames, validation_video_prompts, validation_video_actions, completed_episode_returns, completed_episode_lengths, completed_episode_costs
     
     def dynamic_multi_turn_loop(
             self,
@@ -677,6 +699,9 @@ class TrajectoryCollector:
         total_success = []
         total_traj_uid = []
         total_tool_callings = []
+        total_completed_returns = []
+        total_completed_lengths = []
+        total_completed_costs = []
         try_count: int = 0
         max_try_count = self.config.algorithm.filter_groups.max_num_gen_batches
 
@@ -686,11 +711,14 @@ class TrajectoryCollector:
                 print(f"valid num={len(total_batch_list)} < target num={self.config.data.train_batch_size * self.config.env.rollout.n}. Keep generating... ({try_count}/{max_try_count})")
             try_count += 1
 
-            batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings, _ = self.vanilla_multi_turn_loop(
+            batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings, _vframes, _vprompts, _vactions, completed_returns, completed_lengths, completed_costs = self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
                 envs=envs,
             )
+            total_completed_returns.extend(completed_returns)
+            total_completed_lengths.extend(completed_lengths)
+            total_completed_costs.extend(completed_costs)
             batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings = filter_group_data(batch_list=batch_list, 
                                                                                                 episode_rewards=episode_rewards, 
                                                                                                 episode_lengths=episode_lengths, 
@@ -717,7 +745,7 @@ class TrajectoryCollector:
         total_traj_uid = np.concatenate(total_traj_uid, axis=0)
         total_tool_callings = np.concatenate(total_tool_callings, axis=0)
 
-        return total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, total_tool_callings
+        return total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, total_tool_callings, total_completed_returns, total_completed_lengths, total_completed_costs
 
     def multi_turn_loop(
             self,
@@ -747,7 +775,7 @@ class TrajectoryCollector:
         # Initial observations from the environment
         if self.config.algorithm.filter_groups.enable and is_train:
             # Dynamic Sampling (for DAPO and Dynamic GiGPO)
-            total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, totoal_tool_callings = \
+            total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, totoal_tool_callings, completed_episode_returns, completed_episode_lengths, completed_episode_costs = \
                 self.dynamic_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
@@ -759,7 +787,7 @@ class TrajectoryCollector:
             validation_video_actions = None
         else:
             # Vanilla Sampling   
-            total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, totoal_tool_callings, validation_video_frames, validation_video_prompts, validation_video_actions = \
+            total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, totoal_tool_callings, validation_video_frames, validation_video_prompts, validation_video_actions, completed_episode_returns, completed_episode_lengths, completed_episode_costs = \
                 self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
@@ -792,5 +820,12 @@ class TrajectoryCollector:
             gen_batch_output.meta_info['validation_video_prompts'] = validation_video_prompts
         if validation_video_actions is not None:
             gen_batch_output.meta_info['validation_video_actions'] = validation_video_actions
+        # Метрики по завершённым эпизодам (среднее по эпизодам, как в caged_craftext baselines)
+        if completed_episode_returns is not None and len(completed_episode_returns) > 0:
+            gen_batch_output.meta_info['completed_episode_returns'] = np.array(completed_episode_returns, dtype=np.float32)
+        if completed_episode_lengths is not None and len(completed_episode_lengths) > 0:
+            gen_batch_output.meta_info['completed_episode_lengths'] = np.array(completed_episode_lengths, dtype=np.float32)
+        if completed_episode_costs is not None and len(completed_episode_costs) > 0:
+            gen_batch_output.meta_info['completed_episode_costs'] = np.array(completed_episode_costs, dtype=np.float32)
 
         return gen_batch_output

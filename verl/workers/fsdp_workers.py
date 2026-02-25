@@ -942,9 +942,12 @@ class ActorRolloutRefWorker(Worker):
             # Создаем rollout_log_probs с правильной формой (batch_size, response_length)
             # Для action head у нас одно действие, поэтому log prob одинаковый для всех токенов
             # Используем rollout_log_probs вместо old_log_probs, так как old_log_probs будет пересчитан позже через compute_log_prob
-            action_log_probs = torch.log(action_probs.gather(1, action_ids.unsqueeze(-1))).squeeze(-1)  # (batch_size,)
+            action_log_probs = torch.log(action_probs.gather(1, action_ids.unsqueeze(-1)) + 1e-10).squeeze(-1)  # (batch_size,)
             # Расширяем до (batch_size, response_length) для совместимости
             rollout_log_probs = action_log_probs.unsqueeze(-1).expand(-1, response_length)  # (batch_size, response_length)
+            # Энтропия распределения по действиям: H = -sum(p * log(p)); храним (batch_size,) чтобы не раздувать батч
+            action_probs_clamped = action_probs.clamp(min=1e-10)
+            action_entropy = -(action_probs_clamped * torch.log(action_probs_clamped)).sum(dim=-1)  # (batch_size,)
             
             # Получаем исходные промпты для создания полной последовательности
             prompts_ids = input_ids  # (batch_size, prompt_length)
@@ -986,6 +989,7 @@ class ActorRolloutRefWorker(Worker):
                     "responses": response_ids,
                     "input_ids": input_ids_full,  # Полная последовательность (prompt + response)
                     "rollout_log_probs": rollout_log_probs,  # Используем rollout_log_probs, old_log_probs будет пересчитан позже
+                    "rollout_entropy": action_entropy,  # (batch_size,), expand in compute_log_prob
                     "attention_mask": attention_mask_full,
                     "position_ids": position_ids_full,
                 },
@@ -1004,26 +1008,23 @@ class ActorRolloutRefWorker(Worker):
         # which is mostly used for ref log_prob calculation
         assert self._is_actor
         
-        # Если включен action head режим, используем уже вычисленные rollout_log_probs
+        # Если включен action head режим, используем уже вычисленные rollout_log_probs и rollout_entropy
         if self.config.model.get("use_action_head", False):
-            # Для action head режима используем rollout_log_probs, которые уже были вычислены
             if "rollout_log_probs" in data.batch:
                 rollout_log_probs = data.batch["rollout_log_probs"]
-                # Вычисляем энтропию из rollout_log_probs (для action head это просто константа)
-                # Энтропия для дискретного распределения: H = -sum(p * log(p))
-                # Но для action head у нас уже есть log_probs, поэтому энтропия не нужна
-                # Создаем фиктивную энтропию для совместимости
-                batch_size = rollout_log_probs.shape[0]
-                entropys = torch.zeros_like(rollout_log_probs)  # Фиктивная энтропия
-                
+                # Энтропия: при генерации сохранена как (batch_size,), разворачиваем до (bs, response_length)
+                if "rollout_entropy" in data.batch:
+                    action_entropy = data.batch["rollout_entropy"]  # (batch_size,)
+                    response_length = rollout_log_probs.shape[1]
+                    entropys = action_entropy.unsqueeze(-1).expand(-1, response_length)
+                else:
+                    entropys = torch.zeros_like(rollout_log_probs)
                 output = DataProto.from_dict(
                     tensors={"old_log_probs": rollout_log_probs, "entropys": entropys},
                     meta_info={"temperature": self.config.rollout.temperature},
                 )
                 return output
             else:
-                # Если rollout_log_probs нет, создаем их из action head
-                # Это не должно происходить, но на всякий случай
                 raise ValueError("rollout_log_probs not found in data for action head mode")
         
         if self._is_offload_param:
