@@ -1,6 +1,6 @@
 container:
   image: cr.ai.cloud.ru/0be50883-779e-4f89-a2c2-6befd3879c6f/uv_test_img-cloud:latest
-  command: bash examples/ppo_trainer/run_caged_craftext_lora_job.sh vllm false false 32 512 false true 2000
+  command: bash examples/ppo_trainer/run_caged_craftext_lora_job.sh vllm false false 32 512 false false 2000
   environment:
     COMET_API_KEY: 3OfuYHwcRgIwG7DzgzJ190igY
   work_dir: /home/jovyan/nsorokin/verl-agent-craftext-2
