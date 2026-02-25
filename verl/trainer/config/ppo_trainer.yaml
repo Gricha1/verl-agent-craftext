@@ -274,6 +274,8 @@ trainer:
   val_before_train: True
   val_only: False
   test_freq: -1
+  # env_val_video_freq: каждые N шагов среды запускать валидацию с записью видео траектории в Comet ML (0 = отключено)
+  env_val_video_freq: 0
   critic_warmup: 0
   default_hdfs_dir: null
   del_local_ckpt_after_load: False

@@ -74,7 +74,7 @@ class CagedCraftextWorker:
         except Exception:
             return type(x)
     
-    def step(self, action: int):
+    def step(self, action: int, return_render: bool = False):
         if self.state is None:
             raise RuntimeError("reset() must be called before step()")
 
@@ -130,9 +130,12 @@ class CagedCraftextWorker:
         info['text_render'] = text_render
         info['instruction'] = instruction_text
 
+        if return_render:
+            info['render_frame'] = obs.copy()
+
         return obs, reward, done, info
     
-    def reset(self, scenario_idx: int):
+    def reset(self, scenario_idx: int, return_render: bool = False):
         # Увеличиваем счетчик reset'ов для добавления случайности
         self._reset_counter += 1
         
@@ -175,6 +178,9 @@ class CagedCraftextWorker:
         
         info['text_render'] = text_render
         info['instruction'] = instruction_text
+
+        if return_render:
+            info['render_frame'] = obs.copy()
 
         return obs, info
 
@@ -280,10 +286,18 @@ class CagedCraftextMultiProcessEnv(gym.Env):
             self.scenario_idxs = all_indices[:]
             print(f"CagedCraftext Evaluating with {len(self.scenario_idxs)} scenarios.")
 
+        # Индексы воркеров, для которых при step/reset возвращать render_frame (для записи видео)
+        self._record_video_worker_idxs = set()
+
+    def set_record_video_worker_idxs(self, idxs):
+        """Установить индексы воркеров, для которых возвращать render_frame в info (для записи видео)."""
+        self._record_video_worker_idxs = set(idxs) if idxs is not None else set()
+
     def step(self, actions: list[int]):
+        return_render_flags = [i in self._record_video_worker_idxs for i in range(len(self._workers))]
         futures = [
-            worker.step.remote(action) 
-            for worker, action in zip(self._workers, actions)
+            worker.step.remote(action, return_render=return_render)
+            for worker, action, return_render in zip(self._workers, actions, return_render_flags)
         ]
         results = ray.get(futures)
         obs_list, reward_list, done_list, info_list = zip(*results)
@@ -295,8 +309,10 @@ class CagedCraftextMultiProcessEnv(gym.Env):
         # Повторяем индексы для каждой среды внутри группы (требование group-based RL)
         idxs = np.repeat(idxs, self.group_n).tolist()
 
+        return_render_flags = [i in self._record_video_worker_idxs for i in range(len(self._workers))]
         futures = [
-            worker.reset.remote(idx) for worker, idx in zip(self._workers, idxs)
+            worker.reset.remote(idx, return_render=return_render)
+            for worker, idx, return_render in zip(self._workers, idxs, return_render_flags)
         ]
         results = ray.get(futures)
         obs_list, info_list = zip(*results)

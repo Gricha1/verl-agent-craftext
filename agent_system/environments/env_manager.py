@@ -718,6 +718,11 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
     def __init__(self, envs, projection_f, config):
         self.memory = SimpleMemory()
         super().__init__(envs, projection_f, config)
+
+    def set_record_video(self, record: bool = True, env_idx: int = 0):
+        """Включить/выключить запись кадров для одного env (для записи видео траектории в Comet ML)."""
+        if hasattr(self.envs, 'set_record_video_worker_idxs'):
+            self.envs.set_record_video_worker_idxs([env_idx] if record else None)
     
     def reset(self, kwargs) -> Dict[str, Any]:
         obs, infos = self.envs.reset()

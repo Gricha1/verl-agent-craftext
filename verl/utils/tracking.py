@@ -132,6 +132,11 @@ class Tracking:
             if backend is None or default_backend in backend:
                 logger_instance.log(data=data, step=step)
 
+    def log_validation_video(self, gif_path: str, step: int, name: str = "validation_trajectory"):
+        """Log a validation trajectory GIF to backends that support it (e.g. Comet ML)."""
+        if "comet" in self.logger and hasattr(self.logger["comet"], "log_video"):
+            self.logger["comet"].log_video(gif_path, step=step, name=name)
+
     def __del__(self):
         if "wandb" in self.logger:
             self.logger["wandb"].finish(exit_code=0)
@@ -256,6 +261,13 @@ class CometMLLogger:
                     self.experiment.log_metric(key, value.item(), step=step)
                 except (AttributeError, ValueError):
                     pass  # Skip if conversion fails
+
+    def log_video(self, gif_path: str, step: int, name: str = "validation_trajectory"):
+        """Log a GIF video (e.g. validation trajectory) to Comet ML."""
+        import os
+        if os.path.isfile(gif_path):
+            # Comet log_image accepts name= and step=; image_metadata is not supported
+            self.experiment.log_image(gif_path, name=name, step=step)
 
     def finish(self):
         """End the Comet ML experiment"""

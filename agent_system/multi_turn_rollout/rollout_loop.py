@@ -292,26 +292,43 @@ class TrajectoryCollector:
             actor_rollout_wg, 
             envs: EnvironmentManagerBase,
             world_model_trainer=None,
-            ) -> DataProto:
+            record_video_env_idx: Optional[int] = None,
+            ):
         """
         Collects trajectories through parallel agent-environment agent_loop.
         Parameters:
             gen_batch (DataProto): Initial batch with prompts to start the agent_loop
             actor_rollout_wg (WorkerGroup): Worker group containing the actor model for policy decisions
             envs (EnvironmentManagerBase): Environment manager containing parallel environment instances
+            record_video_env_idx (int, optional): If set, collect render_frame from this env's infos for video
         
         Returns:
             total_batch_list (List[Dict]): List of trajectory data for each environment
             episode_rewards (np.ndarray): Total rewards for each environment
             episode_lengths (np.ndarray): Total steps for each environment
+            episode_costs (np.ndarray): Total costs for each environment
             success (Dict[str, np.ndarray]): Success samples for each environment
             traj_uid (np.ndarray): Trajectory unique identifiers
+            tool_callings (np.ndarray): Tool call counts
+            validation_video_frames (list or None): Collected frames for record_video_env_idx, or None
         """
 
         batch_size = len(gen_batch.batch)
+        validation_video_frames = [] if record_video_env_idx is not None else None
+        validation_video_prompts = [] if record_video_env_idx is not None else None
+        validation_video_actions = [] if record_video_env_idx is not None else None
 
         # Initial observations from the environment
         obs, infos = envs.reset(kwargs=gen_batch.non_tensor_batch.pop('env_kwargs', None))
+
+        if validation_video_frames is not None and record_video_env_idx is not None and record_video_env_idx < len(infos):
+            frame = infos[record_video_env_idx].get('render_frame')
+            if frame is not None:
+                validation_video_frames.append(frame)
+                # First frame: initial obs, no action yet
+                prompt_text = obs.get('text', [None])[record_video_env_idx] if isinstance(obs.get('text'), list) else None
+                validation_video_prompts.append(prompt_text or "")
+                validation_video_actions.append("")
 
         lenght_obs = len(obs['text']) if obs['text'] is not None else len(obs['image'])
         assert len(gen_batch.batch) == lenght_obs, f"gen_batch size {len(gen_batch.batch)} does not match obs size {lenght_obs}"
@@ -546,6 +563,16 @@ class TrajectoryCollector:
                 total_batch_list[i].append(batch_list[i])
                 total_infos[i].append(infos[i])
 
+            # Сбор кадров для записи видео (один env по record_video_env_idx) + промпт и действие для подписи
+            if validation_video_frames is not None and record_video_env_idx is not None and record_video_env_idx < len(infos):
+                frame = infos[record_video_env_idx].get('render_frame')
+                if frame is not None:
+                    validation_video_frames.append(frame)
+                    prompt_text = obs.get('text', [None])[record_video_env_idx] if isinstance(obs.get('text'), list) else None
+                    action_text = text_actions[record_video_env_idx] if record_video_env_idx < len(text_actions) else ""
+                    validation_video_prompts.append(prompt_text or "")
+                    validation_video_actions.append(action_text or "")
+
             # Обновляем счетчики шагов для активных сред (если auto reset включен)
             if auto_reset_enabled:
                 steps_per_env[active_masks] += 1
@@ -616,8 +643,8 @@ class TrajectoryCollector:
                     episode_rewards=episode_rewards, 
                     episode_lengths=episode_lengths,
                     )
-        
-        return total_batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings
+
+        return total_batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings, validation_video_frames, validation_video_prompts, validation_video_actions
     
     def dynamic_multi_turn_loop(
             self,
@@ -659,7 +686,7 @@ class TrajectoryCollector:
                 print(f"valid num={len(total_batch_list)} < target num={self.config.data.train_batch_size * self.config.env.rollout.n}. Keep generating... ({try_count}/{max_try_count})")
             try_count += 1
 
-            batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings = self.vanilla_multi_turn_loop(
+            batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings, _ = self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
                 envs=envs,
@@ -699,6 +726,7 @@ class TrajectoryCollector:
             envs: EnvironmentManagerBase,
             is_train: bool = True,
             world_model_trainer=None,
+            record_video_env_idx: Optional[int] = None,
             ) -> DataProto:
         """
         Select and run the appropriate rollout loop (dynamic or vanilla).
@@ -708,6 +736,7 @@ class TrajectoryCollector:
             actor_rollout_wg: Actor model workers.
             envs (EnvironmentManagerBase): Environment manager for interaction.
             is_train (bool): Whether in training mode (affects dynamic sampling).
+            record_video_env_idx (int, optional): If set, collect render frames for this env for validation video.
 
         Returns:
             DataProto: Final collected trajectory data with metadata.
@@ -725,14 +754,18 @@ class TrajectoryCollector:
                 envs=envs,
                 world_model_trainer=world_model_trainer,
             )
+            validation_video_frames = None
+            validation_video_prompts = None
+            validation_video_actions = None
         else:
             # Vanilla Sampling   
-            total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, totoal_tool_callings = \
+            total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, totoal_tool_callings, validation_video_frames, validation_video_prompts, validation_video_actions = \
                 self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
                 envs=envs,
                 world_model_trainer=world_model_trainer,
+                record_video_env_idx=record_video_env_idx,
             )
         assert len(total_batch_list) == len(total_episode_rewards)
         assert len(total_batch_list) == len(total_episode_lengths)
@@ -753,5 +786,11 @@ class TrajectoryCollector:
             traj_uid=total_traj_uid,
             tool_callings=totoal_tool_callings,
         )
-        
+        if validation_video_frames is not None:
+            gen_batch_output.meta_info['validation_video_frames'] = validation_video_frames
+        if validation_video_prompts is not None:
+            gen_batch_output.meta_info['validation_video_prompts'] = validation_video_prompts
+        if validation_video_actions is not None:
+            gen_batch_output.meta_info['validation_video_actions'] = validation_video_actions
+
         return gen_batch_output

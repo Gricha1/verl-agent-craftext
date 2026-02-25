@@ -686,7 +686,7 @@ class RayPPOTrainer:
         # Log to each configured logger
         self.validation_generations_logger.log(self.config.trainer.logger, samples, self.global_steps)
 
-    def _validate(self):
+    def _validate(self, record_video: bool = False, logger=None):
         reward_tensor_lst = []
         data_source_lst = []
         tool_calling_list = []
@@ -698,7 +698,10 @@ class RayPPOTrainer:
         sample_outputs = []
         sample_scores = []
 
-        for test_data in self.val_dataloader:
+        if record_video and hasattr(self.val_envs, 'set_record_video'):
+            self.val_envs.set_record_video(True, env_idx=0)
+
+        for batch_idx, test_data in enumerate(self.val_dataloader):
             test_batch = DataProto.from_single_dict(test_data)
 
             # repeat test batch
@@ -746,14 +749,103 @@ class RayPPOTrainer:
             # test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
 
             ################ agent-environment loop ###############
+            record_video_env_idx = 0 if (record_video and batch_idx == 0) else None
             test_output_gen_batch = self.traj_collector.multi_turn_loop(
                                                     gen_batch=test_gen_batch,
                                                     actor_rollout_wg=self.actor_rollout_wg,
                                                     envs=self.val_envs,
                                                     is_train=False,
                                                     world_model_trainer=self.world_model_trainer,
+                                                    record_video_env_idx=record_video_env_idx,
                                                     )
             print('validation generation end')
+
+            # Save validation video (GIF) and log to Comet ML after first batch when record_video
+            if record_video and batch_idx == 0 and logger is not None:
+                frames = test_output_gen_batch.meta_info.get('validation_video_frames')
+                assert frames is not None and len(frames) > 0, (
+                    "Validation video requested but no frames collected. "
+                    "Check: val_envs has set_record_video, env workers return info['render_frame'], "
+                    "record_video_env_idx=0 matches the env with record_video enabled."
+                )
+                prompts = test_output_gen_batch.meta_info.get('validation_video_prompts')
+                actions = test_output_gen_batch.meta_info.get('validation_video_actions')
+                import tempfile
+                try:
+                    import imageio
+                    from PIL import Image, ImageDraw, ImageFont
+                    import textwrap
+                    gif_name = f"val_trajectory_step{self.total_env_steps}.gif"
+                    gif_path_tmp = os.path.join(tempfile.gettempdir(), gif_name)
+                    gif_dir = os.path.join(os.getcwd(), "gif")
+                    os.makedirs(gif_dir, exist_ok=True)
+                    gif_path_gif = os.path.join(gif_dir, gif_name)
+                    # Optionally composite each frame with observation + action text (like evaluation_caged_craftext)
+                    def _frame_to_uint8_arr(f):
+                        arr = np.asarray(f)
+                        if arr.ndim == 2:
+                            arr = np.stack([arr] * 3, axis=-1)
+                        elif arr.ndim == 3 and arr.shape[0] == 3:
+                            arr = np.transpose(arr, (1, 2, 0))
+                        if arr.max() <= 1.0:
+                            arr = (arr * 255).astype(np.uint8)
+                        else:
+                            arr = arr.astype(np.uint8)
+                        return arr
+                    def _composite_frame_with_text(frame_arr, prompt_text, action_text, panel_height=None, font_size=12, max_lines=14):
+                        """Add a text panel below the frame: observation by lines (keep grid alignment) + action."""
+                        try:
+                            img = Image.fromarray(frame_arr)
+                            w, h = img.size
+                            try:
+                                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", font_size)
+                            except Exception:
+                                font = ImageFont.load_default()
+                            line_height = font_size + 2
+                            # Split by newlines to preserve map grid; no mid-line wrapping
+                            lines = (prompt_text or "").split("\n")
+                            lines = [ln.strip("\r") for ln in lines if ln.strip() or ln == ""][:max_lines]
+                            action_line = f"Action: {(action_text or '')[:150]}"
+                            num_lines = len(lines) + 1
+                            if panel_height is None:
+                                panel_height = num_lines * line_height + 12
+                            panel = Image.new("RGB", (w, panel_height), (250, 250, 250))
+                            draw = ImageDraw.Draw(panel)
+                            y_off = 4
+                            # Max chars that fit in panel width (mono: ~font_size*0.6 per char)
+                            max_chars = max(20, (w - 8) // max(6, font_size // 2))
+                            for line in lines:
+                                if len(line) > max_chars:
+                                    line = line[: max_chars - 2] + ".."
+                                draw.text((4, y_off), line, fill=(0, 0, 0), font=font)
+                                y_off += line_height
+                            draw.text((4, y_off), action_line, fill=(100, 0, 100), font=font)
+                            out = Image.new("RGB", (w, h + panel_height))
+                            out.paste(img, (0, 0))
+                            out.paste(panel, (0, h))
+                            return np.array(out)
+                        except Exception:
+                            return frame_arr
+                    composed_frames = []
+                    for i, f in enumerate(frames):
+                        arr = _frame_to_uint8_arr(f)
+                        if prompts is not None and actions is not None and i < len(prompts) and i < len(actions):
+                            arr = _composite_frame_with_text(arr, prompts[i], actions[i])
+                        composed_frames.append(arr)
+                    def _write_gif(path):
+                        with imageio.get_writer(path, mode='I', duration=0.15, loop=0) as writer:
+                            for arr in composed_frames:
+                                writer.append_data(arr)
+                    _write_gif(gif_path_tmp)
+                    _write_gif(gif_path_gif)
+                    gif_path = gif_path_gif
+                    logger.log_validation_video(gif_path, step=self.total_env_steps, name=f"validation_trajectory_step{self.total_env_steps}")
+                    print(f"[INFO] Validation video saved and logged to Comet ML: {gif_path} (also in {gif_path_tmp})")
+                except Exception as e:
+                    print(f"[WARNING] Failed to save/log validation video: {e}")
+                if hasattr(self.val_envs, 'set_record_video'):
+                    self.val_envs.set_record_video(False)
+
             del test_batch
             test_batch = test_output_gen_batch
             
@@ -1070,7 +1162,9 @@ class RayPPOTrainer:
         # perform validation before training
         # currently, we only support validation using the reward_function.
         if self.val_reward_fn is not None and self.config.trainer.get("val_before_train", True):
-            val_metrics = self._validate()
+            env_val_video_freq = self.config.trainer.get("env_val_video_freq", 0)
+            do_val_video = env_val_video_freq > 0  # record video at step 0 when video freq is set
+            val_metrics = self._validate(record_video=do_val_video, logger=logger)
             assert val_metrics, f"{val_metrics=}"
             pprint(f"Initial validation metrics: {val_metrics}")
             logger.log(data=val_metrics, step=self.total_env_steps)
@@ -1329,10 +1423,21 @@ class RayPPOTrainer:
                                 dump_path=rollout_data_dir,
                             )
 
-                    # validate
-                    if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0):
+                    # validate (по test_freq и/или каждые env_val_video_freq шагов среды с записью видео в Comet)
+                    env_val_video_freq = self.config.trainer.get("env_val_video_freq", 0)
+                    # Run video val when we've *crossed* a multiple of env_val_video_freq (total_env_steps jumps by num_env_steps_in_batch, so == 0 almost never holds)
+                    _prev_steps = self.total_env_steps - num_env_steps_in_batch
+                    do_val_video = (
+                        env_val_video_freq > 0
+                        and self.total_env_steps > 0
+                        and (self.total_env_steps // env_val_video_freq) > (_prev_steps // env_val_video_freq)
+                    )
+                    if self.val_reward_fn is not None and (
+                        (self.config.trainer.test_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0))
+                        or do_val_video
+                    ):
                         with _timer("testing", timing_raw):
-                            val_metrics: dict = self._validate()
+                            val_metrics: dict = self._validate(record_video=do_val_video, logger=logger)
                             if is_last_step:
                                 last_val_metrics = val_metrics
                         metrics.update(val_metrics)
