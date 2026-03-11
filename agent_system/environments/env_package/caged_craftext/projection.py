@@ -235,6 +235,7 @@ INVALID_ACTION_ID = -1
 def craftext_projection(actions: List[str]):
     """
     ИСПРАВЛЕННАЯ ВЕРСИЯ: Парсит, валидирует и преобразует текстовый вывод LLM.
+    Поддерживает как <action> теги (для обычного шаблона), так и <answer> теги (для extended шаблона).
     Проверка на <think> сделана опциональной.
     """
     processed_actions = [INVALID_ACTION_ID] * len(actions)
@@ -243,13 +244,21 @@ def craftext_projection(actions: List[str]):
     for i, original_str in enumerate(actions):
         action_str_lower = original_str.lower()
 
-        # 1. Извлекаем текстовое действие из тегов <action>
+        # 1. Извлекаем текстовое действие из тегов <action> или <answer>
+        # Сначала пробуем <action> (для обычного шаблона)
         start_tag = "<action>"
         end_tag = "</action>"
         start_idx = action_str_lower.find(start_tag)
         end_idx = action_str_lower.find(end_tag)
 
-        # Если тегов <action> нет, действие точно невалидное
+        # Если <action> не найден, пробуем <answer> (для extended шаблона)
+        if start_idx == -1 or end_idx == -1:
+            start_tag = "<answer>"
+            end_tag = "</answer>"
+            start_idx = action_str_lower.find(start_tag)
+            end_idx = action_str_lower.find(end_tag)
+
+        # Если тегов нет, действие невалидное
         if start_idx == -1 or end_idx == -1:
             continue
 
@@ -262,8 +271,7 @@ def craftext_projection(actions: List[str]):
         is_known_action = action_id != INVALID_ACTION_ID
         has_no_chinese = not re.search(r"[\u4e00-\u9fff]", original_str)
         
-        # <--- ГЛАВНОЕ ИЗМЕНЕНИЕ: Убрали обязательную проверку на has_think ---
-        # Теперь для валидности достаточно, чтобы было найдено известное действие в тегах
+        # Для валидности достаточно, чтобы было найдено известное действие в тегах
         if is_known_action and has_no_chinese:
             valids[i] = 1
             processed_actions[i] = action_id

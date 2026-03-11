@@ -1,6 +1,6 @@
 #!/bin/bash
-# Команда запуска PPO обучения с предобученными весами, extended_template и critic_warmup=10
-# Использование: bash examples/ppo_trainer/run_caged_craftext_with_pretrained.sh
+# Команда запуска PPO Saute обучения с предобученными весами для collect_wood, extended_template и critic_warmup=10
+# Использование: bash examples/ppo_trainer/ppo_saute_pretrained_collect_wood.sh
 #
 # Скрипт автоматически конвертирует LoRA адаптер в FSDP формат, если необходимо
 
@@ -31,21 +31,15 @@ bash examples/ppo_trainer/convert_lora_to_fsdp_if_needed.sh \
 
 echo ""
 echo "=========================================="
-echo "Запуск обучения PPO"
+echo "Запуск обучения PPO Saute"
 echo "=========================================="
 
-bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
+bash examples/ppo_trainer/run_caged_craftext_saute_ppo_lora_job.sh \
     vllm \
     false \
-    false \
-    32 \
-    512 \
-    false \
-    false \
-    4000 \
-    true \
-    extended_template \
     10 \
+    extended_template \
     trainer.resume_mode=resume_path \
     trainer.resume_from_path="$CHECKPOINT_PATH" \
-    trainer.default_local_dir=training_checkpoints/verl_agent_caged_craftext
+    trainer.default_local_dir=training_checkpoints/verl_agent_caged_craftext \
+    trainer.val_before_train=True

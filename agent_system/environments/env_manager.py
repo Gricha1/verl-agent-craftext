@@ -614,7 +614,9 @@ from agent_system.environments.env_package.caged_craftext.projection import (
     CRAFTEXT_TEMPLATE, 
     CRAFTEXT_TEMPLATE_NO_HIS,
     get_craftext_template,
-    get_craftext_template_no_his
+    get_craftext_template_no_his,
+    get_craftext_extended_template_no_his,
+    CRAFTEXT_EXTENDED_TEMPLATE_NO_HIS
 )
 
 
@@ -792,12 +794,22 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
         Строит текстовые наблюдения из рендеров и инфо.
         Для Caged Craftext также может включать информацию о constraint.
         """
+        # Получаем тип шаблона из config (по умолчанию default_template)
+        prompt_template_type = getattr(self.config.env, 'prompt_template_type', 'default_template')
+        
         # Получаем параметр enable_reasoning из config (по умолчанию True для обратной совместимости)
         enable_reasoning = getattr(self.config.env, 'enable_reasoning', True)
         
-        # Получаем нужные шаблоны в зависимости от enable_reasoning
-        template = get_craftext_template(enable_reasoning=enable_reasoning)
-        template_no_his = get_craftext_template_no_his(enable_reasoning=enable_reasoning)
+        # Выбираем шаблоны в зависимости от prompt_template_type
+        if prompt_template_type == 'extended_template':
+            # Используем extended шаблон (только без истории, так как history_length=0)
+            template_no_his = get_craftext_extended_template_no_his()
+            # Для extended шаблона не используем шаблон с историей, так как он не определен
+            template = template_no_his  # Fallback
+        else:
+            # Используем обычные шаблоны с учетом enable_reasoning
+            template = get_craftext_template(enable_reasoning=enable_reasoning)
+            template_no_his = get_craftext_template_no_his(enable_reasoning=enable_reasoning)
         
         final_prompts = []
         
@@ -814,9 +826,17 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
                 action_hist = [h.get('action', '') for h in history[-5:]]  # Последние 5 действий
                 action_history_str = "\n".join([f"Step {j+1}: {act}" for j, act in enumerate(action_hist)])
             
-            # Строим промпт (используем шаблоны с учетом enable_reasoning)
-            if self.config.env.history_length == 0:
-                if action_history_str:
+            # Строим промпт
+            # Для extended_template всегда используем template_no_his (так как extended шаблон определен только без истории)
+            if prompt_template_type == 'extended_template' or self.config.env.history_length == 0:
+                if prompt_template_type == 'extended_template':
+                    # Extended шаблон всегда без истории
+                    prompt = template_no_his.format(
+                        task_description=task,
+                        current_observation=text_render
+                    )
+                elif action_history_str:
+                    # Обычный шаблон с историей (если есть)
                     prompt = template.format(
                         task_description=task,
                         step_count=len(history) if history else 0,
@@ -825,11 +845,13 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
                         current_observation=text_render
                     )
                 else:
+                    # Обычный шаблон без истории
                     prompt = template_no_his.format(
                         task_description=task,
                         current_observation=text_render
                     )
             else:
+                # Обычный шаблон с историей
                 prompt = template.format(
                     task_description=task,
                     step_count=len(history) if history else 0,

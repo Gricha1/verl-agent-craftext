@@ -60,7 +60,7 @@ shift 4 2>/dev/null || shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
 num_cpus_per_env_worker=0.03
-train_data_size=32
+train_data_size=8
 val_data_size=8
 
 export RUN_NAME="run_saute_ppo_qwen2.5_1.5b_caged_craftext_energy_collect_wood_$(date +%Y%m%d-%H%M%S)"
@@ -135,8 +135,9 @@ python -m verl.trainer.main_ppo \
   trainer.nnodes=1 \
   trainer.save_freq=100 \
   trainer.test_freq=0 \
-  trainer.total_epochs=4000 \
-  trainer.val_before_train=False \
+  trainer.env_val_video_freq=200000 \
+  trainer.total_epochs=8000 \
+  trainer.val_before_train=True \
   +algorithm.saute.enabled=True \
   +algorithm.saute.gamma=1.0 \
   +algorithm.saute.safety_budget=0.1 \

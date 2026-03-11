@@ -627,6 +627,10 @@ class RayPPOTrainer:
 
         self.total_training_steps = total_training_steps
         print(f"Total training steps: {self.total_training_steps}")
+        
+        # При resume нужно учесть уже пройденные шаги
+        # Сохраняем начальное значение для расчета оставшихся шагов
+        self.initial_total_training_steps = self.total_training_steps
 
         try:
             OmegaConf.set_struct(self.config, True)
@@ -792,7 +796,7 @@ class RayPPOTrainer:
                         else:
                             arr = arr.astype(np.uint8)
                         return arr
-                    def _composite_frame_with_text(frame_arr, prompt_text, action_text, panel_height=None, font_size=12, max_lines=14):
+                    def _composite_frame_with_text(frame_arr, prompt_text, action_text, panel_height=None, font_size=10, max_lines=30):
                         """Add a text panel below the frame: observation by lines (keep grid alignment) + action."""
                         try:
                             img = Image.fromarray(frame_arr)
@@ -804,8 +808,26 @@ class RayPPOTrainer:
                             line_height = font_size + 2
                             # Split by newlines to preserve map grid; no mid-line wrapping
                             lines = (prompt_text or "").split("\n")
-                            lines = [ln.strip("\r") for ln in lines if ln.strip() or ln == ""][:max_lines]
-                            action_line = f"Action: {(action_text or '')[:150]}"
+                            lines = [ln.strip("\r") for ln in lines if ln.strip() or ln == ""]
+                            
+                            # Извлекаем constraint отдельно, чтобы гарантировать его отображение
+                            constraint_lines = []
+                            other_lines = []
+                            for line in lines:
+                                if "**CONSTRAINT:**" in line or line.strip().startswith("**CONSTRAINT:**"):
+                                    constraint_lines.append(line)
+                                else:
+                                    other_lines.append(line)
+                            
+                            # Ограничиваем количество обычных строк, но всегда показываем constraint
+                            max_other_lines = max_lines - len(constraint_lines) - 1  # -1 для action_line
+                            if max_other_lines < 0:
+                                max_other_lines = max(5, max_lines - len(constraint_lines) - 1)  # Минимум 5 строк для основного текста
+                            other_lines = other_lines[:max_other_lines]
+                            
+                            # Объединяем: обычные строки + constraint + action
+                            lines = other_lines + constraint_lines
+                            action_line = f"Action: {(action_text or '')[:200]}"
                             num_lines = len(lines) + 1
                             if panel_height is None:
                                 panel_height = num_lines * line_height + 12
@@ -813,7 +835,8 @@ class RayPPOTrainer:
                             draw = ImageDraw.Draw(panel)
                             y_off = 4
                             # Max chars that fit in panel width (mono: ~font_size*0.6 per char)
-                            max_chars = max(20, (w - 8) // max(6, font_size // 2))
+                            # Увеличиваем max_chars для более длинных строк
+                            max_chars = max(80, (w - 8) // max(4, font_size // 2))
                             for line in lines:
                                 if len(line) > max_chars:
                                     line = line[: max_chars - 2] + ".."
@@ -1166,7 +1189,16 @@ class RayPPOTrainer:
         self.total_env_steps = 0  # Счетчик шагов среды (для логирования)
 
         # load checkpoint before doing anything
+        initial_global_steps = self.global_steps
         self._load_checkpoint()
+        
+        # При resume увеличиваем total_training_steps на уже пройденные шаги
+        if self.global_steps > initial_global_steps:
+            steps_already_done = self.global_steps - initial_global_steps
+            # Увеличиваем total_training_steps чтобы учесть уже пройденные шаги
+            initial_total = getattr(self, 'initial_total_training_steps', self.total_training_steps)
+            self.total_training_steps = initial_total + steps_already_done
+            print(f"Resuming from step {self.global_steps}, adjusting total_training_steps from {initial_total} to {self.total_training_steps}")
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
@@ -1441,8 +1473,13 @@ class RayPPOTrainer:
                         and self.total_env_steps > 0
                         and (self.total_env_steps // env_val_video_freq) > (_prev_steps // env_val_video_freq)
                     )
+                    # Валидация выполняется если:
+                    # 1. test_freq > 0 и (последний шаг ИЛИ шаг кратен test_freq)
+                    # 2. ИЛИ последний шаг (всегда валидируем в конце обучения)
+                    # 3. ИЛИ do_val_video (для записи видео)
                     if self.val_reward_fn is not None and (
                         (self.config.trainer.test_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0))
+                        or (is_last_step)  # Всегда валидируем на последнем шаге
                         or do_val_video
                     ):
                         with _timer("testing", timing_raw):
