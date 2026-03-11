@@ -31,6 +31,9 @@ TEXT_TO_ACTION_ID = {text.lower().replace("_", " "): i for i, text in enumerate(
 
 AVAILABLE_ACTIONS_STR = ", ".join([text.lower().replace("_", " ") for text in ACTION_TO_TEXT])
 
+# Действия в формате для нового шаблона (заглавными буквами)
+AVAILABLE_ACTIONS_STR_UPPERCASE = ", ".join([text for text in ACTION_TO_TEXT])
+
 
 # <--- Функции для получения шаблонов с reasoning или без
 def get_craftext_template(enable_reasoning: bool = True) -> str:
@@ -196,6 +199,33 @@ Your available actions are: {AVAILABLE_ACTIONS_STR}
 
 # Для обратной совместимости
 CRAFTEXT_SUBTASK_VL_TEMPLATE_NO_HIS = get_craftext_subtask_vl_template_no_his(enable_reasoning=True)
+
+# Расширенный шаблон с тегами <reasoning> и <answer>
+def get_craftext_extended_template_no_his() -> str:
+    """Возвращает расширенный шаблон промпта с тегами <reasoning> и <answer>."""
+    # Используем точный список действий, указанный пользователем
+    actions_list = "DO, DOWN, LEFT, MAKE_IRON_PICKAXE, MAKE_IRON_SWORD, MAKE_STONE_PICKAXE, MAKE_WOOD_PICKAXE, MAKE_WOOD_SWORD, NOOP, PLACE_FURNACE, PLACE_STONE, PLACE_TABLE, RIGHT, SKIP_SUBTASK, SLEEP, UP"
+    return f"""
+You are an expert agent analyzing a visual observation in a crafting environment. To answer the question correctly, you need to:
+1. Carefully examine the observation
+2. Reason step-by-step about what you observe
+3. Provide your final answer
+
+Important: Your reasoning process MUST be enclosed within <reasoning> </reasoning> tags. Your final answer MUST be enclosed within <answer> </answer> tags.
+
+Observation:
+
+Your goal is to complete the following task:
+**TASK:** {{task_description}}
+
+This is what you currently see:
+{{current_observation}}
+
+Your available actions are: {actions_list}
+"""
+
+# Для обратной совместимости
+CRAFTEXT_EXTENDED_TEMPLATE_NO_HIS = get_craftext_extended_template_no_his()
 
 # Невалидное действие, которое среда точно не примет.
 # Оно будет использоваться, если LLM сгенерирует что-то непонятное.

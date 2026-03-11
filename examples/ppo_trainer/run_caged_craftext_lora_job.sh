@@ -28,8 +28,10 @@ ENGINE=${1:-vllm}
 # С no_reasoning и ответом 32: bash run_caged_craftext_lora_job.sh vllm true true 32 32
 # С auto reset: bash run_caged_craftext_lora_job.sh vllm false false 32 512 true
 # С action head: bash run_caged_craftext_lora_job.sh vllm false false 32 512 false true
+# С расширенным шаблоном extended_template: bash run_caged_craftext_lora_job.sh vllm false false 32 512 false false 4000 true extended_template
 # total_epochs: количество эпох (по умолчанию 4000)
 # USE_ACTOR_LORA: true — actor с LoRA (lora_rank=64, lora_alpha=64), false — обучение без LoRA
+# PROMPT_TEMPLATE_TYPE: тип шаблона промпта ('default_template' или 'extended_template', по умолчанию 'default_template')
 LOG_PROB_ACTION_ONLY=${2:-false}
 NO_REASONING=${3:-false}
 train_data_size=${4:-16}
@@ -38,8 +40,9 @@ AUTO_RESET=${6:-false}
 USE_ACTION_HEAD=${7:-false}
 total_epochs=${8:-4000}
 USE_ACTOR_LORA=${9:-true}
+PROMPT_TEMPLATE_TYPE=${10:-default_template}
 # Убираем аргументы скрипта, чтобы они не передавались в Hydra
-shift 9 2>/dev/null || shift 8 2>/dev/null || shift 7 2>/dev/null || shift 6 2>/dev/null || shift 5 2>/dev/null || shift 4 2>/dev/null || shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/dev/null || true
+shift 10 2>/dev/null || shift 9 2>/dev/null || shift 8 2>/dev/null || shift 7 2>/dev/null || shift 6 2>/dev/null || shift 5 2>/dev/null || shift 4 2>/dev/null || shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/dev/null || true
 
 # Если используется action head, max_response_length должен быть 1 (одно действие)
 if [ "$USE_ACTION_HEAD" = "true" ]; then
@@ -70,6 +73,7 @@ echo "[INFO] AUTO_RESET: $AUTO_RESET"
 echo "[INFO] USE_ACTION_HEAD: $USE_ACTION_HEAD"
 echo "[INFO] total_epochs: $total_epochs"
 echo "[INFO] USE_ACTOR_LORA: $USE_ACTOR_LORA"
+echo "[INFO] PROMPT_TEMPLATE_TYPE: $PROMPT_TEMPLATE_TYPE"
 
 num_cpus_per_env_worker=0.03
 val_data_size=8
@@ -135,6 +139,7 @@ python -m verl.trainer.main_ppo \
     +env.enable_reasoning=$(if [ "$NO_REASONING" = "true" ]; then echo "False"; else echo "True"; fi) \
     +env.craftext_settings='achievements_safe_budget_energy_collect_wood' \
     +env.observation_type='ascii' \
+    +env.prompt_template_type=$PROMPT_TEMPLATE_TYPE \
     +env.auto_reset=$(if [ "$AUTO_RESET" = "true" ]; then echo "True"; else echo "False"; fi) \
     +actor_rollout_ref.model.use_action_head=$(if [ "$USE_ACTION_HEAD" = "true" ]; then echo "True"; else echo "False"; fi) \
     +actor_rollout_ref.model.num_actions=17 \

@@ -6,6 +6,14 @@
 #
 # Запуск:
 #   bash examples/ppo_trainer/run_caged_craftext_saute_ppo_lora_job.sh [ENGINE] [extra hydra args...]
+#
+# Параметры:
+#   PROMPT_TEMPLATE_TYPE - тип шаблона промпта:
+#     - 'default_template' (по умолчанию) - стандартный шаблон
+#     - 'extended_template' - расширенный шаблон с тегами <reasoning> и <answer>
+#
+# Пример:
+#   PROMPT_TEMPLATE_TYPE=extended_template bash examples/ppo_trainer/run_caged_craftext_saute_ppo_lora_job.sh vllm
 
 export COMET_API_KEY="3OfuYHwcRgIwG7DzgzJ190igY"
 
@@ -102,6 +110,7 @@ python -m verl.trainer.main_ppo \
   env.env_name='caged_craftext/CagedCraftextEnv' \
   +env.craftext_settings='achievements_safe_budget_energy_collect_wood' \
   +env.observation_type='ascii' \
+  +env.prompt_template_type=${PROMPT_TEMPLATE_TYPE:-default_template} \
   env.seed=0 \
   env.max_steps=50 \
   env.history_length=0 \
