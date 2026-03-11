@@ -5,15 +5,18 @@
 # - если safety state <= 0, reward заменяется на большой штраф (unsafe_reward)
 #
 # Запуск:
-#   bash examples/ppo_trainer/run_caged_craftext_saute_ppo_lora_job.sh [ENGINE] [extra hydra args...]
+#   bash examples/ppo_trainer/run_caged_craftext_saute_ppo_lora_job.sh [ENGINE] [LOG_PROB_ACTION_ONLY] [CRITIC_WARMUP] [PROMPT_TEMPLATE_TYPE] [extra hydra args...]
 #
 # Параметры:
+#   ENGINE - движок для генерации (vllm, hf и т.д.)
+#   LOG_PROB_ACTION_ONLY - если true, log_prob считается только для токенов внутри <action> тегов
+#   CRITIC_WARMUP - количество шагов для разогрева критика перед обновлением актора
 #   PROMPT_TEMPLATE_TYPE - тип шаблона промпта:
 #     - 'default_template' (по умолчанию) - стандартный шаблон
 #     - 'extended_template' - расширенный шаблон с тегами <reasoning> и <answer>
 #
 # Пример:
-#   PROMPT_TEMPLATE_TYPE=extended_template bash examples/ppo_trainer/run_caged_craftext_saute_ppo_lora_job.sh vllm
+#   bash examples/ppo_trainer/run_caged_craftext_saute_ppo_lora_job.sh vllm false 10 extended_template
 
 export COMET_API_KEY="3OfuYHwcRgIwG7DzgzJ190igY"
 
@@ -42,15 +45,18 @@ echo "[INFO] Корень проекта: $PROJECT_ROOT"
 ENGINE=${1:-vllm}
 # LOG_PROB_ACTION_ONLY: если true, log_prob считается только для токенов внутри <action> тегов (без reasoning)
 # CRITIC_WARMUP: количество шагов для разогрева критика перед обновлением актора (по умолчанию 0)
-# Использование: bash run_caged_craftext_saute_ppo_lora_job.sh vllm false 10
+# PROMPT_TEMPLATE_TYPE: тип шаблона промпта ('default_template' или 'extended_template', по умолчанию 'default_template')
+# Использование: bash run_caged_craftext_saute_ppo_lora_job.sh vllm false 10 extended_template
 LOG_PROB_ACTION_ONLY=${2:-false}
 CRITIC_WARMUP=${3:-0}
+PROMPT_TEMPLATE_TYPE=${4:-default_template}
 
 echo "[INFO] ENGINE: $ENGINE"
 echo "[INFO] LOG_PROB_ACTION_ONLY: $LOG_PROB_ACTION_ONLY"
 echo "[INFO] CRITIC_WARMUP: $CRITIC_WARMUP"
+echo "[INFO] PROMPT_TEMPLATE_TYPE: $PROMPT_TEMPLATE_TYPE"
 # Убираем аргументы скрипта, чтобы они не передавались в Hydra
-shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/dev/null || true
+shift 4 2>/dev/null || shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/dev/null || true
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
 num_cpus_per_env_worker=0.03
@@ -116,7 +122,7 @@ python -m verl.trainer.main_ppo \
   env.env_name='caged_craftext/CagedCraftextEnv' \
   +env.craftext_settings='achievements_safe_budget_energy_collect_wood' \
   +env.observation_type='ascii' \
-  +env.prompt_template_type=${PROMPT_TEMPLATE_TYPE:-default_template} \
+  +env.prompt_template_type=$PROMPT_TEMPLATE_TYPE \
   env.seed=0 \
   env.max_steps=50 \
   env.history_length=0 \

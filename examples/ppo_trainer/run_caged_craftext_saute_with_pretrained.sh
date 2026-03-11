@@ -34,11 +34,11 @@ echo "=========================================="
 echo "Запуск обучения PPO Saute"
 echo "=========================================="
 
-PROMPT_TEMPLATE_TYPE=extended_template \
 bash examples/ppo_trainer/run_caged_craftext_saute_ppo_lora_job.sh \
     vllm \
     false \
     10 \
+    extended_template \
     trainer.resume_mode=resume_path \
     trainer.resume_from_path="$CHECKPOINT_PATH" \
     trainer.default_local_dir=training_checkpoints/verl_agent_caged_craftext
