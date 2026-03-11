@@ -1109,9 +1109,18 @@ class RayPPOTrainer:
         critic_path = os.path.join(global_step_folder, "critic")
         # load actor
         self.actor_rollout_wg.load_checkpoint(actor_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load)
-        # load critic
+        # load critic (только если чекпоинт существует)
         if self.use_critic:
-            self.critic_wg.load_checkpoint(critic_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load)
+            # Проверяем существование чекпоинта критика перед загрузкой
+            if os.path.exists(critic_path) and os.path.isdir(critic_path):
+                # Проверяем наличие хотя бы одного FSDP файла критика
+                critic_files = [f for f in os.listdir(critic_path) if f.startswith("model_world_size_") and f.endswith(".pt")]
+                if critic_files:
+                    self.critic_wg.load_checkpoint(critic_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load)
+                else:
+                    print(f"Warning: Critic checkpoint directory exists but contains no FSDP files in {critic_path}, will start critic from scratch")
+            else:
+                print(f"Warning: No critic checkpoint found at {critic_path}, will start critic from scratch")
 
         # load dataloader,
         # TODO: from remote not implemented yet

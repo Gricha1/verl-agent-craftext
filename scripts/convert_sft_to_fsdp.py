@@ -17,7 +17,6 @@ import argparse
 import os
 import torch
 import torch.distributed as dist
-from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from peft import PeftModel, LoraConfig, TaskType, get_peft_model
@@ -26,6 +25,7 @@ import json
 from verl.utils.checkpoint.fsdp_checkpoint_manager import FSDPCheckpointManager
 from verl.utils.fsdp_utils import get_fsdp_wrap_policy, get_init_weight_context_manager
 from verl.utils.distributed import initialize_global_process_group
+from verl.workers.fsdp_workers import create_device_mesh
 
 
 def parse_args():
@@ -69,11 +69,9 @@ def main():
     if not os.path.exists(args.adapter_path):
         raise FileNotFoundError(f"Adapter path not found: {args.adapter_path}")
     
-    # Инициализация device mesh
-    if torch.cuda.is_available():
-        device_mesh = init_device_mesh("cuda", (world_size,))
-    else:
-        device_mesh = init_device_mesh("cpu", (world_size,))
+    # Инициализация device mesh (используем ту же функцию, что и в обучении)
+    # fsdp_size=-1 означает, что используем весь world_size для FSDP (FULL_SHARD)
+    device_mesh = create_device_mesh(world_size=world_size, fsdp_size=-1)
     
     # Загрузка токенизатора
     tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=args.trust_remote_code)
