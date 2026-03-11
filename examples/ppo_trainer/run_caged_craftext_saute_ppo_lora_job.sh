@@ -41,10 +41,16 @@ echo "[INFO] Корень проекта: $PROJECT_ROOT"
 
 ENGINE=${1:-vllm}
 # LOG_PROB_ACTION_ONLY: если true, log_prob считается только для токенов внутри <action> тегов (без reasoning)
-# Использование: bash run_caged_craftext_saute_ppo_lora_job.sh vllm true
+# CRITIC_WARMUP: количество шагов для разогрева критика перед обновлением актора (по умолчанию 0)
+# Использование: bash run_caged_craftext_saute_ppo_lora_job.sh vllm false 10
 LOG_PROB_ACTION_ONLY=${2:-false}
+CRITIC_WARMUP=${3:-0}
+
+echo "[INFO] ENGINE: $ENGINE"
+echo "[INFO] LOG_PROB_ACTION_ONLY: $LOG_PROB_ACTION_ONLY"
+echo "[INFO] CRITIC_WARMUP: $CRITIC_WARMUP"
 # Убираем аргументы скрипта, чтобы они не передавались в Hydra
-shift 2 2>/dev/null || shift 1 2>/dev/null || true
+shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/dev/null || true
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
 num_cpus_per_env_worker=0.03
@@ -115,7 +121,7 @@ python -m verl.trainer.main_ppo \
   env.max_steps=50 \
   env.history_length=0 \
   env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
-  trainer.critic_warmup=0 \
+  trainer.critic_warmup=$CRITIC_WARMUP \
   trainer.logger=['console','comet'] \
   trainer.project_name='verl_agent_caged_craftext' \
   trainer.experiment_name=$RUN_NAME \
@@ -123,7 +129,7 @@ python -m verl.trainer.main_ppo \
   trainer.nnodes=1 \
   trainer.save_freq=100 \
   trainer.test_freq=0 \
-  trainer.total_epochs=500 \
+  trainer.total_epochs=4000 \
   trainer.val_before_train=False \
   +algorithm.saute.enabled=True \
   +algorithm.saute.gamma=1.0 \
