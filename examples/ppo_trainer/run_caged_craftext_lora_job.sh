@@ -80,7 +80,7 @@ echo "[INFO] PROMPT_TEMPLATE_TYPE: $PROMPT_TEMPLATE_TYPE"
 echo "[INFO] CRITIC_WARMUP: $CRITIC_WARMUP"
 
 num_cpus_per_env_worker=0.03
-val_data_size=8
+val_data_size=16
 
 # export RUN_NAME="run_ppo_qwen2.5_1.5b_caged_craftext_budgetary_water_$(date +%Y%m%d-%H%M%S)"
 export RUN_NAME="run_ppo_qwen2.5_1.5b_caged_craftext_energy_collect_wood_$(date +%Y%m%d-%H%M%S)"
@@ -106,8 +106,8 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.model.lora_alpha=$(if [ "$USE_ACTOR_LORA" = "true" ]; then echo "64"; else echo "0"; fi) \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_mini_batch_size=16 \
-    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=8 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=32 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=0.01 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
@@ -117,11 +117,11 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
     actor_rollout_ref.rollout.name=$ENGINE \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.45 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=False \
-    actor_rollout_ref.rollout.val_kwargs.temperature=0.3 \
+    actor_rollout_ref.rollout.val_kwargs.temperature=0.4 \
     actor_rollout_ref.rollout.val_kwargs.do_sample=True \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
@@ -133,8 +133,8 @@ python -m verl.trainer.main_ppo \
     critic.model.lora_rank=0 \
     critic.model.lora_alpha=16 \
     critic.model.enable_gradient_checkpointing=True \
-    critic.ppo_mini_batch_size=16 \
-    critic.ppo_micro_batch_size_per_gpu=8 \
+    critic.ppo_mini_batch_size=32 \
+    critic.ppo_micro_batch_size_per_gpu=16 \
     critic.model.fsdp_config.param_offload=False \
     critic.model.fsdp_config.optimizer_offload=False \
     algorithm.use_kl_in_reward=False \

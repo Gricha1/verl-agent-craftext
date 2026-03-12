@@ -60,8 +60,8 @@ shift 4 2>/dev/null || shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
 num_cpus_per_env_worker=0.03
-train_data_size=8
-val_data_size=8
+train_data_size=64
+val_data_size=16
 
 export RUN_NAME="run_saute_ppo_qwen2.5_1.5b_caged_craftext_energy_collect_wood_$(date +%Y%m%d-%H%M%S)"
 
@@ -76,7 +76,7 @@ python -m verl.trainer.main_ppo \
   data.val_files=$HOME/data/verl-agent/text/test.parquet \
   data.train_batch_size=$train_data_size \
   data.val_batch_size=$val_data_size \
-  data.max_prompt_length=2048 \
+  data.max_prompt_length=512 \
   data.max_response_length=512 \
   data.filter_overlong_prompts=True \
   data.truncation='error' \
@@ -86,8 +86,8 @@ python -m verl.trainer.main_ppo \
   actor_rollout_ref.model.lora_alpha=64 \
   actor_rollout_ref.actor.optim.lr=1e-6 \
   actor_rollout_ref.model.use_remove_padding=True \
-  actor_rollout_ref.actor.ppo_mini_batch_size=16 \
-  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=8 \
+  actor_rollout_ref.actor.ppo_mini_batch_size=32 \
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
   actor_rollout_ref.actor.use_kl_loss=True \
   actor_rollout_ref.actor.kl_loss_coef=0.01 \
   actor_rollout_ref.actor.kl_loss_type=low_var_kl \
@@ -113,8 +113,8 @@ python -m verl.trainer.main_ppo \
   critic.model.lora_rank=0 \
   critic.model.lora_alpha=16 \
   critic.model.enable_gradient_checkpointing=True \
-  critic.ppo_mini_batch_size=16 \
-  critic.ppo_micro_batch_size_per_gpu=8 \
+  critic.ppo_mini_batch_size=32 \
+  critic.ppo_micro_batch_size_per_gpu=16 \
   critic.model.fsdp_config.param_offload=False \
   critic.model.fsdp_config.optimizer_offload=False \
   algorithm.use_kl_in_reward=False \

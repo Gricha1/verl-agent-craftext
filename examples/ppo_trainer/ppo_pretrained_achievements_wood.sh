@@ -38,7 +38,7 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
     vllm \
     false \
     false \
-    8 \
+    64 \
     512 \
     false \
     false \
