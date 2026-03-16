@@ -39,7 +39,7 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
     false \
     false \
     64 \
-    512 \
+    128 \
     false \
     false \
     8000 \

@@ -37,7 +37,7 @@ ENGINE=${1:-vllm}
 LOG_PROB_ACTION_ONLY=${2:-false}
 NO_REASONING=${3:-false}
 train_data_size=${4:-8}
-max_response_length=${5:-512}
+max_response_length=${5:-128}
 AUTO_RESET=${6:-false}
 USE_ACTION_HEAD=${7:-false}
 total_epochs=${8:-4000}
@@ -103,13 +103,14 @@ python -m verl.trainer.main_ppo \
     data.return_raw_chat=True \
     actor_rollout_ref.model.path=Qwen/Qwen2.5-1.5B-Instruct \
     actor_rollout_ref.model.lora_rank=$(if [ "$USE_ACTOR_LORA" = "true" ]; then echo "64"; else echo "0"; fi) \
-    actor_rollout_ref.model.lora_alpha=$(if [ "$USE_ACTOR_LORA" = "true" ]; then echo "64"; else echo "0"; fi) \
+    actor_rollout_ref.model.lora_alpha=$(if [ "$USE_ACTOR_LORA" = "true" ]; then echo "32"; else echo "0"; fi) \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=32 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
     actor_rollout_ref.actor.use_kl_loss=True \
-    actor_rollout_ref.actor.kl_loss_coef=0.01 \
+    actor_rollout_ref.actor.kl_loss_coef=0.05 \
+    actor_rollout_ref.actor.clip_ratio=0.1 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
@@ -117,8 +118,8 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
     actor_rollout_ref.rollout.name=$ENGINE \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
-    actor_rollout_ref.rollout.enable_chunked_prefill=True \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
+    actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=False \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.4 \
@@ -130,8 +131,8 @@ python -m verl.trainer.main_ppo \
     critic.optim.lr=1e-5 \
     critic.model.use_remove_padding=True \
     critic.model.path=Qwen/Qwen2.5-1.5B-Instruct \
-    critic.model.lora_rank=0 \
-    critic.model.lora_alpha=16 \
+    critic.model.lora_rank=64 \
+    critic.model.lora_alpha=64 \
     critic.model.enable_gradient_checkpointing=True \
     critic.ppo_mini_batch_size=32 \
     critic.ppo_micro_batch_size_per_gpu=16 \
