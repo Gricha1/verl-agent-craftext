@@ -1,6 +1,6 @@
 container:
   image: cr.ai.cloud.ru/0be50883-779e-4f89-a2c2-6befd3879c6f/uv_test_img-cloud:latest
-  command: bash examples/ppo_trainer/ppo_pretrained_achievements_wood.sh
+  command: bash examples/ppo_trainer/ppo_pretrained_achievements_wood_1.sh
   environment:
     COMET_API_KEY: 3OfuYHwcRgIwG7DzgzJ190igY
   work_dir: /home/jovyan/nsorokin/verl-agent-craftext-2

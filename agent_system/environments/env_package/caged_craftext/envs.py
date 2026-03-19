@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import jax.tree_util
 import numpy as np
 import ray
-from .utility import render_craftax_text, render_craftax_ascii
+from .utility import render_craftax_text, render_craftax_ascii, render_craftax_ascii_v2
 from craftax.craftax_classic.renderer import render_craftax_pixels as render_classic
 from craftax.craftax.constants import BLOCK_PIXEL_SIZE_HUMAN
 
@@ -62,6 +62,8 @@ class CagedCraftextWorker:
         self.observation_type = env_kwargs.get('observation_type', 'ascii')
         if self.observation_type == 'ascii':
             self.render_func = render_craftax_ascii
+        elif self.observation_type == 'ascii_v2':
+            self.render_func = render_craftax_ascii_v2
         elif self.observation_type == 'text':
             self.render_func = render_craftax_text
         else:

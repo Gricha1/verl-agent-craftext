@@ -156,8 +156,9 @@ ASCII_MAPPING = {
 }
 
 # 0: Up, 1: Right, 2: Down, 3: Left
-# PLAYER_SYMBOLS = ["^", ">", "v", "<"]
+# В старом ascii-рендере оставляем нейтральный символ игрока для обратной совместимости.
 PLAYER_SYMBOLS = ["@", "@", "@", "@"]
+PLAYER_SYMBOLS_V2 = ["<", ">", "^", "v"]
 
 # Zombie, Cow, Skeleton, Arrow
 # ИЗМЕНЕНО: Arrow теперь 'a', чтобы не путать с игроком '^'
@@ -313,6 +314,166 @@ def render_craftax_ascii(state) -> str:
     ascii_output += "-" * 20 + "\n"
     ascii_output += "Legend: " + ", ".join(legend_items)
     
+    return ascii_output
+
+
+def render_craftax_ascii_v2(state) -> str:
+    """
+    Новый ASCII-шаблон наблюдения:
+    - игрок отображается направлением (с fallback до '@')
+    - стрелы отображаются как 'a', чтобы не путать со стрелкой игрока
+    - формат карты/статов/инвентаря/легенды совпадает с текущим ascii
+    """
+    H, W = OBS_DIM
+    ascii_output = ""
+
+    pad_width = MAX_OBS_DIM + 2
+    padded_grid = np.pad(
+        state.map,
+        pad_width=pad_width,
+        mode='constant',
+        constant_values=BlockType.OUT_OF_BOUNDS.value,
+    )
+
+    tl_x = int(state.player_position[0] - H // 2 + pad_width)
+    tl_y = int(state.player_position[1] - W // 2 + pad_width)
+    map_view = padded_grid[tl_x : tl_x + H, tl_y : tl_y + W]
+
+    def get_block_info(val):
+        try:
+            name = BlockType(int(val)).name.lower()
+            char = ASCII_MAPPING.get(name, name[0].upper())
+            return char, name
+        except Exception:
+            return "?", "unknown"
+
+    mob_map = np.zeros((H, W), dtype=np.int32) - 1
+    mob_symbols = ["Z", "C", "S", "a"]
+
+    def add_mobs(mobs, idx):
+        if not hasattr(mobs, "position"):
+            return
+        pos = np.asarray(mobs.position)
+        mask = np.asarray(mobs.mask)
+        local_pos = pos - state.player_position + np.array([H // 2, W // 2])
+
+        for i in range(len(mask)):
+            if mask[i]:
+                lx, ly = local_pos[i]
+                if 0 <= lx < H and 0 <= ly < W:
+                    mob_map[int(lx), int(ly)] = idx
+
+    add_mobs(state.zombies, 0)
+    add_mobs(state.cows, 1)
+    add_mobs(state.skeletons, 2)
+    add_mobs(state.arrows, 3)
+
+    ascii_output += "+" + "-" * (W * 2 + 1) + "+\n"
+
+    visible_blocks = set()
+    current_player_char = "@"
+
+    for x in range(H):
+        row_str = "| "
+        for y in range(W):
+            char_to_draw = " "
+
+            if x == H // 2 and y == W // 2:
+                try:
+                    p_dir_raw = None
+                    if hasattr(state, "player_direction"):
+                        p_dir_raw = state.player_direction
+                    elif hasattr(state, "variables") and hasattr(state.variables, "player_direction"):
+                        p_dir_raw = state.variables.player_direction
+
+                    if p_dir_raw is not None:
+                        if hasattr(p_dir_raw, "item"):
+                            p_dir = int(p_dir_raw.item())
+                        elif hasattr(p_dir_raw, "__array__"):
+                            p_dir = int(np.asarray(p_dir_raw).item())
+                        else:
+                            p_dir = int(p_dir_raw)
+
+                        if 0 <= p_dir - 1 < len(PLAYER_SYMBOLS_V2):
+                            char_to_draw = PLAYER_SYMBOLS_V2[p_dir - 1]
+                        elif 0 <= p_dir < len(PLAYER_SYMBOLS_V2):
+                            char_to_draw = PLAYER_SYMBOLS_V2[p_dir]
+                        else:
+                            char_to_draw = "@"
+                    else:
+                        char_to_draw = "@"
+                except Exception:
+                    char_to_draw = "@"
+                current_player_char = char_to_draw
+
+            elif mob_map[x, y] != -1:
+                char_to_draw = mob_symbols[mob_map[x, y]]
+
+            else:
+                val = int(map_view[x, y])
+                visible_blocks.add(val)
+                char_to_draw, _ = get_block_info(val)
+
+            row_str += char_to_draw + " "
+        ascii_output += row_str + "|\n"
+
+    ascii_output += "+" + "-" * (W * 2 + 1) + "+\n"
+
+    def get_val(x):
+        return x.item() if hasattr(x, "item") else x
+
+    stat_fields = ["player_health", "player_food", "player_drink", "player_energy", "player_mana"]
+    fallback_fields = ["health", "food", "drink", "energy", "mana"]
+
+    stats_output = []
+    all_fields_to_check = stat_fields + fallback_fields
+    checked_fields = set()
+
+    for field in all_fields_to_check:
+        if hasattr(state, field) and field not in checked_fields:
+            val = get_val(getattr(state, field))
+            display_name = field.replace("player_", "").title()
+            stats_output.append(f"{display_name}: {int(val)}")
+            checked_fields.add(field)
+
+    if stats_output:
+        ascii_output += "[STATS] " + " | ".join(stats_output) + "\n"
+
+    inv_output = []
+    for field in state.inventory.__class__.__dataclass_fields__:
+        if field in checked_fields:
+            continue
+        val = get_val(getattr(state.inventory, field))
+        if val > 0:
+            name = field.replace("_", " ").title()
+            inv_output.append(f"{name}: {int(val)}")
+
+    if inv_output:
+        ascii_output += "[ITEMS]\n"
+        chunk_size = 4
+        for i in range(0, len(inv_output), chunk_size):
+            ascii_output += "  " + ", ".join(inv_output[i : i + chunk_size]) + "\n"
+    else:
+        ascii_output += "[ITEMS] (Empty)\n"
+
+    legend_items = [f"'{current_player_char}': You"]
+
+    if 3 in mob_map:
+        legend_items.append(f"'{mob_symbols[3]}': Arrow")
+    if 0 in mob_map:
+        legend_items.append("Z: Zombie")
+    if 1 in mob_map:
+        legend_items.append("C: Cow")
+    if 2 in mob_map:
+        legend_items.append("S: Skeleton")
+
+    for val in sorted(list(visible_blocks)):
+        char, name = get_block_info(val)
+        if name != "out_of_bounds":
+            legend_items.append(f"'{char}': {name}")
+
+    ascii_output += "-" * 20 + "\n"
+    ascii_output += "Legend: " + ", ".join(legend_items)
     return ascii_output
 
 
