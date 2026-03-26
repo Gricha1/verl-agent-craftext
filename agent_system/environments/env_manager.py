@@ -672,6 +672,12 @@ class CraftextEnvironmentManager(EnvironmentManagerBase):
         
         for i, info in enumerate(infos):
             info['is_action_valid'] = to_numpy(valids[i])
+            # Also expose projected discrete action id for downstream logging/analysis.
+            try:
+                info['action_id'] = int(to_numpy(action_ids[i]))
+            except Exception:
+                info['action_id'] = -1
+            info['action_text'] = text_actions[i] if i < len(text_actions) else ""
 
         return next_observations, to_numpy(rewards), to_numpy(dones), infos
 
@@ -787,6 +793,18 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
             if any(constraints):
                 next_observations['constraint'] = constraints
         
+        for i, info in enumerate(infos):
+            # Keep parity with CraftextEnvironmentManager: expose validity and discrete action ids.
+            try:
+                info['is_action_valid'] = to_numpy(valids[i])
+            except Exception:
+                info['is_action_valid'] = False
+            try:
+                info['action_id'] = int(to_numpy(action_ids[i]))
+            except Exception:
+                info['action_id'] = -1
+            info['action_text'] = text_actions[i] if i < len(text_actions) else ""
+
         return next_observations, rewards, dones, infos
 
     def build_text_obs(self, text_renders: List[str], infos: List[Dict], init: bool = False) -> List[str]:

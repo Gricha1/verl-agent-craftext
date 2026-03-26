@@ -774,6 +774,7 @@ class RayPPOTrainer:
                 )
                 prompts = test_output_gen_batch.meta_info.get('validation_video_prompts')
                 actions = test_output_gen_batch.meta_info.get('validation_video_actions')
+                action_ids = test_output_gen_batch.meta_info.get('validation_video_action_ids')
                 import tempfile
                 try:
                     import imageio
@@ -834,15 +835,124 @@ class RayPPOTrainer:
                             panel = Image.new("RGB", (w, panel_height), (250, 250, 250))
                             draw = ImageDraw.Draw(panel)
                             y_off = 4
-                            # Max chars that fit in panel width (mono: ~font_size*0.6 per char)
-                            # Увеличиваем max_chars для более длинных строк
-                            max_chars = max(80, (w - 8) // max(4, font_size // 2))
-                            for line in lines:
-                                if len(line) > max_chars:
-                                    line = line[: max_chars - 2] + ".."
-                                draw.text((4, y_off), line, fill=(0, 0, 0), font=font)
+                            max_text_width = max(10, w - 8)
+
+                            def _text_width_px(s: str) -> float:
+                                try:
+                                    # Pillow >= 8
+                                    return float(draw.textlength(s, font=font))
+                                except Exception:
+                                    try:
+                                        bbox = draw.textbbox((0, 0), s, font=font)
+                                        return float(bbox[2] - bbox[0])
+                                    except Exception:
+                                        return float(len(s) * (font_size * 0.6))
+
+                            def _truncate_to_width(s: str) -> str:
+                                if not s:
+                                    return ""
+                                if _text_width_px(s) <= max_text_width:
+                                    return s
+                                ell = ".."
+                                lo, hi = 0, len(s)
+                                # binary search longest prefix that fits with ellipsis
+                                while lo < hi:
+                                    mid = (lo + hi + 1) // 2
+                                    cand = s[:mid] + ell
+                                    if _text_width_px(cand) <= max_text_width:
+                                        lo = mid
+                                    else:
+                                        hi = mid - 1
+                                return (s[:lo] + ell) if lo > 0 else ell
+
+                            def _wrap_or_truncate(line: str) -> list[str]:
+                                # Keep ASCII grid lines unwrapped (preserve alignment), but still truncate to avoid overflow.
+                                is_grid = ("|" in line) or ("+" in line) or ("-" in line and len(line) > 8)
+                                if is_grid:
+                                    return [_truncate_to_width(line)]
+                                # Soft wrap on spaces first; if a token is too long, truncate it.
+                                out: list[str] = []
+                                remaining = line
+                                safety = 0
+                                while remaining and safety < 200:
+                                    safety += 1
+                                    if _text_width_px(remaining) <= max_text_width:
+                                        out.append(remaining)
+                                        break
+                                    # greedy split by words
+                                    parts = remaining.split(" ")
+                                    if len(parts) == 1:
+                                        out.append(_truncate_to_width(remaining))
+                                        break
+                                    acc = parts[0]
+                                    cut_idx = len(parts[0])
+                                    for p in parts[1:]:
+                                        cand = acc + " " + p
+                                        if _text_width_px(cand) <= max_text_width:
+                                            acc = cand
+                                            cut_idx += 1 + len(p)
+                                        else:
+                                            break
+                                    if acc == parts[0] and _text_width_px(acc) > max_text_width:
+                                        out.append(_truncate_to_width(acc))
+                                        remaining = remaining[len(parts[0]):].lstrip()
+                                    else:
+                                        out.append(acc)
+                                        remaining = remaining[cut_idx:].lstrip()
+                                if not out:
+                                    out = [_truncate_to_width(line)]
+                                return out
+
+                            # Render in 3 blocks so we can always keep constraint + action.
+                            constraint_src = [ln for ln in lines if ("**CONSTRAINT:**" in ln or ln.strip().startswith("**CONSTRAINT:**"))]
+                            other_src = [ln for ln in lines if ln not in constraint_src]
+
+                            rendered_other: list[tuple[str, tuple[int, int, int]]] = []
+                            for line in other_src:
+                                for sub in _wrap_or_truncate(line):
+                                    rendered_other.append((sub, (0, 0, 0)))
+
+                            rendered_constraint: list[tuple[str, tuple[int, int, int]]] = []
+                            for line in constraint_src:
+                                for sub in _wrap_or_truncate(line):
+                                    rendered_constraint.append((sub, (0, 0, 0)))
+
+                            rendered_action: list[tuple[str, tuple[int, int, int]]] = []
+                            for sub in _wrap_or_truncate(action_line):
+                                rendered_action.append((sub, (100, 0, 100)))
+
+                            # If too many lines, drop from the "other" block first, always keeping constraint + action.
+                            tail = rendered_constraint + rendered_action
+                            if len(tail) >= max_lines:
+                                # Constraint/action alone exceed budget: keep as much as possible,
+                                # but always keep the first constraint line (with the label) and last action line.
+                                kept: list[tuple[str, tuple[int, int, int]]] = []
+                                if rendered_constraint:
+                                    kept.append(rendered_constraint[0])
+                                # fill from the end (including remaining constraint lines and action)
+                                for item in reversed(tail):
+                                    if len(kept) >= max_lines:
+                                        break
+                                    if item is kept[0] if kept else False:
+                                        continue
+                                    kept.append(item)
+                                rendered_lines = list(reversed(kept))
+                            else:
+                                head_budget = max_lines - len(tail)
+                                if len(rendered_other) > head_budget:
+                                    rendered_other = rendered_other[:head_budget]
+                                rendered_lines = rendered_other + tail
+
+                            # Recompute panel height based on final rendered lines
+                            if panel_height is None:
+                                panel_height = len(rendered_lines) * line_height + 12
+                                panel = Image.new("RGB", (w, panel_height), (250, 250, 250))
+                                draw = ImageDraw.Draw(panel)
+
+                            y_off = 4
+                            for txt, color in rendered_lines:
+                                draw.text((4, y_off), txt, fill=color, font=font)
                                 y_off += line_height
-                            draw.text((4, y_off), action_line, fill=(100, 0, 100), font=font)
                             out = Image.new("RGB", (w, h + panel_height))
                             out.paste(img, (0, 0))
                             out.paste(panel, (0, h))
@@ -864,6 +974,60 @@ class RayPPOTrainer:
                     gif_path = gif_path_gif
                     logger.log_validation_video(gif_path, step=self.total_env_steps, name=f"validation_trajectory_step{self.total_env_steps}")
                     print(f"[INFO] Validation video saved and logged to Comet ML: {gif_path} (also in {gif_path_tmp})")
+
+                    # Log action histogram for the recorded validation episode (same env as the GIF).
+                    try:
+                        if action_ids is not None:
+                            # Filter out placeholder -1 for initial frame (and any invalids).
+                            action_ids_np = np.array(action_ids, dtype=np.int64)
+                            action_ids_np = action_ids_np[action_ids_np >= 0]
+                            num_actions = int(self.config.actor_rollout_ref.model.get("num_actions", 17))
+                            counts = np.bincount(action_ids_np, minlength=num_actions) if action_ids_np.size > 0 else np.zeros(num_actions, dtype=np.int64)
+
+                            import matplotlib
+                            matplotlib.use("Agg")
+                            import matplotlib.pyplot as plt
+                            try:
+                                from agent_system.environments.env_package.caged_craftext.projection import ACTION_TO_TEXT as _ACTION_TO_TEXT
+                                action_names = list(_ACTION_TO_TEXT)[:num_actions]
+                            except Exception:
+                                action_names = [str(i) for i in range(num_actions)]
+
+                            x = np.arange(num_actions, dtype=np.int64)
+                            fig_w = max(10, 0.6 * num_actions)
+                            fig, ax = plt.subplots(figsize=(fig_w, 4.5), dpi=160)
+                            bars = ax.bar(x, counts, color="#4C78A8", edgecolor="#2F3B4A", linewidth=0.6)
+                            ax.set_title("Validation action histogram (recorded episode)")
+                            ax.set_xlabel("action")
+                            ax.set_ylabel("count")
+                            ax.set_xticks(x)
+                            ax.set_xticklabels(action_names, rotation=45, ha="right", fontsize=8)
+                            ax.grid(axis="y", linestyle="--", alpha=0.35)
+                            ax.set_axisbelow(True)
+
+                            ymax = int(counts.max()) if counts.size > 0 else 0
+                            ax.set_ylim(0, max(1, ymax + max(1, int(0.15 * ymax))))
+                            for rect, c in zip(bars, counts):
+                                if int(c) == 0:
+                                    continue
+                                ax.text(
+                                    rect.get_x() + rect.get_width() / 2.0,
+                                    rect.get_height(),
+                                    str(int(c)),
+                                    ha="center",
+                                    va="bottom",
+                                    fontsize=8,
+                                    color="#1B1F24",
+                                )
+
+                            png_name = f"val_action_hist_step{self.total_env_steps}.png"
+                            png_path = os.path.join(tempfile.gettempdir(), png_name)
+                            fig.tight_layout()
+                            fig.savefig(png_path)
+                            plt.close(fig)
+                            logger.log_image(png_path, step=self.total_env_steps, name=f"validation_action_hist_step{self.total_env_steps}")
+                    except Exception as e:
+                        print(f"[WARNING] Failed to log validation action histogram: {e}")
                 except Exception as e:
                     print(f"[WARNING] Failed to save/log validation video: {e}")
                 if hasattr(self.val_envs, 'set_record_video'):

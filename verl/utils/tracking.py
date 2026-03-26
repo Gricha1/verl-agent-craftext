@@ -137,6 +137,11 @@ class Tracking:
         if "comet" in self.logger and hasattr(self.logger["comet"], "log_video"):
             self.logger["comet"].log_video(gif_path, step=step, name=name)
 
+    def log_image(self, image_path: str, step: int, name: str):
+        """Log an image asset to backends that support it (e.g. Comet ML)."""
+        if "comet" in self.logger and hasattr(self.logger["comet"], "log_image"):
+            self.logger["comet"].log_image(image_path, step=step, name=name)
+
     def __del__(self):
         if "wandb" in self.logger:
             self.logger["wandb"].finish(exit_code=0)
@@ -268,6 +273,12 @@ class CometMLLogger:
         if os.path.isfile(gif_path):
             # Comet log_image accepts name= and step=; image_metadata is not supported
             self.experiment.log_image(gif_path, name=name, step=step)
+
+    def log_image(self, image_path: str, step: int, name: str):
+        """Log an image (e.g. matplotlib figure saved as PNG) to Comet ML."""
+        import os
+        if os.path.isfile(image_path):
+            self.experiment.log_image(image_path, name=name, step=step)
 
     def finish(self):
         """End the Comet ML experiment"""

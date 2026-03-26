@@ -317,6 +317,7 @@ class TrajectoryCollector:
         validation_video_frames = [] if record_video_env_idx is not None else None
         validation_video_prompts = [] if record_video_env_idx is not None else None
         validation_video_actions = [] if record_video_env_idx is not None else None
+        validation_video_action_ids = [] if record_video_env_idx is not None else None
 
         # Initial observations from the environment
         obs, infos = envs.reset(kwargs=gen_batch.non_tensor_batch.pop('env_kwargs', None))
@@ -327,8 +328,17 @@ class TrajectoryCollector:
                 validation_video_frames.append(frame)
                 # First frame: initial obs, no action yet
                 prompt_text = obs.get('text', [None])[record_video_env_idx] if isinstance(obs.get('text'), list) else None
+                # Ensure constraint is visible in validation text panel.
+                try:
+                    if isinstance(obs, dict) and "constraint" in obs and isinstance(obs["constraint"], list):
+                        c = obs["constraint"][record_video_env_idx] if record_video_env_idx < len(obs["constraint"]) else ""
+                        if c and (prompt_text is not None) and ("**CONSTRAINT:**" not in prompt_text):
+                            prompt_text = (prompt_text or "") + f"\n\n**CONSTRAINT:** {c}"
+                except Exception:
+                    pass
                 validation_video_prompts.append(prompt_text or "")
                 validation_video_actions.append("")
+                validation_video_action_ids.append(-1)
 
         lenght_obs = len(obs['text']) if obs['text'] is not None else len(obs['image'])
         assert len(gen_batch.batch) == lenght_obs, f"gen_batch size {len(gen_batch.batch)} does not match obs size {lenght_obs}"
@@ -584,9 +594,21 @@ class TrajectoryCollector:
                 if frame is not None:
                     validation_video_frames.append(frame)
                     prompt_text = obs.get('text', [None])[record_video_env_idx] if isinstance(obs.get('text'), list) else None
+                    # Ensure constraint is visible in validation text panel.
+                    try:
+                        if isinstance(obs, dict) and "constraint" in obs and isinstance(obs["constraint"], list):
+                            c = obs["constraint"][record_video_env_idx] if record_video_env_idx < len(obs["constraint"]) else ""
+                            if c and (prompt_text is not None) and ("**CONSTRAINT:**" not in prompt_text):
+                                prompt_text = (prompt_text or "") + f"\n\n**CONSTRAINT:** {c}"
+                    except Exception:
+                        pass
                     action_text = text_actions[record_video_env_idx] if record_video_env_idx < len(text_actions) else ""
                     validation_video_prompts.append(prompt_text or "")
                     validation_video_actions.append(action_text or "")
+                    try:
+                        validation_video_action_ids.append(int(infos[record_video_env_idx].get("action_id", -1)))
+                    except Exception:
+                        validation_video_action_ids.append(-1)
 
             # Обновляем счетчики шагов для активных сред (если auto reset включен)
             if auto_reset_enabled:
@@ -666,7 +688,7 @@ class TrajectoryCollector:
                     episode_lengths=episode_lengths,
                     )
 
-        return total_batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings, validation_video_frames, validation_video_prompts, validation_video_actions, completed_episode_returns, completed_episode_lengths, completed_episode_costs
+        return total_batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings, validation_video_frames, validation_video_prompts, validation_video_actions, validation_video_action_ids, completed_episode_returns, completed_episode_lengths, completed_episode_costs
     
     def dynamic_multi_turn_loop(
             self,
@@ -711,7 +733,7 @@ class TrajectoryCollector:
                 print(f"valid num={len(total_batch_list)} < target num={self.config.data.train_batch_size * self.config.env.rollout.n}. Keep generating... ({try_count}/{max_try_count})")
             try_count += 1
 
-            batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings, _vframes, _vprompts, _vactions, completed_returns, completed_lengths, completed_costs = self.vanilla_multi_turn_loop(
+            batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings, _vframes, _vprompts, _vactions, _vaction_ids, completed_returns, completed_lengths, completed_costs = self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
                 envs=envs,
@@ -787,7 +809,7 @@ class TrajectoryCollector:
             validation_video_actions = None
         else:
             # Vanilla Sampling   
-            total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, totoal_tool_callings, validation_video_frames, validation_video_prompts, validation_video_actions, completed_episode_returns, completed_episode_lengths, completed_episode_costs = \
+            total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, totoal_tool_callings, validation_video_frames, validation_video_prompts, validation_video_actions, validation_video_action_ids, completed_episode_returns, completed_episode_lengths, completed_episode_costs = \
                 self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
@@ -820,6 +842,8 @@ class TrajectoryCollector:
             gen_batch_output.meta_info['validation_video_prompts'] = validation_video_prompts
         if validation_video_actions is not None:
             gen_batch_output.meta_info['validation_video_actions'] = validation_video_actions
+        if validation_video_action_ids is not None:
+            gen_batch_output.meta_info['validation_video_action_ids'] = validation_video_action_ids
         # Метрики по завершённым эпизодам (среднее по эпизодам, как в caged_craftext baselines)
         if completed_episode_returns is not None and len(completed_episode_returns) > 0:
             gen_batch_output.meta_info['completed_episode_returns'] = np.array(completed_episode_returns, dtype=np.float32)

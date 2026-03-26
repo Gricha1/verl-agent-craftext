@@ -38,7 +38,7 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
     vllm \
     false \
     false \
-    64 \
+    8 \
     128 \
     false \
     false \
@@ -46,6 +46,7 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
     true \
     extended_template \
     10 \
+    ascii \
     ++env.craftext_settings='achievements_wood' \
     trainer.resume_mode=resume_path \
     trainer.resume_from_path="$CHECKPOINT_PATH" \
