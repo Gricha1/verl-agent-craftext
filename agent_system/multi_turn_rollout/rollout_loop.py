@@ -61,8 +61,12 @@ class TrajectoryCollector:
             dict: Contains processed input data such as input_ids, attention_mask, etc.
         """
 
-        raw_prompt = gen_batch.non_tensor_batch['raw_prompt'][item]
-        data_source = gen_batch.non_tensor_batch['data_source'][item]
+        # `raw_prompt` is only present when data.return_raw_chat=True.
+        # For many training runs we don't need it; avoid hard dependency.
+        raw_prompt_list = gen_batch.non_tensor_batch.get('raw_prompt', None)
+        raw_prompt = raw_prompt_list[item] if raw_prompt_list is not None else None
+        data_source_list = gen_batch.non_tensor_batch.get('data_source', None)
+        data_source = data_source_list[item] if data_source_list is not None else "unknown"
         
         # Get observation components
         obs_texts = obs.get('text', None)
@@ -98,12 +102,17 @@ class TrajectoryCollector:
             "role": "user",
         }])
         
-        # Apply chat template
-        prompt_with_chat_template = self.tokenizer.apply_chat_template(
-            chat,
-            add_generation_prompt=True,
-            tokenize=False
-        )
+        # Apply chat template (some tokenizers may not have chat_template)
+        if getattr(self.tokenizer, "chat_template", None):
+            prompt_with_chat_template = self.tokenizer.apply_chat_template(
+                chat,
+                add_generation_prompt=True,
+                tokenize=False
+            )
+        else:
+            prompt_with_chat_template = "\n".join(
+                [f"{m.get('role','user')}: {m.get('content','')}" for m in chat]
+            )
         
         # Initialize return dict
         row_dict = {}
@@ -132,7 +141,8 @@ class TrajectoryCollector:
                                                                                 self.processor.image_token)
 
         else:
-            raw_prompt = prompt_with_chat_template
+            # If dataset did not provide `raw_prompt`, fall back to the prompt we just built.
+            raw_prompt = raw_prompt if raw_prompt is not None else prompt_with_chat_template
         
         input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(prompt=prompt_with_chat_template,
                                                                             tokenizer=self.tokenizer,
@@ -568,18 +578,18 @@ class TrajectoryCollector:
             batch.non_tensor_batch['rewards'] = torch_to_numpy(rewards, is_object=True)
             batch.non_tensor_batch['active_masks'] = torch_to_numpy(active_masks, is_object=True)
             
-            # Store next observations for world model training
-            # Convert next_obs to a format that can be stored
-            if isinstance(next_obs, dict):
-                # Store next observation text for world model
-                if 'text' in next_obs and next_obs['text'] is not None:
-                    batch.non_tensor_batch['next_obs_text'] = np.array(next_obs['text'], dtype=object)
-                # Store next observation image if available
-                if 'image' in next_obs and next_obs['image'] is not None:
-                    batch.non_tensor_batch['next_obs_image'] = torch_to_numpy(next_obs['image'], is_object=True)
-            else:
-                # If next_obs is not a dict, store it as is
-                batch.non_tensor_batch['next_obs'] = torch_to_numpy(next_obs, is_object=True)
+            # Store next observations only when needed (e.g., world model training).
+            wm_cfg = self.config.trainer.get("world_model", {}) if hasattr(self.config, "trainer") else {}
+            wm_enabled = bool(wm_cfg.get("enable", False))
+            if wm_enabled:
+                # Convert next_obs to a format that can be stored
+                if isinstance(next_obs, dict):
+                    if 'text' in next_obs and next_obs['text'] is not None:
+                        batch.non_tensor_batch['next_obs_text'] = np.array(next_obs['text'], dtype=object)
+                    if 'image' in next_obs and next_obs['image'] is not None:
+                        batch.non_tensor_batch['next_obs_image'] = torch_to_numpy(next_obs['image'], is_object=True)
+                else:
+                    batch.non_tensor_batch['next_obs'] = torch_to_numpy(next_obs, is_object=True)
             
             # Update episode lengths for active environments
             batch_list: list[dict] = to_list_of_dict(batch)
@@ -602,7 +612,12 @@ class TrajectoryCollector:
                                 prompt_text = (prompt_text or "") + f"\n\n**CONSTRAINT:** {c}"
                     except Exception:
                         pass
-                    action_text = text_actions[record_video_env_idx] if record_video_env_idx < len(text_actions) else ""
+                    raw_action_text = text_actions[record_video_env_idx] if record_video_env_idx < len(text_actions) else ""
+                    parsed_action_name = infos[record_video_env_idx].get("action_name", "") if record_video_env_idx < len(infos) else ""
+                    if parsed_action_name:
+                        action_text = f"{parsed_action_name} | raw: {raw_action_text}"
+                    else:
+                        action_text = raw_action_text
                     validation_video_prompts.append(prompt_text or "")
                     validation_video_actions.append(action_text or "")
                     try:

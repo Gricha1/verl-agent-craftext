@@ -51,7 +51,8 @@ This is what you currently see:
 {{current_observation}}
 
 First, think about what to do next. Then, choose one of the available actions and write it in the <action> tag.
-Your available actions are: {AVAILABLE_ACTIONS_STR}
+Your available actions are: {AVAILABLE_ACTIONS_STR_UPPERCASE}
+Write EXACTLY one of the action names above (UPPERCASE, underscores preserved) inside the <action> tag.
 """
     else:
         return f"""
@@ -66,7 +67,8 @@ This is what you currently see:
 {{current_observation}}
 
 Choose one of the available actions and write it in the <action> tag.
-Your available actions are: {AVAILABLE_ACTIONS_STR}
+Your available actions are: {AVAILABLE_ACTIONS_STR_UPPERCASE}
+Write EXACTLY one of the action names above (UPPERCASE, underscores preserved) inside the <action> tag.
 """
 
 
@@ -81,7 +83,8 @@ This is what you currently see:
 {{current_observation}}
 
 First, think about what to do next. Then, choose one of the available actions and write it in the <action> tag.
-Your available actions are: {AVAILABLE_ACTIONS_STR}
+Your available actions are: {AVAILABLE_ACTIONS_STR_UPPERCASE}
+Write EXACTLY one of the action names above (UPPERCASE, underscores preserved) inside the <action> tag.
 """
     else:
         return f"""
@@ -92,7 +95,8 @@ This is what you currently see:
 {{current_observation}}
 
 Choose one of the available actions and write it in the <action> tag.
-Your available actions are: {AVAILABLE_ACTIONS_STR}
+Your available actions are: {AVAILABLE_ACTIONS_STR_UPPERCASE}
+Write EXACTLY one of the action names above (UPPERCASE, underscores preserved) inside the <action> tag.
 """
 
 
@@ -109,7 +113,8 @@ This is what you currently see:
 {{current_observation}}
 
 Choose one of the available actions and write it in the <action> tag.
-Your available actions are: {AVAILABLE_ACTIONS_STR}
+Your available actions are: {AVAILABLE_ACTIONS_STR_UPPERCASE}
+Write EXACTLY one of the action names above (UPPERCASE, underscores preserved) inside the <action> tag.
 """
 
 def get_craftext_vl_template_no_his(enable_reasoning: bool = True) -> str:
@@ -124,7 +129,8 @@ You currently see visual observation:
 Picture 1: <image>
 
 First, think about what to do next. Then, choose one of the available actions and write it in the <action> tag.
-Your available actions are: {AVAILABLE_ACTIONS_STR}
+Your available actions are: {AVAILABLE_ACTIONS_STR_UPPERCASE}
+Write EXACTLY one of the action names above (UPPERCASE, underscores preserved) inside the <action> tag.
 """
     else:
         return f"""
@@ -136,7 +142,8 @@ You currently see visual observation:
 Picture 1: <image>
 
 Choose one of the available actions and write it in the <action> tag.
-Your available actions are: {AVAILABLE_ACTIONS_STR}
+Your available actions are: {AVAILABLE_ACTIONS_STR_UPPERCASE}
+Write EXACTLY one of the action names above (UPPERCASE, underscores preserved) inside the <action> tag.
 """
 
 # Для обратной совместимости
@@ -166,7 +173,8 @@ This is what you currently see:
 <action>your_action_here</action>
 
 {reasoning_text}Choose one of the available actions and write it in the <action> tag.
-Your available actions are: {AVAILABLE_ACTIONS_STR}
+Your available actions are: {AVAILABLE_ACTIONS_STR_UPPERCASE}
+Write EXACTLY one of the action names above (UPPERCASE, underscores preserved) inside the <action> tag.
 """
 
 # Для обратной совместимости
@@ -194,7 +202,8 @@ Picture 1: <image>
 <action>your_action_here</action>
 
 {reasoning_text}Choose one of the available actions and write it in the <action> tag.
-Your available actions are: {AVAILABLE_ACTIONS_STR}
+Your available actions are: {AVAILABLE_ACTIONS_STR_UPPERCASE}
+Write EXACTLY one of the action names above (UPPERCASE, underscores preserved) inside the <action> tag.
 """
 
 # Для обратной совместимости
@@ -244,28 +253,43 @@ def craftext_projection(actions: List[str]):
     for i, original_str in enumerate(actions):
         action_str_lower = original_str.lower()
 
-        # 1. Извлекаем текстовое действие из тегов <action> или <answer>
-        # Сначала пробуем <action> (для обычного шаблона)
-        start_tag = "<action>"
-        end_tag = "</action>"
-        start_idx = action_str_lower.find(start_tag)
-        end_idx = action_str_lower.find(end_tag)
-
-        # Если <action> не найден, пробуем <answer> (для extended шаблона)
-        if start_idx == -1 or end_idx == -1:
-            start_tag = "<answer>"
-            end_tag = "</answer>"
+        # 1. Извлекаем текстовое действие из тегов.
+        # Поддерживаем несколько вариантов, т.к. разные chat templates/модели иногда оборачивают ответ в <response>.
+        tag_pairs = [
+            ("<action>", "</action>"),       # default_template
+            ("<answer>", "</answer>"),       # extended_template
+            ("<response>", "</response>"),   # некоторые chat-шаблоны
+        ]
+        extracted_action_text_raw = None
+        for start_tag, end_tag in tag_pairs:
             start_idx = action_str_lower.find(start_tag)
             end_idx = action_str_lower.find(end_tag)
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                extracted_action_text_raw = original_str[start_idx + len(start_tag) : end_idx].strip()
+                break
 
-        # Если тегов нет, действие невалидное
-        if start_idx == -1 or end_idx == -1:
-            continue
+        # Если тегов нет, пробуем принять "голое" действие (например: UP / PLACE_STONE / place stone)
+        if extracted_action_text_raw is None:
+            extracted_action_text_raw = original_str.strip()
+            if not extracted_action_text_raw:
+                continue
 
-        extracted_action_text = action_str_lower[start_idx + len(start_tag) : end_idx].strip()
+        extracted_action_text_lower = extracted_action_text_raw.lower()
+
+        # Normalize to ACTION_TO_TEXT style: UPPERCASE with underscores (PLACE_STONE)
+        action_norm = extracted_action_text_raw.strip()
+        action_norm = action_norm.replace("-", "_")
+        action_norm = re.sub(r"\s+", "_", action_norm)
+        action_norm = re.sub(r"_+", "_", action_norm)
+        action_norm = action_norm.upper()
 
         # 2. Преобразуем текст в числовое действие, используя словарь
-        action_id = TEXT_TO_ACTION_ID.get(extracted_action_text, INVALID_ACTION_ID)
+        if action_norm in ACTION_TO_TEXT:
+            action_id = int(ACTION_TO_TEXT.index(action_norm))
+        else:
+            # Backward compatible: accept "place stone" / "place_stone" / mixed case
+            compat = extracted_action_text_lower.replace("_", " ").strip()
+            action_id = TEXT_TO_ACTION_ID.get(compat, INVALID_ACTION_ID)
 
         # 3. Финальная валидация
         is_known_action = action_id != INVALID_ACTION_ID

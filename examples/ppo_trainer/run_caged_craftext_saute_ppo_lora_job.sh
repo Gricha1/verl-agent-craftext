@@ -80,7 +80,7 @@ python -m verl.trainer.main_ppo \
   data.max_response_length=128 \
   data.filter_overlong_prompts=True \
   data.truncation='error' \
-  data.return_raw_chat=True \
+  data.return_raw_chat=False \
   actor_rollout_ref.model.path=Qwen/Qwen2.5-1.5B-Instruct \
   actor_rollout_ref.model.lora_rank=64 \
   actor_rollout_ref.model.lora_alpha=32 \

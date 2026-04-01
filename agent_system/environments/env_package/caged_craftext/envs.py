@@ -60,6 +60,9 @@ class CagedCraftextWorker:
         self._jitted_step = jax.jit(self.wrapper.step, static_argnames=['env_params'])
 
         self.observation_type = env_kwargs.get('observation_type', 'ascii')
+        # If False, we avoid rendering/returning pixel observations on each step/reset.
+        # This is important for RAM when running many parallel env workers.
+        self.use_pixel_obs = bool(env_kwargs.get("use_pixel_obs", False))
         if self.observation_type == 'ascii':
             self.render_func = render_craftax_ascii
         elif self.observation_type == 'ascii_v2':
@@ -102,9 +105,13 @@ class CagedCraftextWorker:
         # Заметь: если ты хочешь хранить состояние на host, можно делать jax.device_get здесь
         self.state = new_state_jax
 
-        # Render the observation using render_classic and convert to numpy
-        obs_jax_rendered = render_classic(new_state_jax.env_state, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
-        obs = np.asarray(obs_jax_rendered)
+        # Render pixel observations only when needed:
+        # - for VLEnv (use_pixel_obs=True)
+        # - or when recording a validation video (return_render=True)
+        obs = None
+        if return_render or self.use_pixel_obs:
+            obs_jax_rendered = render_classic(new_state_jax.env_state, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
+            obs = np.asarray(obs_jax_rendered)
 
         reward = float(reward_jax)
         done = bool(done_jax)
@@ -132,7 +139,7 @@ class CagedCraftextWorker:
         info['text_render'] = text_render
         info['instruction'] = instruction_text
 
-        if return_render:
+        if return_render and obs is not None:
             info['render_frame'] = obs.copy()
 
         return obs, reward, done, info
@@ -164,9 +171,11 @@ class CagedCraftextWorker:
 
         self.state = new_state_jax
 
-        # Render the observation using render_classic and convert to numpy
-        obs_jax_rendered = render_classic(new_state_jax.env_state, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
-        obs = np.asarray(obs_jax_rendered)
+        # Render pixel observations only when needed (see step()).
+        obs = None
+        if return_render or self.use_pixel_obs:
+            obs_jax_rendered = render_classic(new_state_jax.env_state, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
+            obs = np.asarray(obs_jax_rendered)
         info = {'won': False}
         env_state_cpu = jax.device_get(new_state_jax.env_state)
         text_render = self.render_func(env_state_cpu)
@@ -181,7 +190,7 @@ class CagedCraftextWorker:
         info['text_render'] = text_render
         info['instruction'] = instruction_text
 
-        if return_render:
+        if return_render and obs is not None:
             info['render_frame'] = obs.copy()
 
         return obs, info

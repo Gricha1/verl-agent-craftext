@@ -807,6 +807,9 @@ class RayPPOTrainer:
                             except Exception:
                                 font = ImageFont.load_default()
                             line_height = font_size + 2
+                            # Use a tiny temporary canvas for measuring text widths; final panel is created later
+                            _measure_panel = Image.new("RGB", (w, 10), (250, 250, 250))
+                            draw = ImageDraw.Draw(_measure_panel)
                             # Split by newlines to preserve map grid; no mid-line wrapping
                             lines = (prompt_text or "").split("\n")
                             lines = [ln.strip("\r") for ln in lines if ln.strip() or ln == ""]
@@ -828,12 +831,9 @@ class RayPPOTrainer:
                             
                             # Объединяем: обычные строки + constraint + action
                             lines = other_lines + constraint_lines
-                            action_line = f"Action: {(action_text or '')[:200]}"
-                            num_lines = len(lines) + 1
-                            if panel_height is None:
-                                panel_height = num_lines * line_height + 12
-                            panel = Image.new("RGB", (w, panel_height), (250, 250, 250))
-                            draw = ImageDraw.Draw(panel)
+                            # Keep more of the raw agent output; it is often short in action-only mode,
+                            # but can include tags/newlines that would otherwise get truncated.
+                            action_line = f"Action: {(action_text or '')[:500]}"
                             y_off = 4
                             max_text_width = max(10, w - 8)
 
@@ -942,12 +942,15 @@ class RayPPOTrainer:
                                 if len(rendered_other) > head_budget:
                                     rendered_other = rendered_other[:head_budget]
                                 rendered_lines = rendered_other + tail
-
-                            # Recompute panel height based on final rendered lines
+                            # Create (or grow) panel height based on final rendered lines.
+                            required_panel_height = len(rendered_lines) * line_height + 12
                             if panel_height is None:
-                                panel_height = len(rendered_lines) * line_height + 12
-                                panel = Image.new("RGB", (w, panel_height), (250, 250, 250))
-                                draw = ImageDraw.Draw(panel)
+                                panel_height = required_panel_height
+                            else:
+                                panel_height = max(int(panel_height), int(required_panel_height))
+
+                            panel = Image.new("RGB", (w, panel_height), (250, 250, 250))
+                            draw = ImageDraw.Draw(panel)
 
                             y_off = 4
                             for txt, color in rendered_lines:

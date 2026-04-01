@@ -616,7 +616,8 @@ from agent_system.environments.env_package.caged_craftext.projection import (
     get_craftext_template,
     get_craftext_template_no_his,
     get_craftext_extended_template_no_his,
-    CRAFTEXT_EXTENDED_TEMPLATE_NO_HIS
+    CRAFTEXT_EXTENDED_TEMPLATE_NO_HIS,
+    ACTION_TO_TEXT as CAGED_ACTION_TO_TEXT,
 )
 
 
@@ -677,7 +678,14 @@ class CraftextEnvironmentManager(EnvironmentManagerBase):
                 info['action_id'] = int(to_numpy(action_ids[i]))
             except Exception:
                 info['action_id'] = -1
+            # Raw model output (may include tags)
             info['action_text'] = text_actions[i] if i < len(text_actions) else ""
+            # Parsed discrete action name (for debugging/video overlays)
+            try:
+                aid = int(info.get("action_id", -1))
+                info["action_name"] = CAGED_ACTION_TO_TEXT[aid] if 0 <= aid < len(CAGED_ACTION_TO_TEXT) else ""
+            except Exception:
+                info["action_name"] = ""
 
         return next_observations, to_numpy(rewards), to_numpy(dones), infos
 
@@ -1162,11 +1170,15 @@ def make_envs(config):
         print(f"[make_envs] Detected Caged Craftext environment: {config.env.env_name}")
         from agent_system.environments.env_package.caged_craftext import build_caged_craftext_envs, craftext_projection
 
+        use_pixel_obs = "vlenv" in str(config.env.env_name).lower()
+
         # 2. Указываем параметры для среды Caged Craftext
         env_kwargs = {
             'config_name': config.env.craftext_settings,  # Например, 'achievements_safe_caged'
             'encode_form': 'embedding',
             'observation_type': config.env.observation_type,
+            # Avoid returning pixel observations for pure text/ascii envs to reduce RAM usage.
+            'use_pixel_obs': use_pixel_obs,
         }
         
         # 3. Создаем train и val среды
