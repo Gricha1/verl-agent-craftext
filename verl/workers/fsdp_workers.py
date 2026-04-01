@@ -483,6 +483,7 @@ class ActorRolloutRefWorker(Worker):
                     tokenizer=self.tokenizer,
                     model_hf_config=self.actor_model_config,
                     trust_remote_code=trust_remote_code,
+                    lora_tokenizer_path=local_path,
                     **lora_kwargs)
             elif vllm_mode == "spmd":
                 from verl.workers.rollout.vllm_rollout import vLLMAsyncRollout

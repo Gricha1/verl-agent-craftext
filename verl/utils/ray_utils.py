@@ -16,9 +16,60 @@ Contains commonly used utilities for ray
 """
 
 import concurrent.futures
+import logging
 from typing import Any, List, Optional
 
 import ray
+
+
+class _SuppressRayDiskUtilizationWarnings(logging.Filter):
+    """Drop Ray's repeated WARNINGs when session /tmp disk usage crosses ~95% (floods the terminal)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.ERROR:
+            return True
+        try:
+            msg = record.getMessage().lower()
+        except Exception:
+            return True
+        if "95" not in msg and "0.95" not in msg:
+            return True
+        if any(k in msg for k in ("disk", "space", "usage", "utilization", "filesystem", "capacity", "full")):
+            return False
+        return True
+
+
+def silence_ray_disk_usage_warnings() -> None:
+    """Attach filters to Ray loggers before ``ray.init`` (driver process)."""
+    filt = _SuppressRayDiskUtilizationWarnings()
+    for name in (
+        "ray",
+        "ray._private",
+        "ray._private.worker",
+        "ray._private.services",
+        "ray._private.ray_logging",
+        "ray._private.process_watcher",
+    ):
+        logging.getLogger(name).addFilter(filt)
+
+
+def ray_local_fs_capacity_system_config(config) -> dict:
+    """
+    Raylet logs ERROR every ~10s from file_system_monitor.cc when (1 - free/capacity) >= threshold.
+    Default threshold is 0.95; large volumes that are ~95% full but still have hundreds of GB free
+    spam the terminal — raise via ``local_fs_capacity_threshold`` (RayConfig).
+
+    This does not affect Python logging; it configures the raylet C++ monitor.
+    """
+    try:
+        from omegaconf import OmegaConf
+
+        lfc = OmegaConf.select(config, "ray_init.local_fs_capacity_threshold", default=0.99)
+    except Exception:
+        lfc = 0.99
+    if lfc is None:
+        lfc = 0.99
+    return {"local_fs_capacity_threshold": float(lfc)}
 
 
 def parallel_put(data_list: List[Any], max_workers: Optional[int] = None):

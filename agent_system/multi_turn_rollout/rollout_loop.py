@@ -303,6 +303,7 @@ class TrajectoryCollector:
             envs: EnvironmentManagerBase,
             world_model_trainer=None,
             record_video_env_idx: Optional[int] = None,
+            is_train: bool = True,
             ):
         """
         Collects trajectories through parallel agent-environment agent_loop.
@@ -331,6 +332,13 @@ class TrajectoryCollector:
 
         # Initial observations from the environment
         obs, infos = envs.reset(kwargs=gen_batch.non_tensor_batch.pop('env_kwargs', None))
+
+        if is_train:
+            print(
+                f"[rollout train] env reset done, parallel slots={batch_size}, max_steps={int(self.config.env.max_steps)}, "
+                f"auto_reset={bool(self.config.env.get('auto_reset', False))} — starting LLM↔env loop (no trainer metrics until this finishes)",
+                flush=True,
+            )
 
         if validation_video_frames is not None and record_video_env_idx is not None and record_video_env_idx < len(infos):
             frame = infos[record_video_env_idx].get('render_frame')
@@ -430,6 +438,8 @@ class TrajectoryCollector:
         # Trajectory collection loop
         # Если auto reset включен, используем while цикл, иначе обычный for цикл
         _step = 0
+        _rollout_iter = 0
+        _logged_first_gen = False
         while True:
             # Определяем активные среды
             if auto_reset_enabled:
@@ -458,6 +468,13 @@ class TrajectoryCollector:
                         observations=obs_texts,
                         with_grad=False  # No gradients during rollout
                     )
+
+            if is_train and not _logged_first_gen:
+                print(
+                    "[rollout train] first iteration: generate_sequences on actor (vLLM warmup can take minutes) …",
+                    flush=True,
+                )
+                _logged_first_gen = True
 
             batch = self.preprocess_batch(gen_batch=gen_batch, obs=obs, latent_states=latent_states)
             
@@ -494,6 +511,14 @@ class TrajectoryCollector:
             text_actions = self.tokenizer.batch_decode(batch.batch['responses'], skip_special_tokens=True)
             
             next_obs, rewards, dones, infos = envs.step(text_actions)
+
+            _rollout_iter += 1
+            if is_train and (_rollout_iter == 1 or _rollout_iter % 10 == 0):
+                n_act = int(np.sum(active_masks)) if hasattr(active_masks, "sum") else batch_size
+                print(
+                    f"[rollout train] env step {_rollout_iter} (active envs ≈ {n_act}/{batch_size})",
+                    flush=True,
+                )
 
             # Конвертируем в numpy массивы, если они пришли как списки
             if isinstance(rewards, list):
@@ -688,6 +713,12 @@ class TrajectoryCollector:
                                 + f"\n\n[SAFETY] Violations so far: {int(violation_counts[i])} | Safety state: {float(safety_obs[i]):.4f}"
                             )
             obs = next_obs
+
+        if is_train:
+            print(
+                f"[rollout train] finished after {_rollout_iter} env steps — running reward/PPO update next",
+                flush=True,
+            )
         
         # Без auto_reset: один эпизод на env — добавляем в списки завершённых эпизодов
         if not auto_reset_enabled:
@@ -831,6 +862,7 @@ class TrajectoryCollector:
                 envs=envs,
                 world_model_trainer=world_model_trainer,
                 record_video_env_idx=record_video_env_idx,
+                is_train=is_train,
             )
         assert len(total_batch_list) == len(total_episode_rewards)
         assert len(total_batch_list) == len(total_episode_lengths)

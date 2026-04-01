@@ -20,6 +20,7 @@ import os
 import hydra
 import ray
 
+from verl.utils.ray_utils import ray_local_fs_capacity_system_config, silence_ray_disk_usage_warnings
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 from verl.trainer.ppo.reward import load_reward_manager
 
@@ -31,6 +32,7 @@ def main(config):
 
 def run_ppo(config) -> None:
     if not ray.is_initialized():
+        silence_ray_disk_usage_warnings()
         # this is for local ray cluster
         ray_init_kwargs = {
             "runtime_env": {"env_vars": {"TOKENIZERS_PARALLELISM": "true", "NCCL_DEBUG": "WARN", "VLLM_LOGGING_LEVEL": "WARN", "VLLM_ALLOW_RUNTIME_LORA_UPDATING": "true"}},
@@ -45,6 +47,9 @@ def run_ppo(config) -> None:
             total_gpus = config.trainer.n_gpus_per_node * config.trainer.nnodes
             ray_init_kwargs["num_gpus"] = total_gpus
             print(f"[INFO] Ray init: автоматически установлено num_gpus={total_gpus} из trainer.n_gpus_per_node={config.trainer.n_gpus_per_node} * nnodes={config.trainer.nnodes}")
+        # Raylet (C++) disk spam: see ray_config_def.h local_fs_capacity_threshold (default 0.95)
+        _prev_sys = ray_init_kwargs.get("_system_config") or {}
+        ray_init_kwargs["_system_config"] = {**_prev_sys, **ray_local_fs_capacity_system_config(config)}
         ray.init(**ray_init_kwargs)
 
     runner = TaskRunner.remote()

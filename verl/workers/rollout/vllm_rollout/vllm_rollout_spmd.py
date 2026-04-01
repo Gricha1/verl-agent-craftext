@@ -140,6 +140,8 @@ class vLLMRollout(BaseRollout):
 
         lora_kwargs = kwargs.pop('lora_kwargs', {})
         self.lora_kwargs = lora_kwargs
+        # LoRARequest.lora_path is only for tokenizer resolution when LoRA weights are in-engine; use real base model dir.
+        self._lora_request_base_path = str(model_path)
         # copy it to avoid secretly modifying the engine config
         engine_kwargs = {} if "engine_kwargs" not in config or "vllm" not in config.engine_kwargs else OmegaConf.to_container(deepcopy(config.engine_kwargs.vllm))
         # For each vLLM engine parameter,
@@ -281,7 +283,13 @@ class vLLMRollout(BaseRollout):
             lora_int_ids = list(self.inference_engine.llm_engine.list_loras())
             if len(lora_int_ids) > 0:
                 lora_int_id=lora_int_ids[0]
-                lora_requests = [LoRARequest(lora_name=f"{lora_int_id}",lora_int_id=lora_int_id,lora_path="/simon-stub-path")] * batch_size
+                lora_requests = [
+                    LoRARequest(
+                        lora_name=f"{lora_int_id}",
+                        lora_int_id=lora_int_id,
+                        lora_path=self._lora_request_base_path,
+                    )
+                ] * batch_size
 
         # users can customize different sampling_params at different run
         with self.update_sampling_params(**kwargs):

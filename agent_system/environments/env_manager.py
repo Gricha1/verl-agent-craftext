@@ -1168,7 +1168,7 @@ def make_envs(config):
     elif "caged_craftext" in config.env.env_name.lower() or (config.env.env_name.lower().startswith("caged") and "craftext" in config.env.env_name.lower()):
         # 1. Импортируем все необходимое для Caged Craftext
         print(f"[make_envs] Detected Caged Craftext environment: {config.env.env_name}")
-        from agent_system.environments.env_package.caged_craftext import build_caged_craftext_envs, craftext_projection
+        from agent_system.environments.env_package.caged_craftext import build_caged_craftext_envs, build_caged_craftext_envs_optimistic, craftext_projection
 
         use_pixel_obs = "vlenv" in str(config.env.env_name).lower()
 
@@ -1179,25 +1179,51 @@ def make_envs(config):
             'observation_type': config.env.observation_type,
             # Avoid returning pixel observations for pure text/ascii envs to reduce RAM usage.
             'use_pixel_obs': use_pixel_obs,
+            # Optimistic vec env: optional Ray actors (one per env) for parallel text_render only.
+            'use_ray_text_render_workers': bool(getattr(config.env, "use_ray_text_render_workers", False)),
+            # Per Ray text-render actor; too small → tasks queue / serial IPC. Used only for train env.
+            'text_render_ray_num_cpus': float(getattr(config.env, "text_render_ray_num_cpus", 0.25)),
         }
         
         # 3. Создаем train и val среды
-        _envs = build_caged_craftext_envs(
-            seed=config.env.seed, 
-            env_num=config.data.train_batch_size, 
-            group_n=group_n, 
-            is_train=True, 
-            env_kwargs=env_kwargs, 
-            resources_per_worker=resources_per_worker
-        )
-        _val_envs = build_caged_craftext_envs(
-            seed=config.env.seed + 1000, 
-            env_num=config.data.val_batch_size, 
-            group_n=1, 
-            is_train=False, 
-            env_kwargs=env_kwargs, 
-            resources_per_worker=resources_per_worker
-        )
+        use_optimistic_parallel = bool(getattr(config.env, "use_optimistic_parallel", False))
+        optimistic_reset_ratio = getattr(config.env, "optimistic_reset_ratio", None)
+        if use_optimistic_parallel:
+            _envs = build_caged_craftext_envs_optimistic(
+                seed=config.env.seed,
+                env_num=config.data.train_batch_size,
+                group_n=group_n,
+                is_train=True,
+                env_kwargs=env_kwargs,
+                resources_per_worker=resources_per_worker,
+                reset_ratio=optimistic_reset_ratio,
+            )
+            _val_envs = build_caged_craftext_envs_optimistic(
+                seed=config.env.seed + 1000,
+                env_num=config.data.val_batch_size,
+                group_n=1,
+                is_train=False,
+                env_kwargs=env_kwargs,
+                resources_per_worker=resources_per_worker,
+                reset_ratio=optimistic_reset_ratio,
+            )
+        else:
+            _envs = build_caged_craftext_envs(
+                seed=config.env.seed,
+                env_num=config.data.train_batch_size,
+                group_n=group_n,
+                is_train=True,
+                env_kwargs=env_kwargs,
+                resources_per_worker=resources_per_worker,
+            )
+            _val_envs = build_caged_craftext_envs(
+                seed=config.env.seed + 1000,
+                env_num=config.data.val_batch_size,
+                group_n=1,
+                is_train=False,
+                env_kwargs=env_kwargs,
+                resources_per_worker=resources_per_worker,
+            )
         
         # 4. Создаем функцию проекции (используем ту же, что и для обычного craftext)
         projection_f = partial(craftext_projection)

@@ -296,6 +296,9 @@ trainer:
 
 ray_init:
   num_cpus: null # `None` means using all CPUs, which might cause hang if limited in systems like SLURM. Please set to a number allowed then.
+  # Raylet warns when the FS that holds the session dir is this fraction full (default in Ray is 0.95).
+  # Big disks at ~95% used still have lots of free space; 0.99 reduces (raylet) file_system_monitor.cc spam.
+  local_fs_capacity_threshold: 0.99
 
 
 env:

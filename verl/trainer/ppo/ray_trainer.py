@@ -20,6 +20,7 @@ This trainer supports model-agonistic model initialization with huggingface
 
 import json
 import os
+import time
 import uuid
 from collections import defaultdict
 from contextlib import contextmanager
@@ -1334,6 +1335,11 @@ class RayPPOTrainer:
         global_balance_stats = log_seqlen_unbalance(seqlen_list=global_seqlen_lst, partitions=global_partition_lst, prefix=logging_prefix)
         metrics.update(global_balance_stats)
 
+    def _ppo_phase_log(self, message: str) -> None:
+        """One-line terminal progress (rollout vs GPU update vs Comet) for long PPO steps."""
+        ts = time.strftime("%H:%M:%S")
+        print(f"[PPO phase {ts} | global_step={self.global_steps}] {message}", flush=True)
+
     def fit(self):
         """
         The training loop of PPO.
@@ -1381,6 +1387,18 @@ class RayPPOTrainer:
 
         # add tqdm
         progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training Progress")
+        _ar = bool(OmegaConf.select(self.config, "env.auto_reset", default=False))
+        _ms = int(OmegaConf.select(self.config, "env.max_steps", default=0))
+        print(
+            "[PPO] Training loop entered. Comet/logger metrics for the first PPO step appear only after the first "
+            f"full rollout (max_steps={_ms}, auto_reset={_ar}) plus reward/advantage/PPO update — often 10+ minutes.",
+            flush=True,
+        )
+        print(
+            "[PPO] Phase lines: set trainer.verbose_ppo_phases=false in Hydra to disable "
+            "(default: true).",
+            flush=True,
+        )
 
         # we start from step 1
         self.global_steps += 1
@@ -1409,9 +1427,16 @@ class RayPPOTrainer:
                 )
 
                 is_last_step = self.global_steps >= self.total_training_steps
+                _verbose_phases = bool(OmegaConf.select(self.config, "trainer.verbose_ppo_phases", default=True))
 
                 with _timer("step", timing_raw):
                     # generate a batch
+                    if _verbose_phases:
+                        self._ppo_phase_log(
+                            "▶ ROLLOUT: multi_turn_loop (vLLM generate_sequences + env); "
+                            "nvidia-smi may show actor_rollout_generate_sequences — can take 30–90+ min on first step"
+                        )
+                    _t_roll = time.monotonic()
                     with _timer("gen", timing_raw):
                         # if not self.async_rollout_mode:
                         #     gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
@@ -1428,7 +1453,12 @@ class RayPPOTrainer:
                                                                 is_train=True,
                                                                 world_model_trainer=self.world_model_trainer,
                                                                 )
+                    if _verbose_phases:
+                        self._ppo_phase_log(f"■ ROLLOUT done in {time.monotonic() - _t_roll:.1f}s")
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
+                        if _verbose_phases:
+                            self._ppo_phase_log("▶ REMAX baseline: generate_sequences (no sample) …")
+                        _t_rm = time.monotonic()
                         with _timer("gen_max", timing_raw):
                             gen_baseline_batch = deepcopy(gen_batch)
                             gen_baseline_batch.meta_info["do_sample"] = False
@@ -1443,6 +1473,8 @@ class RayPPOTrainer:
                             batch.batch["reward_baselines"] = reward_baseline_tensor
 
                             del gen_baseline_batch, gen_baseline_output
+                        if _verbose_phases:
+                            self._ppo_phase_log(f"■ REMAX baseline done in {time.monotonic() - _t_rm:.1f}s")
 
                     # batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object)
                     # # repeat to align with repeated responses in rollout
@@ -1457,7 +1489,12 @@ class RayPPOTrainer:
                             gamma=self.config.algorithm.gamma
                         )
                         batch.batch['step_rewards'] = step_rewards_tensor
-                    
+
+                    if _verbose_phases:
+                        self._ppo_phase_log(
+                            "▶ POST-ROLLOUT (driver + GPU RPC): reward, old_log_prob, ref?, values?, advantage …"
+                        )
+                    _t_post = time.monotonic()
                     batch = adjust_batch(self.config, batch)
 
                     batch.batch["response_mask"] = compute_response_mask(batch)
@@ -1582,13 +1619,20 @@ class RayPPOTrainer:
                             gigpo_enable_similarity= self.config.algorithm.gigpo.enable_similarity,
                             gigpo_similarity_thresh=self.config.algorithm.gigpo.similarity_thresh,
                         )
+                    if _verbose_phases:
+                        self._ppo_phase_log(f"■ POST-ROLLOUT done in {time.monotonic() - _t_post:.1f}s")
 
                     # update critic
                     if self.use_critic:
+                        if _verbose_phases:
+                            self._ppo_phase_log("▶ UPDATE: critic …")
+                        _t_cr = time.monotonic()
                         with _timer("update_critic", timing_raw):
                             critic_output = self.critic_wg.update_critic(batch)
                         critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
                         metrics.update(critic_output_metrics)
+                        if _verbose_phases:
+                            self._ppo_phase_log(f"■ UPDATE critic done in {time.monotonic() - _t_cr:.1f}s")
 
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
@@ -1597,16 +1641,24 @@ class RayPPOTrainer:
                         # from both losses are accumulated and applied together in optimizer.step()
                         # This ensures: L_total = L_PPO + loss_coef * L_world_model
                         if self.config.trainer.get("world_model", {}).get("enable", False):
+                            if _verbose_phases:
+                                self._ppo_phase_log("▶ UPDATE: world_model …")
+                            _t_wm = time.monotonic()
                             with _timer("update_world_model", timing_raw):
                                 world_model_metrics = self._train_world_model(batch, loss_coef=self.world_model_loss_coef)
-                                if world_model_metrics:
-                                    metrics.update(world_model_metrics)
-                                    print(f"[World Model Debug] Added {len(world_model_metrics)} metrics: {list(world_model_metrics.keys())}")
-                                else:
-                                    print("[World Model Debug] Warning: _train_world_model returned empty dict - no metrics to log")
+                            if _verbose_phases:
+                                self._ppo_phase_log(f"■ UPDATE world_model done in {time.monotonic() - _t_wm:.1f}s")
+                            if world_model_metrics:
+                                metrics.update(world_model_metrics)
+                                print(f"[World Model Debug] Added {len(world_model_metrics)} metrics: {list(world_model_metrics.keys())}")
+                            else:
+                                print("[World Model Debug] Warning: _train_world_model returned empty dict - no metrics to log")
                         
                         # update actor (PPO update)
                         # This will call optimizer.step() which applies gradients from both PPO and world model
+                        if _verbose_phases:
+                            self._ppo_phase_log("▶ UPDATE: actor (PPO) …")
+                        _t_ac = time.monotonic()
                         with _timer("update_actor", timing_raw):
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
                             actor_output = self.actor_rollout_wg.update_actor(batch)
@@ -1614,6 +1666,14 @@ class RayPPOTrainer:
                         metrics.update(actor_output_metrics)
                         
                         metrics.update(actor_output_metrics)
+                        if _verbose_phases:
+                            self._ppo_phase_log(f"■ UPDATE actor done in {time.monotonic() - _t_ac:.1f}s")
+
+                    elif _verbose_phases:
+                        self._ppo_phase_log(
+                            f"○ skip actor/world_model update (critic_warmup: step {self.global_steps} "
+                            f"< {self.config.trainer.critic_warmup})"
+                        )
 
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
@@ -1682,7 +1742,11 @@ class RayPPOTrainer:
                     print(f"[World Model Debug] Metrics before logging: {world_model_keys}")
                 else:
                     print("[World Model Debug] Warning: No world_model/* metrics found in metrics dict before logging")
+                if _verbose_phases:
+                    self._ppo_phase_log(f"▶ LOGGER: comet / {self.config.trainer.logger} (total_env_steps={self.total_env_steps}) …")
                 logger.log(data=metrics, step=self.total_env_steps)
+                if _verbose_phases:
+                    self._ppo_phase_log("■ LOGGER done — this PPO step finished")
 
                 progress_bar.update(1)
                 self.global_steps += 1

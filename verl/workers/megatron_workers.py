@@ -234,6 +234,7 @@ class ActorRolloutRefWorker(MegatronWorker):
                     config=self.config.rollout,
                     tokenizer=self.tokenizer,
                     model_hf_config=self.actor_model_config,
+                    lora_tokenizer_path=local_path,
                 )
             elif vllm_mode == "spmd":
                 rollout = vLLMRollout(

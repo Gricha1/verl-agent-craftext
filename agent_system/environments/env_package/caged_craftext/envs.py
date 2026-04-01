@@ -13,6 +13,30 @@ from craftax.craftax_classic.renderer import render_craftax_pixels as render_cla
 from craftax.craftax.constants import BLOCK_PIXEL_SIZE_HUMAN
 
 
+def _pick_text_render_fn(observation_type: str):
+    if observation_type == "ascii":
+        return render_craftax_ascii
+    if observation_type == "ascii_v2":
+        return render_craftax_ascii_v2
+    if observation_type == "text":
+        return render_craftax_text
+    raise ValueError(f"Invalid observation type: {observation_type}")
+
+
+class CagedCraftextTextRenderActor:
+    """
+    Lightweight Ray actor: only ASCII/text render of a single craftax env_state (numpy pytree).
+    No env, no BERT, no CMDP wrapper — avoids duplicating heavy per-env RAM.
+    Wrapped with ray.remote(...) when spawned (see CagedCraftextOptimisticVecEnv).
+    """
+
+    def __init__(self, observation_type: str):
+        self._render = _pick_text_render_fn(observation_type)
+
+    def render_craftax_state(self, state_numpy_tree):
+        return self._render(state_numpy_tree)
+
+
 class CagedCraftextWorker:
     """
     Worker для Caged Craftext - безопасной версии Craftext с CMDP (Constrained Markov Decision Process).
@@ -358,4 +382,309 @@ def build_caged_craftext_envs(
         resources_per_worker=resources_per_worker,
         is_train=is_train,
         env_kwargs=env_kwargs,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Batched optimistic-reset env (NO ray env workers)
+# -----------------------------------------------------------------------------
+
+class CagedCraftextOptimisticVecEnv(gym.Env):
+    """
+    Batched CagedCraftext env that runs NUM_ENVS environments inside a single process
+    using JAX vmap + OptimisticResetVecEnvWrapper (like caged_craftext/baselines/ppo_lag*).
+
+    This avoids spawning env_num Ray actors for environments. It is intended to be created
+    once and stepped with batched actions of length env_num.
+    """
+
+    def __init__(
+        self,
+        seed: int,
+        env_num: int,
+        env_kwargs: dict | None = None,
+        reset_ratio: int | None = None,
+        is_train: bool = True,
+    ) -> None:
+        super().__init__()
+
+        from craftax.craftax_env import make_craftax_env_from_name
+
+        # Make sure caged_craftext is importable
+        caged_craftext_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "../../../..", "caged_craftext")
+        )
+        if caged_craftext_path not in sys.path:
+            sys.path.insert(0, caged_craftext_path)
+
+        from craftext.environment.craftext_wrapper_cmdp import CMDPInstructionWrapper
+        from craftext.environment.encoders.craftext_base_model_encoder import EncodeForm
+        from craftext.environment.encoders.craftext_distilbert_model_encoder import DistilBertEncode
+        from craftext.environment.scenarious.manager_cmdp import ScenariosNoLambdaCMDP
+
+        # Optimistic wrapper from caged_craftext baselines
+        # baselines/ is not a Python package (no __init__.py), so import via direct path.
+        baselines_path = os.path.join(caged_craftext_path, "baselines")
+        if baselines_path not in sys.path:
+            sys.path.insert(0, baselines_path)
+        from wrappers_cmdp import OptimisticResetVecEnvWrapper
+
+        self.env_num = int(env_num)
+        self._env_kwargs = env_kwargs if env_kwargs is not None else {}
+        self._rng = np.random.RandomState(seed)
+
+        env = make_craftax_env_from_name("Craftax-Classic-Pixels-v1", auto_reset=False)
+        self.wrapper = CMDPInstructionWrapper(
+            env=env,
+            config_name=self._env_kwargs.get("config_name", "achievements_safe_caged"),
+            scenario_handler_class=ScenariosNoLambdaCMDP,
+            encode_model_class=DistilBertEncode,
+            encode_form=self._env_kwargs.get("encode_form", EncodeForm.EMBEDDING),
+        )
+        self.env_params = self.wrapper.env.default_params
+
+        # Batched optimistic-reset wrapper
+        if reset_ratio is None:
+            reset_ratio = min(16, self.env_num)
+        reset_ratio = int(reset_ratio)
+        if reset_ratio <= 0:
+            reset_ratio = 1
+        # Must divide perfectly (OptimisticResetVecEnvWrapper requirement)
+        if self.env_num % reset_ratio != 0:
+            # fallback to 1 (always divides)
+            reset_ratio = 1
+        self._vec_env = OptimisticResetVecEnvWrapper(
+            self.wrapper, num_envs=self.env_num, reset_ratio=reset_ratio
+        )
+
+        self.key = jax.random.PRNGKey(seed)
+        self.state = None
+
+        self.observation_type = self._env_kwargs.get("observation_type", "ascii")
+        self.use_pixel_obs = bool(self._env_kwargs.get("use_pixel_obs", False))
+        if self.observation_type == "ascii":
+            self.render_func = render_craftax_ascii
+        elif self.observation_type == "ascii_v2":
+            self.render_func = render_craftax_ascii_v2
+        elif self.observation_type == "text":
+            self.render_func = render_craftax_text
+        else:
+            raise ValueError(f"Invalid observation type: {self.observation_type}")
+
+        self._record_video_env_idxs: set[int] = set()
+        self._is_train = bool(is_train)
+
+        # Optional: one Ray actor per env — parallel text_render only (no duplicate env/BERT).
+        # Train only: val + Ray ships env_state through the object store every step; with tiny
+        # num_cpus Ray often runs renders quasi-serially while still paying full serialize/IPC cost.
+        self._use_ray_text_render = bool(self._env_kwargs.get("use_ray_text_render_workers", False))
+        self._text_render_actors: list | None = None
+        if self._use_ray_text_render and self._is_train:
+            if not ray.is_initialized():
+                ray.init()
+            ncpus = float(self._env_kwargs.get("text_render_ray_num_cpus", 0.25))
+            ncpus = max(0.0, ncpus)
+            RemoteCls = ray.remote(num_cpus=ncpus)(CagedCraftextTextRenderActor)
+            self._text_render_actors = [
+                RemoteCls.remote(self.observation_type) for _ in range(self.env_num)
+            ]
+            print(
+                f"[CagedCraftextOptimisticVecEnv] Ray text-render actors: {self.env_num} "
+                f"(num_cpus={ncpus} each)"
+            )
+        elif self._use_ray_text_render and not self._is_train:
+            print(
+                "[CagedCraftextOptimisticVecEnv] use_ray_text_render_workers=True ignored for val env "
+                "(sync text_render; Ray on val is slow due to object-store IPC per step)."
+            )
+
+    def set_record_video_worker_idxs(self, idxs):
+        # Keep same API as MultiProcess env, but here idxs refer to env indices inside the batch.
+        self._record_video_env_idxs = set(idxs) if idxs is not None else set()
+
+    def _build_info_list(
+        self,
+        state_batched,
+        reward_batched,
+        done_batched,
+        render_frames: dict[int, np.ndarray] | None = None,
+    ):
+        # Pull CPU state for text rendering + instruction/constraint lookup
+        render_frames = render_frames or {}
+        infos: list[dict] = []
+
+        # In this optimistic env, state_batched is typically TextEnvStateCMDP (batched),
+        # where instruction index lives in state_batched.idx (NOT in state_batched.env_state.idx).
+        state_cpu = jax.device_get(state_batched)
+
+        idxs_arr = getattr(state_cpu, "idx", None)
+        idxs = np.asarray(idxs_arr).tolist() if idxs_arr is not None else [0] * self.env_num
+
+        craftax_state_batched = getattr(state_cpu, "env_state", None)
+        cost_batched = getattr(state_cpu, "cost", None)
+        episode_cost_batched = getattr(state_cpu, "episode_cost", None)
+
+        # Parallel ASCII/text render via one Ray actor per env (optional).
+        if self._text_render_actors is not None and craftax_state_batched is not None:
+            futures = []
+            for i in range(self.env_num):
+                craftax_state_i = jax.tree_util.tree_map(
+                    lambda x: np.asarray(x[i]), craftax_state_batched
+                )
+                futures.append(self._text_render_actors[i].render_craftax_state.remote(craftax_state_i))
+            text_renders = ray.get(futures)
+        else:
+            text_renders = []
+            for i in range(self.env_num):
+                try:
+                    if craftax_state_batched is not None:
+                        craftax_state_i = jax.tree_util.tree_map(lambda x: x[i], craftax_state_batched)
+                        text_renders.append(self.render_func(craftax_state_i))
+                    else:
+                        text_renders.append("The world is empty.")
+                except Exception:
+                    text_renders.append("The world is empty.")
+
+        for i in range(self.env_num):
+            info = {}
+            r = float(np.asarray(jax.device_get(reward_batched[i])))
+            d = bool(np.asarray(jax.device_get(done_batched[i])))
+            info["won"] = d and r > 0
+            info["text_render"] = text_renders[i]
+
+            # instruction/constraint (string) from scenario handler lists
+            try:
+                idx = int(idxs[i])
+                info["instruction"] = self.wrapper.scenario_handler.scenario_data.instructions_list[idx]
+                if hasattr(self.wrapper.scenario_handler.scenario_data, "constraints_list"):
+                    info["constraint"] = self.wrapper.scenario_handler.scenario_data.constraints_list[idx]
+            except Exception:
+                pass
+
+            # cost fields if present
+            try:
+                if cost_batched is not None:
+                    info["cost"] = float(np.asarray(cost_batched[i]))
+            except Exception:
+                pass
+            try:
+                if episode_cost_batched is not None:
+                    info["episode_cost"] = float(np.asarray(episode_cost_batched[i]))
+            except Exception:
+                pass
+
+            if i in render_frames:
+                info["render_frame"] = render_frames[i]
+
+            infos.append(info)
+
+        return infos
+
+    def reset(self):
+        self.key, reset_key = jax.random.split(self.key)
+        obs, state = self._vec_env.reset(reset_key, self.env_params)
+        self.state = state
+
+        render_frames: dict[int, np.ndarray] = {}
+        if self._record_video_env_idxs:
+            # Only render selected env indices
+            state_cpu = jax.device_get(state)
+            env_state_cpu = getattr(state_cpu, "env_state", None)
+            for i in self._record_video_env_idxs:
+                if i < 0 or i >= self.env_num:
+                    continue
+                try:
+                    craftax_state_i = jax.tree_util.tree_map(lambda x: x[i], env_state_cpu)
+                    obs_jax_rendered = render_classic(craftax_state_i, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
+                    render_frames[i] = np.asarray(obs_jax_rendered).copy()
+                except Exception:
+                    pass
+
+        # For compatibility with existing managers, return list of obs (pixel obs optional) and list of infos
+        obs_list = [None] * self.env_num
+        if self.use_pixel_obs:
+            # If pixel obs is required (VLEnv), render for all envs
+            state_cpu = jax.device_get(state)
+            env_state_cpu = getattr(state_cpu, "env_state", None)
+            for i in range(self.env_num):
+                try:
+                    craftax_state_i = jax.tree_util.tree_map(lambda x: x[i], env_state_cpu)
+                    obs_jax_rendered = render_classic(craftax_state_i, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
+                    obs_list[i] = np.asarray(obs_jax_rendered)
+                except Exception:
+                    obs_list[i] = None
+
+        infos = self._build_info_list(state, jnp.zeros((self.env_num,)), jnp.zeros((self.env_num,), dtype=bool), render_frames=render_frames)
+        return obs_list, infos
+
+    def step(self, actions: list[int]):
+        if self.state is None:
+            raise RuntimeError("reset() must be called before step()")
+        if len(actions) != self.env_num:
+            raise ValueError(f"Expected {self.env_num} actions, got {len(actions)}")
+
+        self.key, step_key = jax.random.split(self.key)
+        action_arr = jnp.asarray(actions, dtype=jnp.int32)
+        obs, new_state, reward, done, info = self._vec_env.step(step_key, self.state, action_arr, self.env_params)
+        self.state = new_state
+
+        render_frames: dict[int, np.ndarray] = {}
+        if self._record_video_env_idxs:
+            state_cpu = jax.device_get(new_state)
+            env_state_cpu = getattr(state_cpu, "env_state", None)
+            for i in self._record_video_env_idxs:
+                if i < 0 or i >= self.env_num:
+                    continue
+                try:
+                    craftax_state_i = jax.tree_util.tree_map(lambda x: x[i], env_state_cpu)
+                    obs_jax_rendered = render_classic(craftax_state_i, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
+                    render_frames[i] = np.asarray(obs_jax_rendered).copy()
+                except Exception:
+                    pass
+
+        obs_list = [None] * self.env_num
+        if self.use_pixel_obs:
+            state_cpu = jax.device_get(new_state)
+            env_state_cpu = getattr(state_cpu, "env_state", None)
+            for i in range(self.env_num):
+                try:
+                    craftax_state_i = jax.tree_util.tree_map(lambda x: x[i], env_state_cpu)
+                    obs_jax_rendered = render_classic(craftax_state_i, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
+                    obs_list[i] = np.asarray(obs_jax_rendered)
+                except Exception:
+                    obs_list[i] = None
+
+        # Convert reward/done to python lists
+        reward_list = [float(x) for x in np.asarray(jax.device_get(reward)).tolist()]
+        done_list = [bool(x) for x in np.asarray(jax.device_get(done)).tolist()]
+        infos = self._build_info_list(new_state, reward, done, render_frames=render_frames)
+        return obs_list, reward_list, done_list, infos
+
+    def close(self):
+        if getattr(self, "_text_render_actors", None):
+            for actor in self._text_render_actors:
+                try:
+                    ray.kill(actor)
+                except Exception:
+                    pass
+            self._text_render_actors = None
+
+
+def build_caged_craftext_envs_optimistic(
+    seed: int,
+    env_num: int,
+    group_n: int,
+    resources_per_worker: dict,
+    is_train: bool = True,
+    env_kwargs: dict = None,
+    reset_ratio: int | None = None,
+):
+    # group_n is ignored (this env already batches internally)
+    _ = resources_per_worker
+    return CagedCraftextOptimisticVecEnv(
+        seed=seed,
+        env_num=env_num,
+        env_kwargs=env_kwargs,
+        reset_ratio=reset_ratio,
+        is_train=is_train,
     )

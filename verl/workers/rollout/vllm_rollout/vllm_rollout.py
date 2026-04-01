@@ -117,8 +117,10 @@ class vLLMRollout(BaseRollout):
         #    (which can vary across different vLLM versions);
         # - Otherwise it's the desired value we want to explicitly set.
         engine_kwargs = {key: val for key, val in engine_kwargs.items() if val is not None}
+        lora_tokenizer_path = kwargs.pop("lora_tokenizer_path", None)
         lora_kwargs = kwargs.pop('lora_kwargs', {})
         self.lora_kwargs = lora_kwargs
+        self._lora_request_base_path = (lora_tokenizer_path or getattr(tokenizer, "name_or_path", None) or "").strip()
         self.inference_engine = LLM(
             actor_module,
             tokenizer=tokenizer,
@@ -227,7 +229,15 @@ class vLLMRollout(BaseRollout):
             lora_int_ids = list(self.inference_engine.llm_engine.list_loras())
             if len(lora_int_ids) > 0:
                 lora_int_id=lora_int_ids[0]
-                lora_requests = [LoRARequest(lora_name=f"{lora_int_id}",lora_int_id=lora_int_id,lora_path="/simon-stub-path")] * batch_size
+                lora_path = self._lora_request_base_path
+                if not lora_path:
+                    raise ValueError(
+                        "LoRA vLLM rollout needs a valid HuggingFace path for LoRARequest "
+                        "(pass lora_tokenizer_path=... from the worker or ensure tokenizer.name_or_path is set)."
+                    )
+                lora_requests = [
+                    LoRARequest(lora_name=f"{lora_int_id}", lora_int_id=lora_int_id, lora_path=lora_path)
+                ] * batch_size
         # users can customize different sampling_params at different run
         with self.update_sampling_params(**kwargs):
             output = self.inference_engine.generate(
