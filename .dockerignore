@@ -1,0 +1,16 @@
+.git
+**/__pycache__
+**/*.pyc
+*.egg-info
+.pre-commit-config.yaml
+
+# Large / local-only dirs (not needed for caged_craftext deps)
+pretrained_checkpoints
+training_checkpoints
+agent_system_temp
+test_repo
+temp_articles
+gif
+logdir
+*.zip
+run_sft_*.zip

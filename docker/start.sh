@@ -28,4 +28,15 @@ else
 fi
 echo gpus in docker --- $gpus
 
-docker run -it --rm --name $container_name --memory="200g" --shm-size=8g --gpus '"device=0,1"' --env WANDB_API_KEY=$WANDB_API_KEY -v $(pwd):/usr/home/workspace -v $(pwd)/logdir:/root/logdir $image_name
+# Repo is a volume: edit caged_craftext on host without rebuilding the image.
+# First start runs setup_caged_craftext_deps.sh (~15 min); then .docker_caged_deps_installed skips it.
+# After caged_craftext changes: bash docker/setup_caged_craftext_editable.sh
+# SKIP_CAGED_CRAFTEXT_SETUP=1 — skip even first-time install (image already has deps)
+# FORCE_CAGED_CRAFTEXT_SETUP=1 — rerun full install
+docker run -it --rm --name $container_name --memory="200g" --shm-size=8g --gpus '"device=0,1"' \
+  --env WANDB_API_KEY=$WANDB_API_KEY \
+  --env SKIP_CAGED_CRAFTEXT_SETUP="${SKIP_CAGED_CRAFTEXT_SETUP:-}" \
+  --env FORCE_CAGED_CRAFTEXT_SETUP="${FORCE_CAGED_CRAFTEXT_SETUP:-}" \
+  -v "$(pwd)":/usr/home/workspace \
+  -v "$(pwd)/logdir":/root/logdir \
+  $image_name

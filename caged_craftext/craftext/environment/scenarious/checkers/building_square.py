@@ -17,6 +17,7 @@ from craftext.environment.scenarious.checkers.squeres import (
     check_square_3x3, 
     check_square_4x4
 )
+from craftext.environment.scenarious.checkers.utils import extract_square_region
 
 @dataclass
 class Carry:
@@ -45,13 +46,8 @@ def is_square_formed(game_data: Union[GameDataClassic, GameData], block_index: i
     
     x, y = player_position
 
-    region_size = 2 * 10 + 1
-
-    region = lax.dynamic_slice(
-        binary_map,
-        start_indices=(x - radius, y - radius),
-        slice_sizes=(region_size, region_size)
-    )
+    region_size = 21
+    region = extract_square_region(binary_map, x, y, radius, region_size, pad_value=0)
 
     indices = jnp.arange(region_size * region_size)
 

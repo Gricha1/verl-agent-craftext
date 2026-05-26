@@ -12,11 +12,13 @@ if [ ! -f "setup.py" ]; then
     exit 1
 fi
 
-# Проверяем conda окружение
+# Проверяем conda окружение (Docker build uses conda run; interactive shell may need activate)
 if [ -z "$CONDA_DEFAULT_ENV" ]; then
     echo "Активируем conda окружение verl-agent-311..."
-    source /opt/conda/etc/profile.d/conda.sh
-    conda activate verl-agent-311
+    if [ -f /opt/conda/etc/profile.d/conda.sh ]; then
+        source /opt/conda/etc/profile.d/conda.sh
+    fi
+    conda activate verl-agent-311 2>/dev/null || true
 fi
 
 echo "Текущее conda окружение: $CONDA_DEFAULT_ENV"

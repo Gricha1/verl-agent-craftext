@@ -54,6 +54,10 @@ actor_rollout_ref:
     clip_ratio_c: 3.0 # lower bound of the value for Dual-clip PPO from https://arxiv.org/pdf/1912.09729
     loss_agg_mode: "token-mean" # / "seq-mean-token-sum" / "seq-mean-token-mean"
     entropy_coeff: 0.001
+    # If true: entropy bonus is H(softmax over 17 canonical <action>X</action> log-scores), not token LM entropy.
+    entropy_over_valid_actions: False
+    entropy_action_length_normalize: True
+    entropy_action_only_valid_rollouts: False
     use_invalid_action_penalty: True
     invalid_action_penalty_coef: 0.1
     use_kl_loss: False # True for GRPO
@@ -306,6 +310,9 @@ env:
   seed: 0
   max_steps: 50
   history_length: 2
+  # Craftax/Caged Craftext: JAX on GPU (shares GPUs with vLLM — tune jax_gpu_fraction)
+  use_jax_gpu: false
+  jax_gpu_fraction: 0.15
   resources_per_worker: # resources for each env worker
     num_cpus: 0.1
     num_gpus: 0

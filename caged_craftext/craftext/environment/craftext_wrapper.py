@@ -14,7 +14,7 @@ from craftext.environment.scenarious.manager import ScenariosNoLambda
 
 from craftext.environment.states.state import GameData
 from craftext.environment.states.state_classic import GameDataClassic
-from craftext.environment.craftext_constants import Scenarios 
+from craftext.environment.craftext_constants import Achievement, AchievementState, Scenarios
 from craftext.environment.scenarious.checkers.achivments       import checker_acvievments
 from craftext.environment.scenarious.checkers.time_constrained import checker_time_placement
 from craftext.environment.scenarious.checkers.building_star    import checker_star
@@ -23,6 +23,7 @@ from craftext.environment.scenarious.checkers.building_square  import checker_sq
 from craftext.environment.scenarious.checkers.conditional      import checker_conditional_placement
 from craftext.environment.scenarious.checkers.relevant         import cheker_localization
 from craftext.environment.scenarious.checkers.target_state     import TargetState
+from craftext.environment.debug_square_rewards import debug_square_step_reward
 from typing import Union
 
 @struct.dataclass
@@ -70,6 +71,7 @@ class InstructionWrapper(Wrapper):
         """
         super().__init__(env)
 
+        self.config_name = config_name
         self.encode_model = encode_model_class(form_to_use=encode_form)
 
         # Initialize the scenario handler with the encoding model
@@ -98,13 +100,18 @@ class InstructionWrapper(Wrapper):
         """
 
         obs, state = self.env.reset(_rng, env_params)
-        
+
         idx = jax.lax.cond(
                 instruction_idx == -1, 
                 lambda: jax.random.randint(_rng, shape=(), minval=0, maxval=len(self.scenario_handler.scenario_data_jax.embeddings_list)),
                 lambda: instruction_idx
             )
         instructions_emb = self.scenario_handler.scenario_data_jax.embeddings_list[idx]
+
+        checker_id = self.scenario_handler.scenario_data_jax.scenario_checker[idx]
+        # 8x8 debug map uses achievement checkers only; avoid BUILD_LINE (idx 3) on tiny maps.
+        if self.config_name == "debug_square_8x8":
+            checker_id = jnp.int32(0)
 
         # Initialize the state with the selected instruction embedding/token and set success rates to zero
         state = TextEnvState(
@@ -117,7 +124,7 @@ class InstructionWrapper(Wrapper):
             total_success_rate=0.0,
             rng=_rng,
             instruction_done=False,
-            checker_id=self.scenario_handler.scenario_data_jax.scenario_checker[idx],
+            checker_id=checker_id,
             target_state=self.batched_ts.select(idx)
         )
         return obs, state
@@ -131,17 +138,34 @@ class InstructionWrapper(Wrapper):
         game_data_vector = self.StateStructure.from_state(env_state.env_state, state, action)
                     
         ts = self.batched_ts.select(env_state.idx)
-        #print(ts)
-        instruction_done = generic_check(game_data_vector, ts, env_state.checker_id)
+        # debug_square_8x8: only achievement checker (avoid lax.switch tracing building_* on 8x8).
+        if self.config_name == "debug_square_8x8":
+            instruction_done = checker_acvievments(game_data_vector, ts.achievements)
+        else:
+            instruction_done = generic_check(game_data_vector, ts, env_state.checker_id)
         
-        # If EXPLORE mode - give craftAx reward
-        reward = lax.cond(
-                    env_state.checker_id != Scenarios.EXPLORE,
-                    lambda r: r / 50,
-                    lambda r: r,
-                    reward
-                )
-       # reward = jax.lax.cond(instruction_done, lambda _: reward + 1, lambda _: reward, operand=None)
+        if self.config_name == "debug_square_8x8":
+            # No Craftax achievement reward; task completion + Manhattan navigation shaping.
+            prev_pos = env_state.env_state.player_position
+            new_pos = state.player_position
+            reward = debug_square_step_reward(
+                reward,
+                prev_pos,
+                new_pos,
+                ts.achievements.achievement_mask,
+                instruction_done,
+            )
+        else:
+            # Craftax achievement reward (scaled unless EXPLORE mode).
+            reward = lax.cond(
+                env_state.checker_id != Scenarios.EXPLORE,
+                lambda r: r / 50,
+                lambda r: r,
+                reward,
+            )
+            # reward = jax.lax.cond(
+            #     instruction_done, lambda _: reward + 1, lambda _: reward, operand=None
+            # )
         done = instruction_done | done
    
         new_episode_sr = env_state.success_rate + jnp.float32(instruction_done)

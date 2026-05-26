@@ -625,6 +625,8 @@ class ActorRolloutRefWorker(Worker):
                 # Передаем tokenizer_path в config для использования в compute_log_prob
                 if not hasattr(self.config.actor, 'tokenizer_path') or self.config.actor.get('tokenizer_path') is None:
                     self.config.actor.tokenizer_path = self.config.model.path
+                self.config.actor.pad_token_id = self.tokenizer.pad_token_id
+                self.config.actor.trust_remote_code = self.config.model.get("trust_remote_code", False)
             self.actor = DataParallelPPOActor(config=self.config.actor, actor_module=self.actor_module_fsdp, actor_optimizer=self.actor_optimizer)
 
         if self._is_rollout:
@@ -1045,9 +1047,13 @@ class ActorRolloutRefWorker(Worker):
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data)
             with adapter_ctx:
-                output, entropys = self.actor.compute_log_prob(data=data, calculate_entropy=True)
+                calc_entropy = not self.config.actor.get("entropy_over_valid_actions", False)
+                output, entropys = self.actor.compute_log_prob(data=data, calculate_entropy=calc_entropy)
+            tensors = {"old_log_probs": output}
+            if entropys is not None:
+                tensors["entropys"] = entropys
             output = DataProto.from_dict(
-                tensors={"old_log_probs": output, "entropys": entropys},
+                tensors=tensors,
                 meta_info={"temperature": self.config.rollout.temperature},
             )
             output = self.ulysses_sharding_manager.postprocess_data(output)

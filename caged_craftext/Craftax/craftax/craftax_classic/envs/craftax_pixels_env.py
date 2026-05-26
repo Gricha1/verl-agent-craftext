@@ -14,6 +14,21 @@ from craftax.craftax_classic.envs.craftax_state import (
 )
 from craftax.craftax_classic.renderer import render_craftax_pixels
 from craftax.craftax_classic.world_gen import generate_world
+from craftax.craftax_classic.debug_square_world_gen import generate_debug_square_world
+
+
+def _params_for_debug_square(base: EnvParams) -> EnvParams:
+    """Disable mob spawning on the fixed 8x8 debug arena."""
+    return base.replace(
+        spawn_cow_chance=0.0,
+        spawn_zombie_base_chance=0.0,
+        spawn_zombie_night_chance=0.0,
+        spawn_skeleton_chance=0.0,
+    )
+
+
+def _is_debug_square_map(static_env_params: StaticEnvParams) -> bool:
+    return tuple(static_env_params.map_size) == (8, 8)
 
 
 class CraftaxClassicPixelsEnvNoAutoReset(EnvironmentNoAutoReset):
@@ -26,7 +41,10 @@ class CraftaxClassicPixelsEnvNoAutoReset(EnvironmentNoAutoReset):
 
     @property
     def default_params(self) -> EnvParams:
-        return EnvParams()
+        p = EnvParams()
+        if _is_debug_square_map(self.static_env_params):
+            return _params_for_debug_square(p)
+        return p
 
     @staticmethod
     def default_static_params() -> StaticEnvParams:
@@ -53,7 +71,10 @@ class CraftaxClassicPixelsEnvNoAutoReset(EnvironmentNoAutoReset):
     def reset_env(
         self, rng: chex.PRNGKey, params: EnvParams
     ) -> Tuple[chex.Array, EnvState]:
-        state = generate_world(rng, params, self.static_env_params)
+        if _is_debug_square_map(self.static_env_params):
+            state = generate_debug_square_world(rng, params, self.static_env_params)
+        else:
+            state = generate_world(rng, params, self.static_env_params)
 
         return self.get_obs(state), state
 
@@ -98,7 +119,10 @@ class CraftaxClassicPixelsEnv(environment.Environment):
 
     @property
     def default_params(self) -> EnvParams:
-        return EnvParams()
+        p = EnvParams()
+        if _is_debug_square_map(self.static_env_params):
+            return _params_for_debug_square(p)
+        return p
 
     @staticmethod
     def default_static_params() -> StaticEnvParams:
@@ -125,7 +149,10 @@ class CraftaxClassicPixelsEnv(environment.Environment):
     def reset_env(
         self, rng: chex.PRNGKey, params: EnvParams
     ) -> Tuple[chex.Array, EnvState]:
-        state = generate_world(rng, params, self.static_env_params)
+        if _is_debug_square_map(self.static_env_params):
+            state = generate_debug_square_world(rng, params, self.static_env_params)
+        else:
+            state = generate_world(rng, params, self.static_env_params)
 
         return self.get_obs(state), state
 

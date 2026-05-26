@@ -69,7 +69,7 @@ def place_object_relevant_to(
     )
     region = lax.dynamic_slice(
         padded_map,
-        (x, y),
+        (x + MAX_RADIUS, y + MAX_RADIUS),
         (REGION_SIZE, REGION_SIZE)
     )  # → shape [REGION_SIZE, REGION_SIZE]
 

@@ -145,7 +145,8 @@ class OptimisticResetVecEnvWrapper(GymnaxWrapper):
 
         state, obs = jax.vmap(auto_reset)(done, state_re, state_st, obs_re, obs_st)
 
-        return obs, state, reward, done, info
+        # state_st: post-action state before optimistic reset (for video frames on done).
+        return obs, state, reward, done, info, state_st
 
 
 @struct.dataclass

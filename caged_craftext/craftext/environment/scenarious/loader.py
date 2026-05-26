@@ -94,12 +94,14 @@ def load_scenarios(scenarious_config):
         raise ValueError("Scenario path could not be determined.")
 
     for file in os.listdir(scenarios_dir):
-        if mode in file:
-            scenario_module_name = f"craftext.dataset.scenarious.{file}.{module}"
-            scenario_module = importlib.import_module(scenario_module_name)
-            
-            if hasattr(scenario_module, data_key):
-                scenarios.update(getattr(scenario_module, data_key))
+        # Exact folder name match only (substring match pulls unrelated jax_* packs).
+        if file != mode:
+            continue
+        scenario_module_name = f"craftext.dataset.scenarious.{file}.{module}"
+        scenario_module = importlib.import_module(scenario_module_name)
+
+        if hasattr(scenario_module, data_key):
+            scenarios.update(getattr(scenario_module, data_key))
     
     # print(scenarios)
    

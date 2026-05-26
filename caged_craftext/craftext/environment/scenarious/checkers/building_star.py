@@ -24,7 +24,7 @@ def checker_star(game_data: Union[GameDataClassic, GameData],  target_state: Bui
     # return jax.lax.select(target_state.need_to_achieve, 
                 #    is_cross_formed(10, 7, game_data, block_index, radius, size, cross_type),
                 #    jnp.array(False))
-    return is_cross_formed(10, 7, game_data, block_index, radius, size, cross_type)
+    return is_cross_formed(10, 7, game_data, block_index, cross_type, radius, size)
 
 @partial(jax.jit, static_argnums=(0,1))
 def is_cross_formed(
@@ -40,12 +40,15 @@ def is_cross_formed(
     x, y = game_data.states[0].variables.player_position
     R   = max_radius
     FULL = 2*R + 1
+    game_map = game_data.states[0].map.game_map
+    # Pad enough so (x+R, y+R) + FULL fits (8x8 debug map needs extra bottom/right pad).
+    pad_extra = FULL - 1
     padded = jnp.pad(
-        game_data.states[0].map.game_map,
-        ((R, R), (R, R)),
+        game_map,
+        ((R, R + pad_extra), (R, R + pad_extra)),
         constant_values=-1
     )
-    region_full = lax.dynamic_slice(padded, (x, y), (FULL, FULL))  
+    region_full = lax.dynamic_slice(padded, (x + R, y + R), (FULL, FULL))  
 
     coords = jnp.arange(-R, R+1)                         
     mask1d = jnp.abs(coords) <= radius                   

@@ -1,0 +1,5 @@
+dataset_key: jax_debug_square_8x8
+subset_key: easy
+base_environment: Craftax-Classic-Pixels-v1-Text
+use_parafrases: False
+use_constraints_parafrases: False

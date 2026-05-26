@@ -110,8 +110,47 @@ class FSDPVLLMShardingManager(BaseShardingManager):
         if is_version_ge(pkg='vllm', minver='0.7.3'):
             VLLMHijack.hijack()
 
+        # Stale-rollout: skip expensive FSDP→vLLM copy on some steps (bounded staleness).
+        self._skip_weight_sync_once: bool = False
+
+    def request_skip_weight_sync_on_next_enter(self) -> None:
+        """Next ``__enter__`` wakes vLLM but does not copy weights from FSDP (v0.7+ vLLM path only)."""
+        self._skip_weight_sync_once = True
+
+    def _enter_without_weight_sync(self) -> None:
+        """Wake vLLM after sleep(level=1) without FSDP→vLLM copy.
+
+        vLLM level-1 sleep keeps weights on CPU; only waking ``kv_cache`` leaves weights asleep
+        and breaks LoRA/punica. Mirror the full enter order but skip ``update_params``:
+        restore prior GPU weights from vLLM's sleep backup, then allocate KV.
+        """
+        get_torch_device().empty_cache()
+        if "tags" in inspect.signature(self.inference_engine.wake_up).parameters:
+            self.inference_engine.wake_up(tags=["weights"])
+            self.inference_engine.wake_up(tags=["kv_cache"])
+        else:
+            self.inference_engine.wake_up()
+        log_gpu_memory_usage("After stale_rollout wake (no FSDP weight copy)", logger=logger)
+        if self.device_mesh is not None:
+            self.torch_random_states = get_torch_device().get_rng_state()
+            get_torch_device().set_rng_state(self.gen_random_states)
+
     @GPUMemoryLogger(role="fsdp vllm sharding_manager", logger=logger)
     def __enter__(self):
+        if getattr(self, "_skip_weight_sync_once", False):
+            self._skip_weight_sync_once = False
+            if vllm_version in (
+                "0.5.4",
+                "0.6.3",
+            ):
+                logger.warning(
+                    "stale_rollout: skip weight sync is not supported for vllm %s; performing full FSDP→vLLM sync",
+                    vllm_version,
+                )
+            else:
+                self._enter_without_weight_sync()
+                return
+
         def __collect_lora_params()->OrderedDict:
             """
             collect lora params or full params if base model is not ready in vllm

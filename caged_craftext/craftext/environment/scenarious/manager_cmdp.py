@@ -347,6 +347,8 @@ class ScenariosNoLambdaCMDP:
         embeddings_jax = jnp.array(self.scenario_data.embeddings_list) if self.scenario_data.embeddings_list is not None else None
         constraints_embeddings_jax = jnp.array(self.scenario_data.constraints_embeddings_list) if self.scenario_data.constraints_embeddings_list is not None else None
         scenario_checker_jax = self._prepare_jax_checkers(self.scenario_data.scenario_checker)
+        if self.config.dataset_key == "jax_debug_square_8x8":
+            scenario_checker_jax = jnp.zeros_like(scenario_checker_jax)
         cost_types_jax = jnp.array([i for i in range(len(self.scenario_data.cost_types_list))])
         # print("scen fata",self.scenario_data)
         print(f"Final number of instructions: {len(self.scenario_data.embeddings_list)}")

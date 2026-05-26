@@ -137,3 +137,6 @@ data/
 *xet
 runs
 evaluation_results
+
+# Docker: first-run deps marker (created inside mounted repo)
+.docker_caged_deps_installed

@@ -286,11 +286,15 @@ def do_action(rng, state, action, static_params):
         )
     )
 
-    # Sapling
+    # Sapling (random drop on grass); disabled on fixed 8x8 debug arena
     rng, _rng = jax.random.split(rng)
+    is_debug_square = tuple(static_params.map_size) == (8, 8)
     is_mining_sapling = jnp.logical_and(
-        state.map[block_position[0], block_position[1]] == BlockType.GRASS.value,
-        jax.random.uniform(_rng) < 0.1,
+        jnp.logical_not(is_debug_square),
+        jnp.logical_and(
+            state.map[block_position[0], block_position[1]] == BlockType.GRASS.value,
+            jax.random.uniform(_rng) < 0.1,
+        ),
     )
 
     new_inventory = new_inventory.replace(
@@ -1661,8 +1665,15 @@ def craftax_step(rng, state, action, params, static_params):
     rng, _rng = jax.random.split(rng)
     state = update_mobs(_rng, state, params, static_params)
 
+    # No mob spawning on the fixed 8x8 debug map (zombies, cows, skeletons, arrows).
+    is_debug_square = tuple(static_params.map_size) == (8, 8)
     rng, _rng = jax.random.split(rng)
-    state = spawn_mobs(state, _rng, params, static_params)
+    state = jax.lax.cond(
+        is_debug_square,
+        lambda s: s,
+        lambda s: spawn_mobs(s, _rng, params, static_params),
+        state,
+    )
 
     # Plants
     state = update_plants(state, static_params)

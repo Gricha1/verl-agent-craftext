@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import torch
 import numpy as np
 from verl import DataProto
@@ -383,6 +384,8 @@ class TrajectoryCollector:
         completed_episode_returns = []
         completed_episode_lengths = []
         completed_episode_costs = []
+        # Tracks env slots already pushed to completed_episode_* (avoids double-count at rollout end).
+        episode_metrics_recorded = np.zeros(batch_size, dtype=bool)
         
         # Auto reset: проверяем, включен ли auto reset
         auto_reset_enabled = self.config.env.get('auto_reset', False)
@@ -576,6 +579,14 @@ class TrajectoryCollector:
             if episode_costs_from_info is not None:
                 episode_costs[dones] = episode_costs_from_info[dones]
                 batch.non_tensor_batch['episode_cost'] = episode_costs_from_info
+
+            # Count this env step before logging completed episodes (fixes length off-by-one / min=0).
+            if auto_reset_enabled:
+                current_episode_rewards[active_masks] += torch_to_numpy(rewards)[active_masks]
+                current_episode_lengths[active_masks] += 1
+            episode_rewards[active_masks] += torch_to_numpy(rewards)[active_masks]
+            episode_lengths[active_masks] += 1
+
             # Записываем завершённые эпизоды в списки для метрик (среднее по эпизодам)
             for i in range(batch_size):
                 if dones[i]:
@@ -585,19 +596,21 @@ class TrajectoryCollector:
                         cost_val = float(episode_costs_from_info[i]) if episode_costs_from_info is not None else float(current_episode_costs[i])
                         completed_episode_costs.append(cost_val)
                     else:
+                        ep_len = float(episode_lengths[i])
                         completed_episode_returns.append(float(episode_rewards[i]))
-                        completed_episode_lengths.append(float(episode_lengths[i]))
+                        completed_episode_lengths.append(ep_len)
                         completed_episode_costs.append(float(episode_costs[i]))
-            
-            # Create reward tensor, only assign rewards for active environments
-            # Обновляем награды и длины для текущего эпизода
-            if auto_reset_enabled:
-                current_episode_rewards[active_masks] += torch_to_numpy(rewards)[active_masks]
-                current_episode_lengths[active_masks] += 1
-            
-            # Обновляем общие счетчики (накапливаем для всех эпизодов)
-            episode_rewards[active_masks] += torch_to_numpy(rewards)[active_masks]
-            episode_lengths[active_masks] += 1
+                        # Debug: flag implausibly short episodes (debug_square needs ~5+ steps).
+                        if os.environ.get("CRAFTEXT_DEBUG_SHORT_EPISODES", "0") == "1" and ep_len <= 3:
+                            instr = infos[i].get("instruction", "?") if i < len(infos) else "?"
+                            aid = infos[i].get("action_id", -1) if i < len(infos) else -1
+                            print(
+                                f"[CRAFTEXT_DEBUG_SHORT_EPISODES] env={i} length={ep_len} "
+                                f"reward={float(episode_rewards[i]):.3f} won={infos[i].get('won')} "
+                                f"action_id={aid} instruction={str(instr)[:80]}",
+                                flush=True,
+                            )
+                    episode_metrics_recorded[i] = True
 
             assert len(rewards) == batch_size, f"env should return rewards for all environments, got {len(rewards)} rewards for {batch_size} environments"
             batch.non_tensor_batch['rewards'] = torch_to_numpy(rewards, is_object=True)
@@ -666,39 +679,34 @@ class TrajectoryCollector:
                     current_episode_lengths[need_reset] = 0
                     current_episode_costs[need_reset] = 0.0
                     is_done[need_reset] = False
-                    
+
                     # Сбрасываем safety state для Saute, если используется
                     if saute_enabled:
                         safety_obs[need_reset] = 1.0
                         violation_counts[need_reset] = 0
-                    
-                    # Перезапускаем среды
-                    # Примечание: reset() перезапускает все среды, но мы обновим наблюдения
-                    # только для тех сред, которые еще активны (не достигли max_steps)
-                    reset_obs, reset_infos = envs.reset(kwargs=None)
-                    
-                    # Обновляем наблюдения для всех активных сред (которые еще не достигли max_steps)
-                    # Это необходимо, так как reset() перезапускает все среды
-                    active_envs = steps_per_env < max_steps_per_env
-                    if isinstance(next_obs, dict) and isinstance(reset_obs, dict):
-                        for i in range(batch_size):
-                            if active_envs[i]:
-                                # Обновляем наблюдения для активных сред
-                                if 'text' in reset_obs and reset_obs['text'] is not None:
-                                    next_obs['text'][i] = reset_obs['text'][i]
-                                if 'image' in reset_obs and reset_obs['image'] is not None:
-                                    next_obs['image'][i] = reset_obs['image'][i]
-                                if 'anchor' in reset_obs and reset_obs['anchor'] is not None:
-                                    next_obs['anchor'][i] = reset_obs['anchor'][i]
-                    elif not isinstance(next_obs, dict):
-                        # Если next_obs не словарь, обновляем напрямую
-                        for i in range(batch_size):
-                            if active_envs[i]:
-                                next_obs[i] = reset_obs[i]
-                    
-                    # НЕ генерируем новые traj_uid для перезапущенных сред
-                    # Все шаги одного rollout (включая перезапущенные эпизоды) должны иметь одинаковый traj_uid
-                    # Это необходимо для правильной работы gather_rollout_data
+
+                    use_optimistic_parallel = bool(
+                        getattr(self.config.env, "use_optimistic_parallel", False)
+                    )
+                    if not use_optimistic_parallel:
+                        # Multi-process env: explicit reset (restarts all workers).
+                        reset_obs, reset_infos = envs.reset(kwargs=None)
+                        active_envs = steps_per_env < max_steps_per_env
+                        if isinstance(next_obs, dict) and isinstance(reset_obs, dict):
+                            for i in range(batch_size):
+                                if active_envs[i]:
+                                    if 'text' in reset_obs and reset_obs['text'] is not None:
+                                        next_obs['text'][i] = reset_obs['text'][i]
+                                    if 'image' in reset_obs and reset_obs['image'] is not None:
+                                        next_obs['image'][i] = reset_obs['image'][i]
+                                    if 'anchor' in reset_obs and reset_obs['anchor'] is not None:
+                                        next_obs['anchor'][i] = reset_obs['anchor'][i]
+                        elif not isinstance(next_obs, dict):
+                            for i in range(batch_size):
+                                if active_envs[i]:
+                                    next_obs[i] = reset_obs[i]
+                    # Optimistic batched env: OptimisticResetVecEnvWrapper already reset done slots
+                    # inside step(); next_obs from envs.step() is already the new episode.
                 
             # Update observations for next step
             if saute_enabled and append_safety_info_to_obs:
@@ -720,9 +728,11 @@ class TrajectoryCollector:
                 flush=True,
             )
         
-        # Без auto_reset: один эпизод на env — добавляем в списки завершённых эпизодов
+        # Без auto_reset: эпизоды, не завершившиеся по done, — один раз в конце rollout (max_steps)
         if not auto_reset_enabled:
             for i in range(batch_size):
+                if episode_metrics_recorded[i]:
+                    continue
                 completed_episode_returns.append(float(episode_rewards[i]))
                 completed_episode_lengths.append(float(episode_lengths[i]))
                 completed_episode_costs.append(float(episode_costs[i]))

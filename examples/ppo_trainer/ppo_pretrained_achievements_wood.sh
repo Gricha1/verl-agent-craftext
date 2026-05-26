@@ -6,6 +6,10 @@
 
 set -e
 
+# Parallel Ray env workers (each loads DistilBERT + craftax → heavy host RAM).
+# 32 envs often OOM on ~128GB nodes; use 8 or optimistic-parallel script below.
+TRAIN_ENVS="${TRAIN_ENVS:-8}"
+
 # Путь к чекпоинту (можно изменить при необходимости)
 CHECKPOINT_PATH="pretrained_checkpoints/run_sft_qwen2.5_1.5b_lora_achievements_wood_no_reasoning_filtered_160k_20260305-202020/global_step_4000"
 
@@ -38,7 +42,7 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
     vllm \
     false \
     false \
-    32 \
+    "$TRAIN_ENVS" \
     128 \
     false \
     false \

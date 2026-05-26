@@ -2,13 +2,31 @@ import gc
 import os
 import sys
 
+
+def _prepend_local_craftax_on_path():
+    """Prefer caged_craftext/Craftax over pip craftax (debug map + spawn fixes)."""
+    current_file_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(current_file_dir, "../../../.."))
+    caged_root = os.environ.get("CAGED_CRAFTEXT_PATH", os.path.join(project_root, "caged_craftext"))
+    craftax_root = os.path.join(caged_root, "Craftax")
+    if os.path.isdir(craftax_root) and craftax_root not in sys.path:
+        sys.path.insert(0, craftax_root)
+
+
+_prepend_local_craftax_on_path()
+
 import gymnasium as gym  # verl-agent, скорее всего, использует gymnasium
 import jax
 import jax.numpy as jnp
 import jax.tree_util
 import numpy as np
 import ray
-from .utility import render_craftax_text, render_craftax_ascii, render_craftax_ascii_v2
+from .utility import (
+    render_craftax_text,
+    render_craftax_ascii,
+    render_craftax_ascii_v2,
+    overlay_episode_cumulative_stats,
+)
 from craftax.craftax_classic.renderer import render_craftax_pixels as render_classic
 from craftax.craftax.constants import BLOCK_PIXEL_SIZE_HUMAN
 
@@ -21,6 +39,64 @@ def _pick_text_render_fn(observation_type: str):
     if observation_type == "text":
         return render_craftax_text
     raise ValueError(f"Invalid observation type: {observation_type}")
+
+
+def _import_generate_debug_square_world():
+    """Load debug map generator from repo (pip craftax does not ship this module)."""
+    import importlib.util
+
+    current_file_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(current_file_dir, "../../../.."))
+    caged_root = os.environ.get("CAGED_CRAFTEXT_PATH", os.path.join(project_root, "caged_craftext"))
+    module_path = os.path.join(caged_root, "Craftax/craftax/craftax_classic/debug_square_world_gen.py")
+    if not os.path.isfile(module_path):
+        raise FileNotFoundError(
+            f"debug_square_world_gen.py not found at {module_path}. "
+            "Set CAGED_CRAFTEXT_PATH to the caged_craftext repo root."
+        )
+    spec = importlib.util.spec_from_file_location("caged_debug_square_world_gen", module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.generate_debug_square_world
+
+
+def _craftax_env_params(env):
+    """EnvParams for craftax env (supports debug override without mutating @property)."""
+    return getattr(env, "_caged_debug_env_params", env.default_params)
+
+
+def _make_craftax_classic_pixels_env(env_kwargs: dict):
+    """Classic Craftax env; optional fixed 8x8 debug square map."""
+    if env_kwargs.get("use_debug_square_map", False):
+        from craftax.craftax_classic.envs.craftax_pixels_env import CraftaxClassicPixelsEnvNoAutoReset
+        from craftax.craftax_classic.envs.craftax_state import StaticEnvParams
+
+        generate_debug_square_world = _import_generate_debug_square_world()
+        static_params = StaticEnvParams(map_size=(8, 8))
+        env = CraftaxClassicPixelsEnvNoAutoReset(static_env_params=static_params)
+
+        # No mob spawns on the tiny debug arena (pip craftax may lack map_size hook in default_params).
+        env._caged_debug_env_params = _craftax_env_params(env).replace(
+            spawn_cow_chance=0.0,
+            spawn_zombie_base_chance=0.0,
+            spawn_zombie_night_chance=0.0,
+            spawn_skeleton_chance=0.0,
+        )
+        print(
+            "[CagedCraftext] debug_square_8x8: fixed 8x8 map, no mob spawn, "
+            "no random grass sapling drops (use repo Craftax on sys.path)."
+        )
+
+        # Pip-installed craftax has no debug generator; patch reset (procedural gen breaks on 8x8).
+        def reset_env(rng, params):
+            state = generate_debug_square_world(rng, params, env.static_env_params)
+            return env.get_obs(state), state
+
+        env.reset_env = reset_env
+        return env
+    from craftax.craftax_env import make_craftax_env_from_name
+
+    return make_craftax_env_from_name("Craftax-Classic-Pixels-v1", auto_reset=False)
 
 
 class CagedCraftextTextRenderActor:
@@ -43,8 +119,6 @@ class CagedCraftextWorker:
     Этот класс компилирует JIT-функции на уровне экземпляра (одна компиляция на воркер).
     """
     def __init__(self, seed: int, env_kwargs: dict):
-        from craftax.craftax_env import make_craftax_env_from_name
-
         # Добавляем путь к caged_craftext в sys.path, если его там еще нет
         # Это нужно для импорта модуля craftext из caged_craftext
         caged_craftext_path = os.path.abspath(
@@ -59,7 +133,7 @@ class CagedCraftextWorker:
         from craftext.environment.encoders.craftext_distilbert_model_encoder import DistilBertEncode
         from craftext.environment.scenarious.manager_cmdp import ScenariosNoLambdaCMDP
 
-        env = make_craftax_env_from_name("Craftax-Classic-Pixels-v1", auto_reset=False)
+        env = _make_craftax_classic_pixels_env(env_kwargs)
         self.wrapper = CMDPInstructionWrapper(
             env=env,
             config_name=env_kwargs.get('config_name', 'achievements_safe_caged'),
@@ -67,7 +141,7 @@ class CagedCraftextWorker:
             encode_model_class=DistilBertEncode,
             encode_form=env_kwargs.get('encode_form', EncodeForm.EMBEDDING)
         )
-        self.env_params = self.wrapper.env.default_params
+        self.env_params = _craftax_env_params(self.wrapper.env)
         self.key = jax.random.PRNGKey(seed)
         self.base_seed = seed
         self.state = None
@@ -95,6 +169,9 @@ class CagedCraftextWorker:
             self.render_func = render_craftax_text
         else:
             raise ValueError(f"Invalid observation type: {self.observation_type}")
+
+        self._episode_return_cum = 0.0
+        self._episode_step = 0
 
     def _shape_or_type(self, x):
         # helper for debug: return shape if array-like, else type
@@ -162,9 +239,20 @@ class CagedCraftextWorker:
             
         info['text_render'] = text_render
         info['instruction'] = instruction_text
+        self._episode_return_cum += reward
+        info['episode_return_cum'] = float(self._episode_return_cum)
 
+        self._episode_step += 1
         if return_render and obs is not None:
-            info['render_frame'] = obs.copy()
+            ep_cost = float(info.get('episode_cost', 0.0))
+            info['render_frame'] = overlay_episode_cumulative_stats(
+                obs, self._episode_return_cum, ep_cost, step=self._episode_step
+            )
+            info['env_step'] = self._episode_step
+
+        if done:
+            self._episode_return_cum = 0.0
+            self._episode_step = 0
 
         return obs, reward, done, info
     
@@ -213,9 +301,16 @@ class CagedCraftextWorker:
         
         info['text_render'] = text_render
         info['instruction'] = instruction_text
+        self._episode_return_cum = 0.0
+        self._episode_step = 0
+        info['episode_return_cum'] = 0.0
 
         if return_render and obs is not None:
-            info['render_frame'] = obs.copy()
+            ep_cost = float(info.get('episode_cost', 0.0))
+            info['render_frame'] = overlay_episode_cumulative_stats(
+                obs, 0.0, ep_cost, step=self._episode_step
+            )
+            info['env_step'] = self._episode_step
 
         return obs, info
 
@@ -276,12 +371,17 @@ class CagedCraftextMultiProcessEnv(gym.Env):
         # Собираем все необходимые переменные окружения для Ray workers
         # НЕ устанавливаем CUDA_VISIBLE_DEVICES="" здесь, так как это может мешать Ray
         # Encoder'ы уже исправлены и проверяют torch.cuda.is_available() перед использованием CUDA
+        jax_platforms = os.environ.get("JAX_PLATFORMS")
         env_vars = {
             "CAGED_CRAFTEXT_PATH": caged_craftext_path,
             "PYTHONPATH": f"{caged_craftext_path}:{os.environ.get('PYTHONPATH', '')}",
-            "JAX_PLATFORMS": os.environ.get('JAX_PLATFORMS', 'cpu'),
         }
-        
+        if jax_platforms:
+            env_vars["JAX_PLATFORMS"] = jax_platforms
+        elif not resources_per_worker.get("num_gpus"):
+            # CPU Ray env workers: keep JAX off GPU (vLLM/FSDP own the GPUs).
+            env_vars.setdefault("JAX_PLATFORMS", "cpu")
+
         # Передаем CUDA_VISIBLE_DEVICES только если он явно установлен в окружении
         # Не устанавливаем пустое значение, чтобы не мешать Ray
         if 'CUDA_VISIBLE_DEVICES' in os.environ and os.environ['CUDA_VISIBLE_DEVICES']:
@@ -292,11 +392,14 @@ class CagedCraftextMultiProcessEnv(gym.Env):
         }
         print(f"[DEBUG] CagedCraftextMultiProcessEnv: Передаем в Ray workers:")
         print(f"  CAGED_CRAFTEXT_PATH={caged_craftext_path}")
-        print(f"  JAX_PLATFORMS={env_vars['JAX_PLATFORMS']}")
+        print(f"  JAX_PLATFORMS={env_vars.get('JAX_PLATFORMS', '(not set)')}")
         if 'CUDA_VISIBLE_DEVICES' in env_vars:
             print(f"  CUDA_VISIBLE_DEVICES={env_vars['CUDA_VISIBLE_DEVICES']}")
         else:
             print(f"  CUDA_VISIBLE_DEVICES=не установлен (encoder'ы будут проверять torch.cuda.is_available())")
+
+        self._workers = []
+        self._closed = False
 
         # Создаем Ray-воркеры CagedCraftextWorker с runtime_env
         env_worker = ray.remote(**resources_per_worker, runtime_env=runtime_env)(CagedCraftextWorker)
@@ -354,13 +457,26 @@ class CagedCraftextMultiProcessEnv(gym.Env):
         return list(obs_list), list(info_list)
 
     def close(self):
-        if getattr(self, '_closed', False): return
-        ray.get([worker.close.remote() for worker in self._workers])
-        [ray.kill(worker) for worker in self._workers]
+        if getattr(self, "_closed", False):
+            return
+        workers = getattr(self, "_workers", None)
+        if workers:
+            try:
+                ray.get([worker.close.remote() for worker in workers])
+            except Exception:
+                pass
+            for worker in workers:
+                try:
+                    ray.kill(worker)
+                except Exception:
+                    pass
         self._closed = True
 
     def __del__(self):
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            pass
 
 # -----------------------------------------------------------------------------
 # Фабрика-хелпер --------------------------------------------------------------
@@ -408,8 +524,6 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
     ) -> None:
         super().__init__()
 
-        from craftax.craftax_env import make_craftax_env_from_name
-
         # Make sure caged_craftext is importable
         caged_craftext_path = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "../../../..", "caged_craftext")
@@ -433,7 +547,7 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
         self._env_kwargs = env_kwargs if env_kwargs is not None else {}
         self._rng = np.random.RandomState(seed)
 
-        env = make_craftax_env_from_name("Craftax-Classic-Pixels-v1", auto_reset=False)
+        env = _make_craftax_classic_pixels_env(self._env_kwargs)
         self.wrapper = CMDPInstructionWrapper(
             env=env,
             config_name=self._env_kwargs.get("config_name", "achievements_safe_caged"),
@@ -441,7 +555,7 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
             encode_model_class=DistilBertEncode,
             encode_form=self._env_kwargs.get("encode_form", EncodeForm.EMBEDDING),
         )
-        self.env_params = self.wrapper.env.default_params
+        self.env_params = _craftax_env_params(self.wrapper.env)
 
         # Batched optimistic-reset wrapper
         if reset_ratio is None:
@@ -473,6 +587,10 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
 
         self._record_video_env_idxs: set[int] = set()
         self._is_train = bool(is_train)
+        self._episode_return_cum = np.zeros(self.env_num, dtype=np.float32)
+        self._episode_steps = np.zeros(self.env_num, dtype=np.int32)
+        # Monotonic step index within one rollout (for video); only reset on env.reset().
+        self._rollout_steps = np.zeros(self.env_num, dtype=np.int32)
 
         # Optional: one Ray actor per env — parallel text_render only (no duplicate env/BERT).
         # Train only: val + Ray ships env_state through the object store every step; with tiny
@@ -573,8 +691,18 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
             except Exception:
                 pass
 
+            info["episode_return_cum"] = float(self._episode_return_cum[i])
+            info["env_step"] = int(self._rollout_steps[i])
+            info["episode_step"] = int(self._episode_steps[i])
+
             if i in render_frames:
-                info["render_frame"] = render_frames[i]
+                ep_cost = float(info.get("episode_cost", 0.0))
+                info["render_frame"] = overlay_episode_cumulative_stats(
+                    render_frames[i],
+                    self._episode_return_cum[i],
+                    ep_cost,
+                    step=int(self._rollout_steps[i]),
+                )
 
             infos.append(info)
 
@@ -584,6 +712,9 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
         self.key, reset_key = jax.random.split(self.key)
         obs, state = self._vec_env.reset(reset_key, self.env_params)
         self.state = state
+        self._episode_return_cum[:] = 0.0
+        self._episode_steps[:] = 0
+        self._rollout_steps[:] = 0
 
         render_frames: dict[int, np.ndarray] = {}
         if self._record_video_env_idxs:
@@ -625,17 +756,26 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
 
         self.key, step_key = jax.random.split(self.key)
         action_arr = jnp.asarray(actions, dtype=jnp.int32)
-        obs, new_state, reward, done, info = self._vec_env.step(step_key, self.state, action_arr, self.env_params)
+        obs, new_state, reward, done, info, state_pre_reset = self._vec_env.step(
+            step_key, self.state, action_arr, self.env_params
+        )
         self.state = new_state
 
         render_frames: dict[int, np.ndarray] = {}
         if self._record_video_env_idxs:
             state_cpu = jax.device_get(new_state)
-            env_state_cpu = getattr(state_cpu, "env_state", None)
+            state_pre_reset_cpu = jax.device_get(state_pre_reset)
+            done_batched = jnp.asarray(done)
             for i in self._record_video_env_idxs:
                 if i < 0 or i >= self.env_num:
                     continue
                 try:
+                    # On done, optimistic wrapper already swapped in a fresh episode — render terminal pose.
+                    use_terminal = bool(np.asarray(done_batched[i]))
+                    src = state_pre_reset_cpu if use_terminal else state_cpu
+                    env_state_cpu = getattr(src, "env_state", None)
+                    if env_state_cpu is None:
+                        continue
                     craftax_state_i = jax.tree_util.tree_map(lambda x: x[i], env_state_cpu)
                     obs_jax_rendered = render_classic(craftax_state_i, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
                     render_frames[i] = np.asarray(obs_jax_rendered).copy()
@@ -654,10 +794,17 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
                 except Exception:
                     obs_list[i] = None
 
-        # Convert reward/done to python lists
         reward_list = [float(x) for x in np.asarray(jax.device_get(reward)).tolist()]
         done_list = [bool(x) for x in np.asarray(jax.device_get(done)).tolist()]
+        for i, r in enumerate(reward_list):
+            self._episode_return_cum[i] += r
+        self._rollout_steps += 1
+        self._episode_steps += 1
         infos = self._build_info_list(new_state, reward, done, render_frames=render_frames)
+        for i, d in enumerate(done_list):
+            if d:
+                self._episode_return_cum[i] = 0.0
+                self._episode_steps[i] = 0
         return obs_list, reward_list, done_list, infos
 
     def close(self):

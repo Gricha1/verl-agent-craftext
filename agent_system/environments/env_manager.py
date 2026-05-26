@@ -1168,6 +1168,27 @@ def make_envs(config):
     elif "caged_craftext" in config.env.env_name.lower() or (config.env.env_name.lower().startswith("caged") and "craftext" in config.env.env_name.lower()):
         # 1. Импортируем все необходимое для Caged Craftext
         print(f"[make_envs] Detected Caged Craftext environment: {config.env.env_name}")
+        from agent_system.environments.jax_device_config import (
+            apply_jax_gpu_resources,
+            configure_craftext_jax_backend,
+            read_jax_gpu_settings,
+        )
+        use_jax_gpu, jax_gpu_fraction = read_jax_gpu_settings(config)
+        configure_craftext_jax_backend(use_jax_gpu, gpu_mem_fraction=jax_gpu_fraction if use_jax_gpu else None)
+        use_optimistic_parallel = bool(getattr(config.env, "use_optimistic_parallel", False))
+        # MultiProcess Ray env workers: CPU only (N × jax_gpu_fraction GPU breaks 2-GPU nodes).
+        if use_optimistic_parallel:
+            resources_per_worker = apply_jax_gpu_resources(
+                resources_per_worker, use_jax_gpu, jax_gpu_fraction
+            )
+        else:
+            resources_per_worker = dict(resources_per_worker)
+            resources_per_worker.pop("num_gpus", None)
+            print(
+                "[make_envs] use_optimistic_parallel=False: Ray env workers use CPU only "
+                f"(num_cpus={resources_per_worker.get('num_cpus', '?')}); "
+                "GPUs stay for vLLM/FSDP."
+            )
         from agent_system.environments.env_package.caged_craftext import build_caged_craftext_envs, build_caged_craftext_envs_optimistic, craftext_projection
 
         use_pixel_obs = "vlenv" in str(config.env.env_name).lower()
@@ -1184,9 +1205,10 @@ def make_envs(config):
             # Per Ray text-render actor; too small → tasks queue / serial IPC. Used only for train env.
             'text_render_ray_num_cpus': float(getattr(config.env, "text_render_ray_num_cpus", 0.25)),
         }
+        if str(config.env.craftext_settings) == "debug_square_8x8":
+            env_kwargs['use_debug_square_map'] = True
         
         # 3. Создаем train и val среды
-        use_optimistic_parallel = bool(getattr(config.env, "use_optimistic_parallel", False))
         optimistic_reset_ratio = getattr(config.env, "optimistic_reset_ratio", None)
         if use_optimistic_parallel:
             _envs = build_caged_craftext_envs_optimistic(

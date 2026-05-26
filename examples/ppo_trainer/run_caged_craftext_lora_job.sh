@@ -1,21 +1,29 @@
 #!/bin/bash
 # set -x
 
-source /home/jovyan/nsorokin/miniconda3/etc/profile.d/conda.sh
-conda activate /home/jovyan/nsorokin/verl-agent-craftext/verl-agent-conda-venv-311/
+# Conda: Docker image (verl-agent-311) or legacy jovyan paths
+if [ -z "$CONDA_DEFAULT_ENV" ] || [ "$CONDA_DEFAULT_ENV" != "verl-agent-311" ]; then
+  if [ -f /opt/conda/etc/profile.d/conda.sh ]; then
+    source /opt/conda/etc/profile.d/conda.sh
+    conda activate verl-agent-311
+  elif [ -f /home/jovyan/nsorokin/miniconda3/etc/profile.d/conda.sh ]; then
+    source /home/jovyan/nsorokin/miniconda3/etc/profile.d/conda.sh
+    conda activate /home/jovyan/nsorokin/verl-agent-craftext/verl-agent-conda-venv-311/
+  fi
+fi
 
-export COMET_API_KEY="3OfuYHwcRgIwG7DzgzJ190igY"
+export COMET_API_KEY="${COMET_API_KEY:-3OfuYHwcRgIwG7DzgzJ190igY}"
 
+# Default: Craftax on CPU (shares no VRAM with vLLM). For GPU env: +env.use_jax_gpu=True and comment out next line.
 export JAX_PLATFORMS=cpu
-export RAY_TEMP_DIR="/home/jovyan/nsorokin/ray_temp" 
+export RAY_TEMP_DIR="${RAY_TEMP_DIR:-/tmp/ray_temp}"
+mkdir -p "$RAY_TEMP_DIR"
 
-pip install comet_ml
+# comet_ml is installed in Docker image via setup_caged_craftext_deps.sh
+python -c "import comet_ml" 2>/dev/null || pip install -q comet_ml
 
 # НЕ устанавливаем CUDA_VISIBLE_DEVICES="" здесь, так как это мешает Ray видеть GPU
 # Encoder'ы в caged_craftext уже исправлены и проверяют torch.cuda.is_available() перед использованием CUDA
-
-#source /home/jovyan/nsorokin/miniconda3/etc/profile.d/conda.sh
-#conda activate /home/jovyan/nsorokin/verl-agent-craftext/verl-agent-conda-venv-311/
 
 ENGINE=${1:-vllm}
 # LOG_PROB_ACTION_ONLY: если true, log_prob считается только для токенов внутри <action> тегов (без reasoning)

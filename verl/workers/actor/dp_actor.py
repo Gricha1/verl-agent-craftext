@@ -70,7 +70,111 @@ class DataParallelPPOActor(BasePPOActor):
             if self.config.get("use_torch_compile", True)  #  use torch compile by default
             else verl_F.entropy_from_logits
         )
+        self._canonical_action_cache_key = None
+        self._canonical_action_padded = None
+        self._canonical_action_lengths = None
         self.device_name = get_device_name()
+
+    def _get_canonical_action_tokens(self, device: torch.device):
+        tokenizer_path = self.config.get("tokenizer_path")
+        if not tokenizer_path:
+            raise ValueError(
+                "entropy_over_valid_actions requires actor.tokenizer_path (set in fsdp_workers init)"
+            )
+        trust_remote_code = bool(self.config.get("trust_remote_code", False))
+        cache_key = (tokenizer_path, trust_remote_code)
+        if self._canonical_action_cache_key != cache_key:
+            from verl.utils.action_set_entropy import _load_canonical_action_token_cache
+
+            padded, lengths, _ = _load_canonical_action_token_cache(
+                tokenizer_path, trust_remote_code
+            )
+            self._canonical_action_cache_key = cache_key
+            self._canonical_action_padded = padded
+            self._canonical_action_lengths = lengths
+        return (
+            self._canonical_action_padded.to(device),
+            self._canonical_action_lengths.to(device),
+        )
+
+    def _compute_action_set_log_scores(
+        self,
+        micro_batch: dict,
+        temperature: float,
+    ) -> torch.Tensor:
+        """Log-probability scores for each canonical <action>X</action> string. Shape (B, num_actions)."""
+        from verl.utils.action_set_entropy import (
+            action_log_scores_one_action_batch,
+            build_prompt_action_batch_for_one_action,
+        )
+
+        input_ids = micro_batch["input_ids"]
+        attention_mask = micro_batch["attention_mask"]
+        position_ids = micro_batch["position_ids"]
+        batch_size, seqlen = input_ids.shape
+        response_length = micro_batch["responses"].size(-1)
+        prompt_length = seqlen - response_length
+
+        canonical_padded, canonical_lengths = self._get_canonical_action_tokens(input_ids.device)
+        num_actions = canonical_lengths.shape[0]
+        pad_token_id = int(self.config.get("pad_token_id", 0))
+        temp = max(float(temperature), 1e-8)
+        length_normalize = bool(self.config.get("entropy_action_length_normalize", True))
+
+        prompt_ids = input_ids[:, :prompt_length]
+        prompt_mask = attention_mask[:, :prompt_length]
+
+        multi_modal_inputs = {}
+        if "multi_modal_inputs" in micro_batch:
+            for key in micro_batch["multi_modal_inputs"][0].keys():
+                multi_modal_inputs[key] = torch.cat(
+                    [inputs[key] for inputs in micro_batch["multi_modal_inputs"]], dim=0
+                )
+
+        log_scores = torch.zeros(
+            batch_size, num_actions, device=input_ids.device, dtype=torch.float32
+        )
+        mrope = position_ids.dim() == 3
+
+        # One forward per action (B sequences), not B*17 — avoids huge logits OOM.
+        for j in range(num_actions):
+            action_len = int(canonical_lengths[j].item())
+            cand_ids, cand_mask, cand_pos_ids = build_prompt_action_batch_for_one_action(
+                prompt_ids,
+                prompt_mask,
+                canonical_padded[j],
+                action_len,
+                pad_token_id,
+            )
+            with torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
+                pos = cand_pos_ids
+                if mrope:
+                    pos = pos.unsqueeze(0).expand(3, -1, -1)
+                output = self.actor_module(
+                    input_ids=cand_ids,
+                    attention_mask=cand_mask,
+                    position_ids=pos,
+                    **multi_modal_inputs,
+                    use_cache=False,
+                )
+                if self.use_fused_kernels and hasattr(output, "logits") and output.logits is None:
+                    raise NotImplementedError(
+                        "entropy_over_valid_actions requires non-fused logits path; "
+                        "set actor_rollout_ref.model.use_fused_kernels=False"
+                    )
+                logits = output.logits / temp
+
+            log_scores[:, j] = action_log_scores_one_action_batch(
+                logits,
+                cand_ids,
+                prompt_length,
+                action_len,
+                length_normalize=length_normalize,
+            ).float()
+            del output, logits
+            get_torch_device().empty_cache()
+
+        return log_scores
 
     def _forward_micro_batch(self, micro_batch, temperature, calculate_entropy=False) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -267,6 +371,8 @@ class DataParallelPPOActor(BasePPOActor):
         Returns:
             torch.Tensor: the log_prob tensor
         """
+        if calculate_entropy and self.config.get("entropy_over_valid_actions", False):
+            calculate_entropy = False
         # set to eval
         self.actor_module.eval()
 
@@ -416,12 +522,44 @@ class DataParallelPPOActor(BasePPOActor):
                     entropy_coeff = self.config.entropy_coeff
                     loss_agg_mode = self.config.loss_agg_mode
 
-                    # all return: (bsz, response_length)
-                    calculate_entropy = False
-                    if entropy_coeff != 0:
-                        calculate_entropy = True
-                    entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature, calculate_entropy=calculate_entropy)
-                    
+                    entropy_over_valid_actions = bool(
+                        self.config.get("entropy_over_valid_actions", False)
+                    )
+                    if self.config.use_dynamic_bsz:
+                        loss_scale = len(data) / self.config.ppo_mini_batch_size
+                    else:
+                        loss_scale = 1.0 / self.gradient_accumulation
+
+                    # Action-set entropy: separate backward so 17 candidate forwards are not
+                    # on the same autograd graph as PPO (avoids OOM during backward / vLLM wake_up).
+                    if entropy_coeff != 0 and entropy_over_valid_actions:
+                        from verl.utils.action_set_entropy import entropy_loss_over_action_scores
+
+                        log_scores = self._compute_action_set_log_scores(data, temperature)
+                        sample_mask = None
+                        if self.config.get("entropy_action_only_valid_rollouts", False):
+                            if "is_action_valid" in data:
+                                sample_mask = torch.tensor(
+                                    data["is_action_valid"],
+                                    device=log_scores.device,
+                                    dtype=torch.bool,
+                                )
+                        entropy_loss, entropy_per_sample = entropy_loss_over_action_scores(
+                            log_scores,
+                            temperature=temperature,
+                            sample_mask=sample_mask,
+                        )
+                        metrics["actor/entropy_loss"] = entropy_loss.detach().item()
+                        metrics["actor/action_set_entropy"] = entropy_per_sample.detach().mean().item()
+                        (-entropy_coeff * entropy_loss * loss_scale).backward()
+                        del log_scores, entropy_loss, entropy_per_sample
+                        get_torch_device().empty_cache()
+
+                    calculate_entropy = entropy_coeff != 0 and not entropy_over_valid_actions
+                    entropy, log_prob = self._forward_micro_batch(
+                        micro_batch=data, temperature=temperature, calculate_entropy=calculate_entropy
+                    )
+
                     loss_mode = self.config.policy_loss.get("loss_mode", "vanilla")
                     if loss_mode == "vanilla":
                         policy_loss_fn = compute_policy_loss
@@ -442,17 +580,18 @@ class DataParallelPPOActor(BasePPOActor):
                         loss_agg_mode=loss_agg_mode,
                     )
 
-                    if entropy_coeff != 0:
-                        entropy_loss = agg_loss(loss_mat=entropy, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
-
-                        # compute policy loss
+                    policy_loss = pg_loss
+                    if entropy_coeff != 0 and not entropy_over_valid_actions:
+                        entropy_loss = agg_loss(
+                            loss_mat=entropy,
+                            loss_mask=response_mask,
+                            loss_agg_mode=loss_agg_mode,
+                        )
                         policy_loss = pg_loss - entropy_loss * entropy_coeff
-                    else:
-                        policy_loss = pg_loss
+                        metrics["actor/entropy_loss"] = entropy_loss.detach().item()
 
                     if self.config.use_kl_loss:
                         ref_log_prob = data["ref_log_prob"]
-                        # compute kl loss
                         kld = kl_penalty(logprob=log_prob, ref_logprob=ref_log_prob, kl_penalty=self.config.kl_loss_type)
                         kl_loss = agg_loss(loss_mat=kld, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
 
@@ -460,12 +599,8 @@ class DataParallelPPOActor(BasePPOActor):
                         metrics["actor/kl_loss"] = kl_loss.detach().item()
                         metrics["actor/kl_coef"] = self.config.kl_loss_coef
 
-                    if self.config.use_dynamic_bsz:
-                        # relative to the dynamic bsz
-                        loss = policy_loss * (len(data) / self.config.ppo_mini_batch_size)
-                    else:
-                        loss = policy_loss / self.gradient_accumulation
-                    loss.backward()
+                    (policy_loss * loss_scale).backward()
+                    get_torch_device().empty_cache()
 
                     data = {
                         "actor/pg_loss": pg_loss.detach().item(),
@@ -478,5 +613,6 @@ class DataParallelPPOActor(BasePPOActor):
                 grad_norm = self._optimizer_step()
                 data = {"actor/grad_norm": grad_norm.detach().item()}
                 append_to_dict(metrics, data)
+        get_torch_device().empty_cache()
         self.actor_optimizer.zero_grad()
         return metrics

@@ -31,6 +31,7 @@ def main(config):
 
 
 def run_ppo(config) -> None:
+    task_runner_runtime_env = None
     if not ray.is_initialized():
         silence_ray_disk_usage_warnings()
         # this is for local ray cluster
@@ -50,10 +51,48 @@ def run_ppo(config) -> None:
         # Raylet (C++) disk spam: see ray_config_def.h local_fs_capacity_threshold (default 0.95)
         _prev_sys = ray_init_kwargs.get("_system_config") or {}
         ray_init_kwargs["_system_config"] = {**_prev_sys, **ray_local_fs_capacity_system_config(config)}
+        ray_init_kwargs["runtime_env"]["env_vars"] = dict(
+            ray_init_kwargs["runtime_env"].get("env_vars", {})
+        )
+        # Keep JAX on CPU for default Ray workers (vLLM/FSDP). GPU env only in TaskRunner.
+        ray_init_kwargs["runtime_env"]["env_vars"].setdefault("JAX_PLATFORMS", "cpu")
+        use_jax_gpu, jax_gpu_fraction = _read_craftext_jax_gpu_settings(config)
+        task_runner_runtime_env = None
+        if use_jax_gpu:
+            from agent_system.environments.jax_device_config import (
+                task_runner_cuda_visible_devices,
+                task_runner_jax_runtime_env,
+            )
+
+            task_runner_runtime_env = {
+                "env_vars": task_runner_jax_runtime_env(
+                    ray_init_kwargs["runtime_env"]["env_vars"],
+                    use_jax_gpu=True,
+                    jax_gpu_fraction=jax_gpu_fraction,
+                    config=config,
+                )
+            }
+            print(
+                f"[INFO] Craftext JAX on GPU in TaskRunner only "
+                f"(CUDA_VISIBLE_DEVICES={task_runner_cuda_visible_devices(config)}, "
+                f"no Ray GPU reservation — keeps {config.trainer.n_gpus_per_node} GPUs for vLLM/FSDP). "
+                f"XLA_PYTHON_CLIENT_MEM_FRACTION={jax_gpu_fraction}"
+            )
         ray.init(**ray_init_kwargs)
 
-    runner = TaskRunner.remote()
+    # Do not set num_gpus on TaskRunner: Ray would subtract it from the pool and
+    # fail when actor/critic need n_gpus_per_node=2 (e.g. 2 - 0.15 < 2).
+    runner_opts = {"num_cpus": 1}
+    if task_runner_runtime_env is not None:
+        runner_opts["runtime_env"] = task_runner_runtime_env
+    runner = TaskRunner.options(**runner_opts).remote()
     ray.get(runner.run.remote(config))
+
+
+def _read_craftext_jax_gpu_settings(config) -> tuple[bool, float]:
+    from agent_system.environments.jax_device_config import read_jax_gpu_settings
+
+    return read_jax_gpu_settings(config)
 
 
 @ray.remote(num_cpus=1)  # please make sure main_task is not scheduled on head
@@ -73,7 +112,20 @@ class TaskRunner:
         local_path = copy_to_local(config.actor_rollout_ref.model.path, use_shm=config.actor_rollout_ref.model.get("use_shm", False))
 
         from agent_system.environments import make_envs
+        from agent_system.environments.jax_device_config import (
+            configure_craftext_jax_backend_with_fallback,
+            craftext_jax_device_summary,
+            read_jax_gpu_settings,
+        )
+
+        use_jax_gpu, jax_gpu_fraction = read_jax_gpu_settings(config)
+        use_jax_gpu = configure_craftext_jax_backend_with_fallback(
+            use_jax_gpu,
+            gpu_mem_fraction=jax_gpu_fraction if use_jax_gpu else None,
+        )
         envs, val_envs = make_envs(config)
+        if use_jax_gpu or "craftext" in str(config.env.env_name).lower():
+            print(f"[INFO] {craftext_jax_device_summary()}")
 
         # instantiate tokenizer
         from verl.utils import hf_processor, hf_tokenizer

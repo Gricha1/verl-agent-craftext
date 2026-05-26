@@ -13,6 +13,7 @@ from craftext.environment.states.state_classic import GameDataClassic
 
 from craftext.environment.scenarious.checkers.target_state import BuildLineState
 from craftext.environment.scenarious.checkers.lines import check_line_2, check_line_3, check_line_4
+from craftext.environment.scenarious.checkers.utils import extract_square_region
 
 from flax.struct import dataclass
 
@@ -45,14 +46,9 @@ def is_line_formed(game_data: Union[GameDataClassic, GameData], block_index: int
     
     x, y = player_position
 
-
-    region_size = 2 * 10 + 1
-
-    region = lax.dynamic_slice(
-        binary_map,
-        start_indices=(x - radius, y - radius),
-        slice_sizes=(region_size, region_size)
-    )
+    # Static region_size: required under jit (generic_check lax.switch traces every branch).
+    region_size = 21
+    region = extract_square_region(binary_map, x, y, radius, region_size, pad_value=0)
 
     indices = jnp.arange(region_size * region_size)
 

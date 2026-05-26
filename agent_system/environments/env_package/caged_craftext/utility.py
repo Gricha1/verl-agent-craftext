@@ -477,6 +477,45 @@ def render_craftax_ascii_v2(state) -> str:
     return ascii_output
 
 
+def overlay_episode_cumulative_stats(
+    frame_arr: np.ndarray,
+    episode_reward: float,
+    episode_cost: float,
+    *,
+    step: int | None = None,
+    banner_height: int = 32,
+) -> np.ndarray:
+    """Draw step index and cumulative episode reward/cost on top of a pixel render frame."""
+    arr = np.asarray(frame_arr)
+    if arr.ndim == 2:
+        arr = np.stack([arr] * 3, axis=-1)
+    elif arr.ndim == 3 and arr.shape[0] == 3:
+        arr = np.transpose(arr, (1, 2, 0))
+    if arr.max() <= 1.0:
+        arr = (arr * 255).astype(np.uint8)
+    else:
+        arr = arr.astype(np.uint8)
+
+    img = Image.fromarray(arr)
+    draw = ImageDraw.Draw(img)
+    w, h = img.size
+    bar_h = min(banner_height, h)
+    draw.rectangle([0, 0, w, bar_h], fill=(24, 24, 24))
+    try:
+        font = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14
+        )
+    except Exception:
+        font = ImageFont.load_default()
+    parts = []
+    if step is not None:
+        parts.append(f"Step: {int(step)}")
+    parts.append(f"Episode reward: {float(episode_reward):.3f}")
+    parts.append(f"Episode cost: {float(episode_cost):.3f}")
+    label = "   |   ".join(parts)
+    draw.text((8, 6), label, fill=(255, 255, 255), font=font)
+    return np.array(img)
+
 
 def add_grid_overlay(image_array, block_pixel_size, grid_color=(255, 255, 255, 200), line_width=1):
     """
