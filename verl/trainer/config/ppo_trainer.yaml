@@ -54,8 +54,27 @@ actor_rollout_ref:
     clip_ratio_c: 3.0 # lower bound of the value for Dual-clip PPO from https://arxiv.org/pdf/1912.09729
     loss_agg_mode: "token-mean" # / "seq-mean-token-sum" / "seq-mean-token-mean"
     entropy_coeff: 0.001
+    # Optional decay of entropy_coeff vs training/total_env_steps (see verl/utils/entropy_coeff_schedule.py).
+    entropy_coeff_schedule:
+      enable: False
+      step_key: total_env_steps  # total_env_steps | global_steps
+      hold_until: 50000          # multiplier = 1.0 while step < hold_until
+      # --- linear / cosine ---
+      decay_until: 70000
+      end_multiplier: 0.8
+      # --- log (slow decay, floor at min_multiplier) ---
+      min_multiplier: 0.5       # asymptotic floor (not zero)
+      tau: 10000                 # log time scale after hold_until
+      target_step: 60000        # calibrate log curve: mult ~= target_multiplier here
+      target_multiplier: 0.8
+      schedule: linear           # linear | cosine | hold | log
     # If true: entropy bonus is H(softmax over 17 canonical <action>X</action> log-scores), not token LM entropy.
     entropy_over_valid_actions: False
+    # If true (requires entropy_over_valid_actions): build flat batch B*num_actions, forward in chunks.
+    # If false: num_actions sequential forwards on batch B (same peak VRAM as chunk_size=B).
+    entropy_action_batched_forward: False
+    # Rows per forward when entropy_action_batched_forward=true (lower = less VRAM, more forwards).
+    entropy_action_batched_chunk_size: 16
     entropy_action_length_normalize: True
     entropy_action_only_valid_rollouts: False
     use_invalid_action_penalty: True

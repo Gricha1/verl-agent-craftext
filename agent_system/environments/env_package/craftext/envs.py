@@ -1,4 +1,7 @@
 import gc  # <--- ДОБАВЬТЕ ЭТОТ ИМПОРТ
+import os
+
+os.environ.setdefault("CRAFTAX_RELOAD_TEXTURES", "True")
 
 import gymnasium as gym  # verl-agent, скорее всего, использует gymnasium
 import jax

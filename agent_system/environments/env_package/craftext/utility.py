@@ -1,3 +1,7 @@
+import os
+
+os.environ.setdefault("CRAFTAX_RELOAD_TEXTURES", "True")
+
 import jax
 import jax.numpy as jnp
 from craftax.craftax.constants import MAX_OBS_DIM, BLOCK_PIXEL_SIZE_HUMAN

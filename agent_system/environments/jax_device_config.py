@@ -18,11 +18,12 @@ def configure_craftext_jax_backend(
       - optionally cap XLA client memory (share GPU with vLLM)
     """
     if use_jax_gpu:
+        # Let JAX pick CUDA if available; never force JAX_PLATFORMS=cuda in shell (jaxlib may lack CUDA).
         os.environ.pop("JAX_PLATFORMS", None)
         if gpu_mem_fraction is not None and gpu_mem_fraction > 0:
             os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = str(gpu_mem_fraction)
     else:
-        os.environ.setdefault("JAX_PLATFORMS", "cpu")
+        os.environ["JAX_PLATFORMS"] = "cpu"
 
 
 def configure_craftext_jax_backend_with_fallback(

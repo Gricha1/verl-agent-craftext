@@ -106,6 +106,7 @@ class DataParallelPPOActor(BasePPOActor):
         from verl.utils.action_set_entropy import (
             action_log_scores_one_action_batch,
             build_prompt_action_batch_for_one_action,
+            build_prompt_action_sequences,
         )
 
         input_ids = micro_batch["input_ids"]
@@ -120,6 +121,7 @@ class DataParallelPPOActor(BasePPOActor):
         pad_token_id = int(self.config.get("pad_token_id", 0))
         temp = max(float(temperature), 1e-8)
         length_normalize = bool(self.config.get("entropy_action_length_normalize", True))
+        batched_forward = bool(self.config.get("entropy_action_batched_forward", False))
 
         prompt_ids = input_ids[:, :prompt_length]
         prompt_mask = attention_mask[:, :prompt_length]
@@ -131,11 +133,80 @@ class DataParallelPPOActor(BasePPOActor):
                     [inputs[key] for inputs in micro_batch["multi_modal_inputs"]], dim=0
                 )
 
+        mrope = position_ids.dim() == 3
+
+        def _run_actor_forward(cand_ids, cand_mask, cand_pos_ids, mm_inputs):
+            with torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
+                pos = cand_pos_ids
+                if mrope:
+                    pos = pos.unsqueeze(0).expand(3, -1, -1)
+                output = self.actor_module(
+                    input_ids=cand_ids,
+                    attention_mask=cand_mask,
+                    position_ids=pos,
+                    **mm_inputs,
+                    use_cache=False,
+                )
+                if self.use_fused_kernels and hasattr(output, "logits") and output.logits is None:
+                    raise NotImplementedError(
+                        "entropy_over_valid_actions requires non-fused logits path; "
+                        "set actor_rollout_ref.model.use_fused_kernels=False"
+                    )
+                return output.logits / temp
+
+        if batched_forward:
+            cand_ids, cand_mask, cand_pos_ids, _ = build_prompt_action_sequences(
+                prompt_ids,
+                prompt_mask,
+                canonical_padded,
+                canonical_lengths,
+                pad_token_id,
+            )
+            flat_batch = cand_ids.shape[0]
+            chunk_size = int(self.config.get("entropy_action_batched_chunk_size", 16))
+            chunk_size = max(1, min(chunk_size, flat_batch))
+
+            mm_full = multi_modal_inputs
+            if mm_full:
+                mm_full = {
+                    k: v.repeat_interleave(num_actions, dim=0) for k, v in mm_full.items()
+                }
+
+            log_scores = torch.zeros(
+                batch_size, num_actions, device=input_ids.device, dtype=torch.float32
+            )
+            for start in range(0, flat_batch, chunk_size):
+                end = min(start + chunk_size, flat_batch)
+                chunk_mm = (
+                    {k: v[start:end] for k, v in mm_full.items()} if mm_full else {}
+                )
+                logits = _run_actor_forward(
+                    cand_ids[start:end],
+                    cand_mask[start:end],
+                    cand_pos_ids[start:end],
+                    chunk_mm,
+                )
+                for local_row, global_row in enumerate(range(start, end)):
+                    action_idx = global_row % num_actions
+                    action_len = int(canonical_lengths[action_idx].item())
+                    log_scores[global_row // num_actions, action_idx] = (
+                        action_log_scores_one_action_batch(
+                            logits[local_row : local_row + 1],
+                            cand_ids[global_row : global_row + 1],
+                            prompt_length,
+                            action_len,
+                            length_normalize=length_normalize,
+                        )
+                        .squeeze(0)
+                        .float()
+                    )
+                del logits
+            get_torch_device().empty_cache()
+            return log_scores
+
         log_scores = torch.zeros(
             batch_size, num_actions, device=input_ids.device, dtype=torch.float32
         )
-        mrope = position_ids.dim() == 3
-
         # One forward per action (B sequences), not B*17 — avoids huge logits OOM.
         for j in range(num_actions):
             action_len = int(canonical_lengths[j].item())
@@ -146,24 +217,7 @@ class DataParallelPPOActor(BasePPOActor):
                 action_len,
                 pad_token_id,
             )
-            with torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
-                pos = cand_pos_ids
-                if mrope:
-                    pos = pos.unsqueeze(0).expand(3, -1, -1)
-                output = self.actor_module(
-                    input_ids=cand_ids,
-                    attention_mask=cand_mask,
-                    position_ids=pos,
-                    **multi_modal_inputs,
-                    use_cache=False,
-                )
-                if self.use_fused_kernels and hasattr(output, "logits") and output.logits is None:
-                    raise NotImplementedError(
-                        "entropy_over_valid_actions requires non-fused logits path; "
-                        "set actor_rollout_ref.model.use_fused_kernels=False"
-                    )
-                logits = output.logits / temp
-
+            logits = _run_actor_forward(cand_ids, cand_mask, cand_pos_ids, multi_modal_inputs)
             log_scores[:, j] = action_log_scores_one_action_batch(
                 logits,
                 cand_ids,
@@ -171,7 +225,7 @@ class DataParallelPPOActor(BasePPOActor):
                 action_len,
                 length_normalize=length_normalize,
             ).float()
-            del output, logits
+            del logits
             get_torch_device().empty_cache()
 
         return log_scores
@@ -461,6 +515,10 @@ class DataParallelPPOActor(BasePPOActor):
 
         temperature = data.meta_info["temperature"]  # temperature must be in the data.meta_info to avoid silent error
         multi_turn = data.meta_info.get("multi_turn", False)
+        effective_entropy_coeff = float(
+            data.meta_info.get("entropy_coeff", self.config.entropy_coeff)
+        )
+        metrics = {"actor/entropy_coeff": effective_entropy_coeff}
 
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids", "old_log_probs", "advantages"]
         if multi_turn:
@@ -479,7 +537,6 @@ class DataParallelPPOActor(BasePPOActor):
         else:
             dataloader = batch.split(self.config.ppo_mini_batch_size)
 
-        metrics = {}
         for epoch in range(self.config.ppo_epochs):
             for batch_idx, data in enumerate(dataloader):
                 # split batch into micro_batches
@@ -519,7 +576,7 @@ class DataParallelPPOActor(BasePPOActor):
                     clip_ratio_low = self.config.clip_ratio_low if self.config.clip_ratio_low is not None else clip_ratio
                     clip_ratio_high = self.config.clip_ratio_high if self.config.clip_ratio_high is not None else clip_ratio
                     clip_ratio_c = self.config.get("clip_ratio_c", 3.0)
-                    entropy_coeff = self.config.entropy_coeff
+                    entropy_coeff = effective_entropy_coeff
                     loss_agg_mode = self.config.loss_agg_mode
 
                     entropy_over_valid_actions = bool(

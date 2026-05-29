@@ -17,6 +17,9 @@ Note that we don't combine the main with ray_trainer as ray_trainer is used by o
 
 import os
 
+# Must be set before craftax.constants loads TEXTURES pickle (JAX ShapedArray version mismatch otherwise).
+os.environ.setdefault("CRAFTAX_RELOAD_TEXTURES", "True")
+
 import hydra
 import ray
 
@@ -53,6 +56,9 @@ def run_ppo(config) -> None:
         ray_init_kwargs["_system_config"] = {**_prev_sys, **ray_local_fs_capacity_system_config(config)}
         ray_init_kwargs["runtime_env"]["env_vars"] = dict(
             ray_init_kwargs["runtime_env"].get("env_vars", {})
+        )
+        ray_init_kwargs["runtime_env"]["env_vars"].setdefault(
+            "CRAFTAX_RELOAD_TEXTURES", os.environ.get("CRAFTAX_RELOAD_TEXTURES", "True")
         )
         # Keep JAX on CPU for default Ray workers (vLLM/FSDP). GPU env only in TaskRunner.
         ray_init_kwargs["runtime_env"]["env_vars"].setdefault("JAX_PLATFORMS", "cpu")

@@ -2,6 +2,8 @@ import gc
 import os
 import sys
 
+os.environ.setdefault("CRAFTAX_RELOAD_TEXTURES", "True")
+
 
 def _prepend_local_craftax_on_path():
     """Prefer caged_craftext/Craftax over pip craftax (debug map + spawn fixes)."""
@@ -375,6 +377,7 @@ class CagedCraftextMultiProcessEnv(gym.Env):
         env_vars = {
             "CAGED_CRAFTEXT_PATH": caged_craftext_path,
             "PYTHONPATH": f"{caged_craftext_path}:{os.environ.get('PYTHONPATH', '')}",
+            "CRAFTAX_RELOAD_TEXTURES": os.environ.get("CRAFTAX_RELOAD_TEXTURES", "True"),
         }
         if jax_platforms:
             env_vars["JAX_PLATFORMS"] = jax_platforms

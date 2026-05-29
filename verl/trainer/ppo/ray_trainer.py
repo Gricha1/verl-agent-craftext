@@ -1666,6 +1666,27 @@ class RayPPOTrainer:
                         _t_ac = time.monotonic()
                         with _timer("update_actor", timing_raw):
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
+                            from verl.utils.entropy_coeff_schedule import scheduled_entropy_coeff
+
+                            _sched = self.config.actor_rollout_ref.actor.get("entropy_coeff_schedule")
+                            _step_key = (_sched or {}).get("step_key", "total_env_steps")
+                            _sched_step = (
+                                self.total_env_steps
+                                if _step_key == "total_env_steps"
+                                else self.global_steps
+                            )
+                            _base_entropy_coeff = float(
+                                self.config.actor_rollout_ref.actor.entropy_coeff
+                            )
+                            batch.meta_info["entropy_coeff"] = scheduled_entropy_coeff(
+                                _base_entropy_coeff,
+                                _sched_step,
+                                _sched,
+                            )
+                            if _sched and bool(_sched.get("enable", False)) and _base_entropy_coeff > 0:
+                                metrics["actor/entropy_coeff_multiplier"] = (
+                                    batch.meta_info["entropy_coeff"] / _base_entropy_coeff
+                                )
                             actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)

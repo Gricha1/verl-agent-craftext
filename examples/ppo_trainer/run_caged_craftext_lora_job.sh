@@ -14,8 +14,10 @@ fi
 
 export COMET_API_KEY="${COMET_API_KEY:-3OfuYHwcRgIwG7DzgzJ190igY}"
 
-# Default: Craftax on CPU (shares no VRAM with vLLM). For GPU env: +env.use_jax_gpu=True and comment out next line.
-export JAX_PLATFORMS=cpu
+# JAX backend: configured in main_ppo via ++env.use_jax_gpu=True (GPU if jaxlib+cuda works, else CPU fallback).
+# Do NOT set JAX_PLATFORMS=cuda here — breaks when jaxlib has no CUDA backend (vLLM can still use GPU).
+# Regenerate Craftax texture pickle when JAX version changes (avoids ShapedArray/named_shape pickle errors).
+export CRAFTAX_RELOAD_TEXTURES="${CRAFTAX_RELOAD_TEXTURES:-True}"
 export RAY_TEMP_DIR="${RAY_TEMP_DIR:-/tmp/ray_temp}"
 mkdir -p "$RAY_TEMP_DIR"
 
@@ -42,7 +44,7 @@ ENGINE=${1:-vllm}
 # total_epochs: количество эпох (по умолчанию 4000)
 # USE_ACTOR_LORA: true — actor с LoRA (lora_rank=64, lora_alpha=64), false — обучение без LoRA
 # PROMPT_TEMPLATE_TYPE: тип шаблона промпта ('default_template' или 'extended_template', по умолчанию 'default_template')
-# CRITIC_WARMUP: количество шагов для разогрева критика перед обновлением актора (по умолчанию 0)
+# CRITIC_WARMUP: количество шагов для разогрева критика перед обновлением актора (по умолчанию 10)
 # OBSERVATION_TYPE: тип наблюдения ('ascii', 'ascii_v2', 'text'; по умолчанию 'ascii')
 LOG_PROB_ACTION_ONLY=${2:-false}
 NO_REASONING=${3:-false}
@@ -53,7 +55,7 @@ USE_ACTION_HEAD=${7:-false}
 total_epochs=${8:-4000}
 USE_ACTOR_LORA=${9:-true}
 PROMPT_TEMPLATE_TYPE=${10:-default_template}
-CRITIC_WARMUP=${11:-0}
+CRITIC_WARMUP=${11:-10}
 OBSERVATION_TYPE=${12:-ascii}
 # Убираем аргументы скрипта, чтобы они не передавались в Hydra
 shift 12 2>/dev/null || shift 11 2>/dev/null || shift 10 2>/dev/null || shift 9 2>/dev/null || shift 8 2>/dev/null || shift 7 2>/dev/null || shift 6 2>/dev/null || shift 5 2>/dev/null || shift 4 2>/dev/null || shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/dev/null || true
@@ -158,6 +160,7 @@ python -m verl.trainer.main_ppo \
     +env.observation_type="$OBSERVATION_TYPE" \
     +env.prompt_template_type=$PROMPT_TEMPLATE_TYPE \
     +env.auto_reset=$(if [ "$AUTO_RESET" = "true" ]; then echo "True"; else echo "False"; fi) \
+    ++env.use_jax_gpu=False \
     +actor_rollout_ref.model.use_action_head=$(if [ "$USE_ACTION_HEAD" = "true" ]; then echo "True"; else echo "False"; fi) \
     +actor_rollout_ref.model.num_actions=17 \
     env.seed=0 \

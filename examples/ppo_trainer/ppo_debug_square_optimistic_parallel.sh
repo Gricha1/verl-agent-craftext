@@ -9,7 +9,7 @@
 set -e
 
 # 32 envs + 32 Ray text-render actors + 2x vLLM ≈ 120GB host RAM → OOM on 128GB nodes.
-NUM_OPTIMISTIC_ENVS="${NUM_OPTIMISTIC_ENVS:-128}"
+NUM_OPTIMISTIC_ENVS="${NUM_OPTIMISTIC_ENVS:-64}"
 OPTIMISTIC_RESET_RATIO="${OPTIMISTIC_RESET_RATIO:-8}"
 
 echo "=========================================="
@@ -20,9 +20,9 @@ echo "[INFO] OPTIMISTIC_RESET_RATIO=$OPTIMISTIC_RESET_RATIO"
 echo "[INFO] AUTO_RESET=false (one episode per rollout slot, up to env.max_steps)"
 echo "[INFO] Map: 8x8, tree border, corners: stone / wood / water (3 nav tasks)"
 echo "[INFO] Validation + val GIF in Comet every 100k env steps (trainer.env_val_video_freq)"
-echo "[INFO] critic_warmup=0 (actor updates from 1st PPO step; CRITIC_WARMUP>0 delays actor/* in Comet)"
-echo "[INFO] vLLM gpu_memory_utilization=0.55 (headroom after actor update; NUM_OPTIMISTIC_ENVS still 128)"
-echo "[INFO] actor entropy_coeff=0.01, entropy_over_valid_actions=True (H over 17 <action>X</action>)"
+echo "[INFO] critic_warmup=10 (actor updates from global_steps>=10; CRITIC_WARMUP delays actor/* in Comet)"
+echo "[INFO] vLLM gpu_memory_utilization=0.55 (headroom after actor update)"
+echo "[INFO] validation sampling: do_sample=True, val temperature=1.0"
 
 bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   vllm \
@@ -35,17 +35,22 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   8000 \
   true \
   default_template \
-  0 \
+  10 \
   ascii \
   ++env.craftext_settings='debug_square_8x8' \
   +env.use_optimistic_parallel=True \
   +env.optimistic_reset_ratio="$OPTIMISTIC_RESET_RATIO" \
   +env.use_ray_text_render_workers=False \
-  ++env.use_jax_gpu=True \
+  ++env.use_jax_gpu=False \
   ++env.jax_gpu_fraction=0.15 \
   actor_rollout_ref.rollout.gpu_memory_utilization=0.55 \
+  actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
   actor_rollout_ref.actor.entropy_coeff=0.01 \
+  actor_rollout_ref.actor.entropy_coeff_schedule.enable=True \
+  actor_rollout_ref.actor.entropy_coeff_schedule.schedule=log \
   actor_rollout_ref.actor.entropy_over_valid_actions=True \
+  actor_rollout_ref.actor.entropy_action_batched_forward=True \
+  actor_rollout_ref.actor.entropy_action_batched_chunk_size=16 \
   actor_rollout_ref.actor.entropy_action_length_normalize=True \
   trainer.resume_mode=disable \
   trainer.env_val_video_freq=100000 \
