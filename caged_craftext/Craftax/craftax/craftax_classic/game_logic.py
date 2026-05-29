@@ -4,6 +4,28 @@ from craftax.craftax_classic.constants import *
 from craftax.craftax_classic.envs.craftax_state import *
 
 
+def _is_debug_square_map(static_params):
+    return tuple(static_params.map_size) == (8, 8)
+
+
+def _strip_all_mobs(state, static_params):
+    """Remove all mobs from state (debug_square has no cows/zombies/skeletons)."""
+
+    def _clear(mobs):
+        return mobs.replace(
+            mask=jnp.zeros_like(mobs.mask),
+            position=jnp.full_like(mobs.position, -1),
+        )
+
+    return state.replace(
+        zombies=_clear(state.zombies),
+        cows=_clear(state.cows),
+        skeletons=_clear(state.skeletons),
+        arrows=_clear(state.arrows),
+        mob_map=jnp.zeros(static_params.map_size, dtype=bool),
+    )
+
+
 def is_game_over(state, params):
     done_steps = state.timestep >= params.max_timesteps
     in_lava = (
@@ -288,7 +310,7 @@ def do_action(rng, state, action, static_params):
 
     # Sapling (random drop on grass); disabled on fixed 8x8 debug arena
     rng, _rng = jax.random.split(rng)
-    is_debug_square = tuple(static_params.map_size) == (8, 8)
+    is_debug_square = _is_debug_square_map(static_params)
     is_mining_sapling = jnp.logical_and(
         jnp.logical_not(is_debug_square),
         jnp.logical_and(
@@ -1661,17 +1683,26 @@ def craftax_step(rng, state, action, params, static_params):
     # Movement
     state = move_player(state, action)
 
-    # Mobs
+    # Mobs — disabled on fixed 8x8 debug arena (no cows/zombies in obs or render).
+    is_debug_square = _is_debug_square_map(static_params)
     rng, _rng = jax.random.split(rng)
-    state = update_mobs(_rng, state, params, static_params)
-
-    # No mob spawning on the fixed 8x8 debug map (zombies, cows, skeletons, arrows).
-    is_debug_square = tuple(static_params.map_size) == (8, 8)
+    state = jax.lax.cond(
+        is_debug_square,
+        lambda s: s,
+        lambda s: update_mobs(_rng, s, params, static_params),
+        state,
+    )
     rng, _rng = jax.random.split(rng)
     state = jax.lax.cond(
         is_debug_square,
         lambda s: s,
         lambda s: spawn_mobs(s, _rng, params, static_params),
+        state,
+    )
+    state = jax.lax.cond(
+        is_debug_square,
+        lambda s: _strip_all_mobs(s, static_params),
+        lambda s: s,
         state,
     )
 

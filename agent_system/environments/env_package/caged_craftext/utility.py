@@ -521,6 +521,179 @@ def overlay_episode_cumulative_stats(
     return np.array(img)
 
 
+def _load_mono_font(font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    try:
+        return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", font_size)
+    except Exception:
+        return ImageFont.load_default()
+
+
+def composite_frame_with_prompt_text(
+    frame_arr: np.ndarray,
+    prompt_text: str,
+    action_text: str,
+    *,
+    font_size: int = 9,
+    min_panel_width: int = 960,
+    max_lines: int | None = None,
+) -> np.ndarray:
+    """
+    Stack game frame + text panel below. Wraps long prompt lines to panel width;
+    keeps ASCII map rows unwrapped (truncated only if still too wide).
+    """
+    arr = np.asarray(frame_arr)
+    if arr.ndim == 2:
+        arr = np.stack([arr] * 3, axis=-1)
+    elif arr.ndim == 3 and arr.shape[0] == 3:
+        arr = np.transpose(arr, (1, 2, 0))
+    if arr.max() <= 1.0:
+        arr = (arr * 255).astype(np.uint8)
+    else:
+        arr = arr.astype(np.uint8)
+
+    img = Image.fromarray(arr)
+    fw, fh = img.size
+    out_w = max(fw, min_panel_width)
+    font = _load_mono_font(font_size)
+    line_height = font_size + 2
+
+    measure_img = Image.new("RGB", (out_w, 10), (250, 250, 250))
+    draw = ImageDraw.Draw(measure_img)
+    max_text_width = max(40, out_w - 12)
+
+    def _text_width_px(s: str) -> float:
+        try:
+            return float(draw.textlength(s, font=font))
+        except Exception:
+            try:
+                bbox = draw.textbbox((0, 0), s, font=font)
+                return float(bbox[2] - bbox[0])
+            except Exception:
+                return float(len(s) * (font_size * 0.6))
+
+    def _truncate_to_width(s: str) -> str:
+        if not s or _text_width_px(s) <= max_text_width:
+            return s or ""
+        ell = ".."
+        lo, hi = 0, len(s)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            cand = s[:mid] + ell
+            if _text_width_px(cand) <= max_text_width:
+                lo = mid
+            else:
+                hi = mid - 1
+        return (s[:lo] + ell) if lo > 0 else ell
+
+    def _wrap_line(line: str) -> list[str]:
+        is_grid = ("|" in line) or ("+" in line and "-" in line)
+        if is_grid:
+            return [_truncate_to_width(line)]
+
+        # Action legend: wrap at commas so tokens stay intact.
+        if "=" in line and "," in line and len(line) > 40:
+            chunks = [c.strip() for c in line.split(",")]
+            out: list[str] = []
+            acc = ""
+            for chunk in chunks:
+                piece = chunk if not acc else acc + ", " + chunk
+                if _text_width_px(piece) <= max_text_width:
+                    acc = piece
+                else:
+                    if acc:
+                        out.append(acc)
+                    acc = _truncate_to_width(chunk) if _text_width_px(chunk) > max_text_width else chunk
+            if acc:
+                out.append(acc)
+            return out or [_truncate_to_width(line)]
+
+        out = []
+        remaining = line
+        safety = 0
+        while remaining and safety < 300:
+            safety += 1
+            if _text_width_px(remaining) <= max_text_width:
+                out.append(remaining)
+                break
+            parts = remaining.split(" ")
+            if len(parts) == 1:
+                out.append(_truncate_to_width(remaining))
+                break
+            acc = parts[0]
+            cut_idx = len(parts[0])
+            for p in parts[1:]:
+                cand = acc + " " + p
+                if _text_width_px(cand) <= max_text_width:
+                    acc = cand
+                    cut_idx += 1 + len(p)
+                else:
+                    break
+            if acc == parts[0] and _text_width_px(acc) > max_text_width:
+                out.append(_truncate_to_width(acc))
+                remaining = remaining[len(parts[0]) :].lstrip()
+            else:
+                out.append(acc)
+                remaining = remaining[cut_idx:].lstrip()
+        return out or [_truncate_to_width(line)]
+
+    src_lines = (prompt_text or "").split("\n")
+    src_lines = [ln.strip("\r") for ln in src_lines]
+
+    constraint_lines = [ln for ln in src_lines if "**CONSTRAINT:**" in ln]
+    other_lines = [ln for ln in src_lines if ln not in constraint_lines]
+
+    rendered_other: list[tuple[str, tuple[int, int, int]]] = []
+    for line in other_lines:
+        for sub in _wrap_line(line):
+            rendered_other.append((sub, (0, 0, 0)))
+
+    rendered_constraint: list[tuple[str, tuple[int, int, int]]] = []
+    for line in constraint_lines:
+        for sub in _wrap_line(line):
+            rendered_constraint.append((sub, (180, 0, 0)))
+
+    action_line = f"Action: {action_text or ''}"
+    rendered_action: list[tuple[str, tuple[int, int, int]]] = []
+    for sub in _wrap_line(action_line):
+        rendered_action.append((sub, (100, 0, 100)))
+
+    tail = rendered_constraint + rendered_action
+    if max_lines is not None and len(tail) >= max_lines:
+        kept: list[tuple[str, tuple[int, int, int]]] = []
+        if rendered_constraint:
+            kept.append(rendered_constraint[0])
+        for item in reversed(tail):
+            if len(kept) >= max_lines:
+                break
+            if kept and item is kept[0]:
+                continue
+            kept.append(item)
+        rendered_lines = list(reversed(kept))
+    elif max_lines is not None and len(rendered_other) + len(tail) > max_lines:
+        head_budget = max(0, max_lines - len(tail))
+        rendered_lines = rendered_other[:head_budget] + tail
+    else:
+        rendered_lines = rendered_other + tail
+
+    panel_h = len(rendered_lines) * line_height + 12
+    panel = Image.new("RGB", (out_w, panel_h), (250, 250, 250))
+    panel_draw = ImageDraw.Draw(panel)
+    y = 4
+    for txt, color in rendered_lines:
+        panel_draw.text((6, y), txt, fill=color, font=font)
+        y += line_height
+
+    if out_w > fw:
+        top = Image.new("RGB", (out_w, fh), (255, 255, 255))
+        top.paste(img, (0, 0))
+        img = top
+
+    out = Image.new("RGB", (out_w, fh + panel_h), (255, 255, 255))
+    out.paste(img, (0, 0))
+    out.paste(panel, (0, fh))
+    return np.asarray(out)
+
+
 def add_grid_overlay(image_array, block_pixel_size, grid_color=(255, 255, 255, 200), line_width=1):
     """
     Добавляет сетку на изображение для улучшения понимания пространственной информации.

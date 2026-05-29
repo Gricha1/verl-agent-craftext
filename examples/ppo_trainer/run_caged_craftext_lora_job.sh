@@ -60,10 +60,10 @@ OBSERVATION_TYPE=${12:-ascii}
 # Убираем аргументы скрипта, чтобы они не передавались в Hydra
 shift 12 2>/dev/null || shift 11 2>/dev/null || shift 10 2>/dev/null || shift 9 2>/dev/null || shift 8 2>/dev/null || shift 7 2>/dev/null || shift 6 2>/dev/null || shift 5 2>/dev/null || shift 4 2>/dev/null || shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/dev/null || true
 
-# Если используется action head, max_response_length должен быть 1 (одно действие)
-if [ "$USE_ACTION_HEAD" = "true" ]; then
+# Если используется action head или single-token actions, max_response_length = 1
+if [ "$USE_ACTION_HEAD" = "true" ] || [ "$PROMPT_TEMPLATE_TYPE" = "single_token_action" ]; then
     max_response_length=1
-    echo "[INFO] USE_ACTION_HEAD=true, устанавливаем max_response_length=1"
+    echo "[INFO] max_response_length=1 (USE_ACTION_HEAD=$USE_ACTION_HEAD, PROMPT_TEMPLATE_TYPE=$PROMPT_TEMPLATE_TYPE)"
 fi
 
 export VLLM_ATTENTION_BACKEND=XFORMERS
@@ -159,6 +159,7 @@ python -m verl.trainer.main_ppo \
     +env.craftext_settings='achievements_safe_budget_energy_collect_wood' \
     +env.observation_type="$OBSERVATION_TYPE" \
     +env.prompt_template_type=$PROMPT_TEMPLATE_TYPE \
+    +actor_rollout_ref.actor.single_token_actions=$(if [ "$PROMPT_TEMPLATE_TYPE" = "single_token_action" ]; then echo "True"; else echo "False"; fi) \
     +env.auto_reset=$(if [ "$AUTO_RESET" = "true" ]; then echo "True"; else echo "False"; fi) \
     ++env.use_jax_gpu=False \
     +actor_rollout_ref.model.use_action_head=$(if [ "$USE_ACTION_HEAD" = "true" ]; then echo "True"; else echo "False"; fi) \

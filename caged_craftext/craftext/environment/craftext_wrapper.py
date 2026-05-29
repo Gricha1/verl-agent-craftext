@@ -23,7 +23,10 @@ from craftext.environment.scenarious.checkers.building_square  import checker_sq
 from craftext.environment.scenarious.checkers.conditional      import checker_conditional_placement
 from craftext.environment.scenarious.checkers.relevant         import cheker_localization
 from craftext.environment.scenarious.checkers.target_state     import TargetState
-from craftext.environment.debug_square_rewards import debug_square_step_reward
+from craftext.environment.debug_square_rewards import (
+    debug_square_adjacent_to_goal,
+    debug_square_step_reward,
+)
 from typing import Union
 
 @struct.dataclass
@@ -138,9 +141,11 @@ class InstructionWrapper(Wrapper):
         game_data_vector = self.StateStructure.from_state(env_state.env_state, state, action)
                     
         ts = self.batched_ts.select(env_state.idx)
-        # debug_square_8x8: only achievement checker (avoid lax.switch tracing building_* on 8x8).
+        # debug_square_8x8: success = player orthogonally adjacent to goal cell (no DO / achievements).
         if self.config_name == "debug_square_8x8":
-            instruction_done = checker_acvievments(game_data_vector, ts.achievements)
+            instruction_done = debug_square_adjacent_to_goal(
+                state.player_position, ts.achievements.achievement_mask
+            )
         else:
             instruction_done = generic_check(game_data_vector, ts, env_state.checker_id)
         

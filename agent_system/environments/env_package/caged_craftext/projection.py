@@ -236,6 +236,23 @@ Your available actions are: {actions_list}
 # Для обратной совместимости
 CRAFTEXT_EXTENDED_TEMPLATE_NO_HIS = get_craftext_extended_template_no_his()
 
+
+def get_single_token_action_template_no_his() -> str:
+    """Prompt for one-token action output; legend lists token=ACTION for all 17 actions."""
+    from .action_tokens import action_token_legend
+
+    return f"""
+Your goal is to complete the following task:
+**TASK:** {{task_description}}
+
+This is what you currently see:
+{{current_observation}}
+
+Reply with exactly ONE token — your chosen action (no tags, no explanation):
+{action_token_legend()}
+"""
+
+
 # Невалидное действие, которое среда точно не примет.
 # Оно будет использоваться, если LLM сгенерирует что-то непонятное.
 INVALID_ACTION_ID = -1
@@ -243,14 +260,21 @@ INVALID_ACTION_ID = -1
 
 def craftext_projection(actions: List[str]):
     """
-    ИСПРАВЛЕННАЯ ВЕРСИЯ: Парсит, валидирует и преобразует текстовый вывод LLM.
-    Поддерживает как <action> теги (для обычного шаблона), так и <answer> теги (для extended шаблона).
-    Проверка на <think> сделана опциональной.
+    Parse LLM output into env action ids.
+    Supports single-token labels (1..9, a..h), <action> tags, and bare action names.
     """
+    from .action_tokens import parse_single_token_action
+
     processed_actions = [INVALID_ACTION_ID] * len(actions)
-    valids = [0] * len(actions) # 0 - невалидное, 1 - валидное
+    valids = [0] * len(actions)
 
     for i, original_str in enumerate(actions):
+        single_id = parse_single_token_action(original_str)
+        if single_id != INVALID_ACTION_ID and not re.search(r"[\u4e00-\u9fff]", original_str):
+            valids[i] = 1
+            processed_actions[i] = single_id
+            continue
+
         action_str_lower = original_str.lower()
 
         # 1. Извлекаем текстовое действие из тегов.

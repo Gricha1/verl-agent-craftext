@@ -74,9 +74,12 @@ actor_rollout_ref:
     # If false: num_actions sequential forwards on batch B (same peak VRAM as chunk_size=B).
     entropy_action_batched_forward: False
     # Rows per forward when entropy_action_batched_forward=true (lower = less VRAM, more forwards).
+    # -1 = entire B×num_actions flat batch in one forward (no chunking).
     entropy_action_batched_chunk_size: 16
     entropy_action_length_normalize: True
     entropy_action_only_valid_rollouts: False
+    # Use with env.prompt_template_type=single_token_action (1-char labels 1..9,a..h).
+    single_token_actions: False
     use_invalid_action_penalty: True
     invalid_action_penalty_coef: 0.1
     use_kl_loss: False # True for GRPO

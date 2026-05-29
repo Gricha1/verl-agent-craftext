@@ -82,12 +82,13 @@ class DataParallelPPOActor(BasePPOActor):
                 "entropy_over_valid_actions requires actor.tokenizer_path (set in fsdp_workers init)"
             )
         trust_remote_code = bool(self.config.get("trust_remote_code", False))
-        cache_key = (tokenizer_path, trust_remote_code)
+        single_token_actions = bool(self.config.get("single_token_actions", False))
+        cache_key = (tokenizer_path, trust_remote_code, single_token_actions)
         if self._canonical_action_cache_key != cache_key:
             from verl.utils.action_set_entropy import _load_canonical_action_token_cache
 
             padded, lengths, _ = _load_canonical_action_token_cache(
-                tokenizer_path, trust_remote_code
+                tokenizer_path, trust_remote_code, single_token_actions=single_token_actions
             )
             self._canonical_action_cache_key = cache_key
             self._canonical_action_padded = padded
@@ -164,7 +165,11 @@ class DataParallelPPOActor(BasePPOActor):
             )
             flat_batch = cand_ids.shape[0]
             chunk_size = int(self.config.get("entropy_action_batched_chunk_size", 16))
-            chunk_size = max(1, min(chunk_size, flat_batch))
+            if chunk_size < 0:
+                # -1: one forward over the full B×num_actions flat batch (no chunking).
+                chunk_size = flat_batch
+            else:
+                chunk_size = max(1, min(chunk_size, flat_batch))
 
             mm_full = multi_modal_inputs
             if mm_full:

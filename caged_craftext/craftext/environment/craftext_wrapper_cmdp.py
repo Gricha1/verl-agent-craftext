@@ -86,7 +86,7 @@ class CMDPInstructionWrapper(InstructionWrapper):
             cost=0.,
             total_success_rate=state.total_success_rate,
             rng=state.rng,
-            instruction_done=state.checker_id,
+            instruction_done=state.instruction_done,
             checker_id=state.checker_id,
             target_state=state.target_state
         )
@@ -287,7 +287,7 @@ class CMDPInstructionWrapper(InstructionWrapper):
             cost=cost,
             total_success_rate=state.total_success_rate,
             rng=state.rng,
-            instruction_done=state.checker_id,
+            instruction_done=state.instruction_done,
             checker_id=state.checker_id,
             target_state=ts
         )

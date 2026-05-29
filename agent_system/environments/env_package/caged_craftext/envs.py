@@ -95,6 +95,19 @@ def _make_craftax_classic_pixels_env(env_kwargs: dict):
             return env.get_obs(state), state
 
         env.reset_env = reset_env
+
+        # Belt-and-suspenders: strip mobs after each step even if pip craftax lacks debug_square hooks.
+        import craftax.craftax_classic.game_logic as _craftax_gl
+
+        _orig_craftax_step = _craftax_gl.craftax_step
+
+        def _craftax_step_debug_safe(rng, state, action, params, static_params):
+            state, reward = _orig_craftax_step(rng, state, action, params, static_params)
+            if tuple(static_params.map_size) == (8, 8) and hasattr(_craftax_gl, "_strip_all_mobs"):
+                state = _craftax_gl._strip_all_mobs(state, static_params)
+            return state, reward
+
+        _craftax_gl.craftax_step = _craftax_step_debug_safe
         return env
     from craftax.craftax_env import make_craftax_env_from_name
 
@@ -241,6 +254,8 @@ class CagedCraftextWorker:
             
         info['text_render'] = text_render
         info['instruction'] = instruction_text
+        info['instruction_done'] = bool(getattr(new_state_jax, 'instruction_done', False))
+        info['done'] = done
         self._episode_return_cum += reward
         info['episode_return_cum'] = float(self._episode_return_cum)
 
@@ -303,6 +318,7 @@ class CagedCraftextWorker:
         
         info['text_render'] = text_render
         info['instruction'] = instruction_text
+        info['instruction_done'] = False
         self._episode_return_cum = 0.0
         self._episode_step = 0
         info['episode_return_cum'] = 0.0
@@ -644,6 +660,8 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
         craftax_state_batched = getattr(state_cpu, "env_state", None)
         cost_batched = getattr(state_cpu, "cost", None)
         episode_cost_batched = getattr(state_cpu, "episode_cost", None)
+        instruction_done_batched = getattr(state_cpu, "instruction_done", None)
+        total_sr_batched = getattr(state_cpu, "total_success_rate", None)
 
         # Parallel ASCII/text render via one Ray actor per env (optional).
         if self._text_render_actors is not None and craftax_state_batched is not None:
@@ -697,6 +715,18 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
             info["episode_return_cum"] = float(self._episode_return_cum[i])
             info["env_step"] = int(self._rollout_steps[i])
             info["episode_step"] = int(self._episode_steps[i])
+            info["done"] = d
+
+            try:
+                if instruction_done_batched is not None:
+                    info["instruction_done"] = bool(np.asarray(instruction_done_batched[i]))
+            except Exception:
+                pass
+            try:
+                if total_sr_batched is not None:
+                    info["success_rate"] = float(np.asarray(total_sr_batched[i]))
+            except Exception:
+                pass
 
             if i in render_frames:
                 ep_cost = float(info.get("episode_cost", 0.0))

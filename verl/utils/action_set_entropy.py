@@ -19,7 +19,15 @@ import torch.nn.functional as F
 from verl.utils.torch_functional import logprobs_from_logits
 
 
-def canonical_action_text(action_name: str) -> str:
+def canonical_action_text(action_name: str, *, single_token: bool = False) -> str:
+    if single_token:
+        from agent_system.environments.env_package.caged_craftext.action_tokens import (
+            action_token_label,
+        )
+        from agent_system.environments.env_package.caged_craftext.projection import ACTION_TO_TEXT
+
+        idx = ACTION_TO_TEXT.index(action_name)
+        return action_token_label(idx)
     return f"<action>{action_name}</action>"
 
 
@@ -33,6 +41,7 @@ def default_action_names() -> Tuple[str, ...]:
 def _load_canonical_action_token_cache(
     tokenizer_path: str,
     trust_remote_code: bool,
+    single_token_actions: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, int]:
     """
     Returns:
@@ -51,10 +60,14 @@ def _load_canonical_action_token_cache(
 
     token_rows: List[List[int]] = []
     for name in default_action_names():
-        text = canonical_action_text(name)
+        text = canonical_action_text(name, single_token=single_token_actions)
         ids = tokenizer.encode(text, add_special_tokens=False)
         if not ids:
             raise ValueError(f"Empty tokenization for canonical action: {text!r}")
+        if single_token_actions and len(ids) != 1:
+            raise ValueError(
+                f"Expected single token for action {name!r}, got {len(ids)} tokens for {text!r}"
+            )
         token_rows.append(ids)
 
     num_actions = len(token_rows)

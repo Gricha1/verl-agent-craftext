@@ -5,7 +5,7 @@
 # - GIF trajectory in ./gif/ (same as training validation video)
 # - action histogram PNG in ./gif/ (same as training)
 #
-# Default checkpoint root is the debug_square optimistic-parallel run dir.
+# Default checkpoint root: ppo_debug_square.sh (override for act_entropy run).
 #
 # GPU: stop any running training on the same node first (see preflight below).
 # Usage:
@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-CKPT_ROOT="${CKPT_ROOT:-training_checkpoints/verl_agent_caged_craftext_debug_square_optimistic_parallel}"
+CKPT_ROOT="${CKPT_ROOT:-training_checkpoints/verl_agent_caged_craftext_debug_square}"
 if [ -n "${1:-}" ] && [ -d "$1" ]; then
   CKPT_ROOT="$1"
   shift
@@ -75,12 +75,12 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   false \
   true \
   8 \
-  512 \
+  1 \
   false \
   false \
   1 \
   true \
-  default_template \
+  single_token_action \
   0 \
   ascii \
   ++env.craftext_settings='debug_square_8x8' \

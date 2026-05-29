@@ -40,26 +40,27 @@ def generate_debug_square_world(rng, params, static_params):
     player_position = jnp.array([h // 2, w // 2], dtype=jnp.int32)
     map = map.at[player_position[0], player_position[1]].set(BlockType.GRASS.value)
 
+    off_map = jnp.full((2,), -1, dtype=jnp.int32)
     zombies = Mobs(
-        position=jnp.zeros((static_params.max_zombies, 2), dtype=jnp.int32),
+        position=jnp.tile(off_map, (static_params.max_zombies, 1)),
         health=jnp.ones(static_params.max_zombies, dtype=jnp.int32),
         mask=jnp.zeros(static_params.max_zombies, dtype=bool),
         attack_cooldown=jnp.zeros(static_params.max_zombies, dtype=jnp.int32),
     )
     skeletons = Mobs(
-        position=jnp.zeros((static_params.max_skeletons, 2), dtype=jnp.int32),
+        position=jnp.tile(off_map, (static_params.max_skeletons, 1)),
         health=jnp.zeros(static_params.max_skeletons, dtype=jnp.int32),
         mask=jnp.zeros(static_params.max_skeletons, dtype=bool),
         attack_cooldown=jnp.zeros(static_params.max_skeletons, dtype=jnp.int32),
     )
     arrows = Mobs(
-        position=jnp.zeros((static_params.max_arrows, 2), dtype=jnp.int32),
+        position=jnp.tile(off_map, (static_params.max_arrows, 1)),
         health=jnp.zeros(static_params.max_arrows, dtype=jnp.int32),
         mask=jnp.zeros(static_params.max_arrows, dtype=bool),
         attack_cooldown=jnp.zeros(static_params.max_arrows, dtype=jnp.int32),
     )
     cows = Mobs(
-        position=jnp.zeros((static_params.max_cows, 2), dtype=jnp.int32),
+        position=jnp.tile(off_map, (static_params.max_cows, 1)),
         health=jnp.ones(static_params.max_cows, dtype=jnp.int32) * params.cow_health,
         mask=jnp.zeros(static_params.max_cows, dtype=bool),
         attack_cooldown=jnp.zeros(static_params.max_cows, dtype=jnp.int32),

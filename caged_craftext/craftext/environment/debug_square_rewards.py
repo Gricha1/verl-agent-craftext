@@ -1,11 +1,11 @@
-"""Reward shaping for the fixed 8x8 debug_square map (task + navigation only)."""
+"""Reward shaping and goal checks for the fixed 8x8 debug_square map."""
 from __future__ import annotations
 
 import jax.numpy as jnp
 
 from craftext.environment.craftext_constants import Achievement, AchievementState
 
-# Corner targets on the 8x8 debug map (row, col) — see debug_square_world_gen.py
+# Corner resource cells (row, col) — see debug_square_world_gen.py
 _DEBUG_ACHIEVEMENT_IDS = jnp.array(
     [
         Achievement.COLLECT_STONE,
@@ -17,7 +17,7 @@ _DEBUG_ACHIEVEMENT_IDS = jnp.array(
 _DEBUG_TARGET_CELLS = jnp.array(
     [
         [1, 1],  # stone
-        [1, 6],  # wood
+        [1, 6],  # wooden block (WOOD tile, not border trees)
         [6, 1],  # water
     ],
     dtype=jnp.int32,
@@ -27,7 +27,7 @@ TASK_COMPLETION_REWARD = jnp.float32(1.0)
 
 
 def debug_square_target_cell(achievement_mask) -> jnp.ndarray:
-    """(row, col) of the resource block required by the current task."""
+    """(row, col) of the resource block for the current task."""
     mask = jnp.asarray(achievement_mask, dtype=jnp.int32)
     is_need = mask[_DEBUG_ACHIEVEMENT_IDS] == AchievementState.NEED_TO_ACHIEVE
     weights = is_need.astype(jnp.float32)
@@ -41,10 +41,17 @@ def manhattan_distance(player_pos, target_cell) -> jnp.ndarray:
     return jnp.abs(player_pos[0] - target_cell[0]) + jnp.abs(player_pos[1] - target_cell[1])
 
 
+def debug_square_adjacent_to_goal(player_pos, achievement_mask) -> jnp.ndarray:
+    """
+    True when the player stands on a cell orthogonally adjacent to the task block
+    (Manhattan distance 1). Facing direction does not matter.
+    """
+    target = debug_square_target_cell(achievement_mask)
+    return manhattan_distance(player_pos, target) == 1
+
+
 def debug_square_navigation_reward(prev_player_pos, new_player_pos, achievement_mask) -> jnp.ndarray:
-    """
-    Potential-based shaping: d(s_t, goal) - d(s_{t+1}, goal) in grid cells (L1).
-    """
+    """Potential-based shaping: d(s_t, goal) - d(s_{t+1}, goal) in grid cells (L1)."""
     target = debug_square_target_cell(achievement_mask)
     prev_d = manhattan_distance(prev_player_pos, target).astype(jnp.float32)
     new_d = manhattan_distance(new_player_pos, target).astype(jnp.float32)
@@ -62,9 +69,9 @@ def debug_square_step_reward(
     debug_square_8x8:
       - Craftax achievement reward disabled
       - navigation reward (distance decrease)
-      - bonus on instruction completion
+      - bonus when adjacent to the goal cell
     """
-    del craftax_reward  # achievement shaping disabled for debug map
+    del craftax_reward
     nav = debug_square_navigation_reward(prev_player_pos, new_player_pos, achievement_mask)
     task_bonus = jnp.where(instruction_done, TASK_COMPLETION_REWARD, jnp.float32(0.0))
     return nav + task_bonus

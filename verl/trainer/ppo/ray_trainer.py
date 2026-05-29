@@ -779,14 +779,16 @@ class RayPPOTrainer:
                 import tempfile
                 try:
                     import imageio
-                    from PIL import Image, ImageDraw, ImageFont
-                    import textwrap
                     gif_name = f"val_trajectory_step{self.total_env_steps}.gif"
                     gif_path_tmp = os.path.join(tempfile.gettempdir(), gif_name)
                     gif_dir = os.path.join(os.getcwd(), "gif")
                     os.makedirs(gif_dir, exist_ok=True)
                     gif_path_gif = os.path.join(gif_dir, gif_name)
                     # Optionally composite each frame with observation + action text (like evaluation_caged_craftext)
+                    from agent_system.environments.env_package.caged_craftext.utility import (
+                        composite_frame_with_prompt_text,
+                    )
+
                     def _frame_to_uint8_arr(f):
                         arr = np.asarray(f)
                         if arr.ndim == 2:
@@ -798,176 +800,12 @@ class RayPPOTrainer:
                         else:
                             arr = arr.astype(np.uint8)
                         return arr
-                    def _composite_frame_with_text(frame_arr, prompt_text, action_text, panel_height=None, font_size=10, max_lines=30):
-                        """Add a text panel below the frame: observation by lines (keep grid alignment) + action."""
-                        try:
-                            img = Image.fromarray(frame_arr)
-                            w, h = img.size
-                            try:
-                                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", font_size)
-                            except Exception:
-                                font = ImageFont.load_default()
-                            line_height = font_size + 2
-                            # Use a tiny temporary canvas for measuring text widths; final panel is created later
-                            _measure_panel = Image.new("RGB", (w, 10), (250, 250, 250))
-                            draw = ImageDraw.Draw(_measure_panel)
-                            # Split by newlines to preserve map grid; no mid-line wrapping
-                            lines = (prompt_text or "").split("\n")
-                            lines = [ln.strip("\r") for ln in lines if ln.strip() or ln == ""]
-                            
-                            # Извлекаем constraint отдельно, чтобы гарантировать его отображение
-                            constraint_lines = []
-                            other_lines = []
-                            for line in lines:
-                                if "**CONSTRAINT:**" in line or line.strip().startswith("**CONSTRAINT:**"):
-                                    constraint_lines.append(line)
-                                else:
-                                    other_lines.append(line)
-                            
-                            # Ограничиваем количество обычных строк, но всегда показываем constraint
-                            max_other_lines = max_lines - len(constraint_lines) - 1  # -1 для action_line
-                            if max_other_lines < 0:
-                                max_other_lines = max(5, max_lines - len(constraint_lines) - 1)  # Минимум 5 строк для основного текста
-                            other_lines = other_lines[:max_other_lines]
-                            
-                            # Объединяем: обычные строки + constraint + action
-                            lines = other_lines + constraint_lines
-                            # Keep more of the raw agent output; it is often short in action-only mode,
-                            # but can include tags/newlines that would otherwise get truncated.
-                            action_line = f"Action: {(action_text or '')[:500]}"
-                            y_off = 4
-                            max_text_width = max(10, w - 8)
 
-                            def _text_width_px(s: str) -> float:
-                                try:
-                                    # Pillow >= 8
-                                    return float(draw.textlength(s, font=font))
-                                except Exception:
-                                    try:
-                                        bbox = draw.textbbox((0, 0), s, font=font)
-                                        return float(bbox[2] - bbox[0])
-                                    except Exception:
-                                        return float(len(s) * (font_size * 0.6))
-
-                            def _truncate_to_width(s: str) -> str:
-                                if not s:
-                                    return ""
-                                if _text_width_px(s) <= max_text_width:
-                                    return s
-                                ell = ".."
-                                lo, hi = 0, len(s)
-                                # binary search longest prefix that fits with ellipsis
-                                while lo < hi:
-                                    mid = (lo + hi + 1) // 2
-                                    cand = s[:mid] + ell
-                                    if _text_width_px(cand) <= max_text_width:
-                                        lo = mid
-                                    else:
-                                        hi = mid - 1
-                                return (s[:lo] + ell) if lo > 0 else ell
-
-                            def _wrap_or_truncate(line: str) -> list[str]:
-                                # Keep ASCII grid lines unwrapped (preserve alignment), but still truncate to avoid overflow.
-                                is_grid = ("|" in line) or ("+" in line) or ("-" in line and len(line) > 8)
-                                if is_grid:
-                                    return [_truncate_to_width(line)]
-                                # Soft wrap on spaces first; if a token is too long, truncate it.
-                                out: list[str] = []
-                                remaining = line
-                                safety = 0
-                                while remaining and safety < 200:
-                                    safety += 1
-                                    if _text_width_px(remaining) <= max_text_width:
-                                        out.append(remaining)
-                                        break
-                                    # greedy split by words
-                                    parts = remaining.split(" ")
-                                    if len(parts) == 1:
-                                        out.append(_truncate_to_width(remaining))
-                                        break
-                                    acc = parts[0]
-                                    cut_idx = len(parts[0])
-                                    for p in parts[1:]:
-                                        cand = acc + " " + p
-                                        if _text_width_px(cand) <= max_text_width:
-                                            acc = cand
-                                            cut_idx += 1 + len(p)
-                                        else:
-                                            break
-                                    if acc == parts[0] and _text_width_px(acc) > max_text_width:
-                                        out.append(_truncate_to_width(acc))
-                                        remaining = remaining[len(parts[0]):].lstrip()
-                                    else:
-                                        out.append(acc)
-                                        remaining = remaining[cut_idx:].lstrip()
-                                if not out:
-                                    out = [_truncate_to_width(line)]
-                                return out
-
-                            # Render in 3 blocks so we can always keep constraint + action.
-                            constraint_src = [ln for ln in lines if ("**CONSTRAINT:**" in ln or ln.strip().startswith("**CONSTRAINT:**"))]
-                            other_src = [ln for ln in lines if ln not in constraint_src]
-
-                            rendered_other: list[tuple[str, tuple[int, int, int]]] = []
-                            for line in other_src:
-                                for sub in _wrap_or_truncate(line):
-                                    rendered_other.append((sub, (0, 0, 0)))
-
-                            rendered_constraint: list[tuple[str, tuple[int, int, int]]] = []
-                            for line in constraint_src:
-                                for sub in _wrap_or_truncate(line):
-                                    rendered_constraint.append((sub, (0, 0, 0)))
-
-                            rendered_action: list[tuple[str, tuple[int, int, int]]] = []
-                            for sub in _wrap_or_truncate(action_line):
-                                rendered_action.append((sub, (100, 0, 100)))
-
-                            # If too many lines, drop from the "other" block first, always keeping constraint + action.
-                            tail = rendered_constraint + rendered_action
-                            if len(tail) >= max_lines:
-                                # Constraint/action alone exceed budget: keep as much as possible,
-                                # but always keep the first constraint line (with the label) and last action line.
-                                kept: list[tuple[str, tuple[int, int, int]]] = []
-                                if rendered_constraint:
-                                    kept.append(rendered_constraint[0])
-                                # fill from the end (including remaining constraint lines and action)
-                                for item in reversed(tail):
-                                    if len(kept) >= max_lines:
-                                        break
-                                    if item is kept[0] if kept else False:
-                                        continue
-                                    kept.append(item)
-                                rendered_lines = list(reversed(kept))
-                            else:
-                                head_budget = max_lines - len(tail)
-                                if len(rendered_other) > head_budget:
-                                    rendered_other = rendered_other[:head_budget]
-                                rendered_lines = rendered_other + tail
-                            # Create (or grow) panel height based on final rendered lines.
-                            required_panel_height = len(rendered_lines) * line_height + 12
-                            if panel_height is None:
-                                panel_height = required_panel_height
-                            else:
-                                panel_height = max(int(panel_height), int(required_panel_height))
-
-                            panel = Image.new("RGB", (w, panel_height), (250, 250, 250))
-                            draw = ImageDraw.Draw(panel)
-
-                            y_off = 4
-                            for txt, color in rendered_lines:
-                                draw.text((4, y_off), txt, fill=color, font=font)
-                                y_off += line_height
-                            out = Image.new("RGB", (w, h + panel_height))
-                            out.paste(img, (0, 0))
-                            out.paste(panel, (0, h))
-                            return np.array(out)
-                        except Exception:
-                            return frame_arr
                     composed_frames = []
                     for i, f in enumerate(frames):
                         arr = _frame_to_uint8_arr(f)
                         if prompts is not None and actions is not None and i < len(prompts) and i < len(actions):
-                            arr = _composite_frame_with_text(arr, prompts[i], actions[i])
+                            arr = composite_frame_with_prompt_text(arr, prompts[i], actions[i])
                         composed_frames.append(arr)
                     def _write_gif(path):
                         with imageio.get_writer(path, mode='I', duration=0.15, loop=0) as writer:

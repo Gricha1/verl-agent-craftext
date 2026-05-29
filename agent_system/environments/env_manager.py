@@ -616,6 +616,7 @@ from agent_system.environments.env_package.caged_craftext.projection import (
     get_craftext_template,
     get_craftext_template_no_his,
     get_craftext_extended_template_no_his,
+    get_single_token_action_template_no_his,
     CRAFTEXT_EXTENDED_TEMPLATE_NO_HIS,
     ACTION_TO_TEXT as CAGED_ACTION_TO_TEXT,
 )
@@ -812,6 +813,11 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
             except Exception:
                 info['action_id'] = -1
             info['action_text'] = text_actions[i] if i < len(text_actions) else ""
+            try:
+                aid = int(info.get("action_id", -1))
+                info["action_name"] = CAGED_ACTION_TO_TEXT[aid] if 0 <= aid < len(CAGED_ACTION_TO_TEXT) else ""
+            except Exception:
+                info["action_name"] = ""
 
         return next_observations, rewards, dones, infos
 
@@ -832,6 +838,9 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
             template_no_his = get_craftext_extended_template_no_his()
             # Для extended шаблона не используем шаблон с историей, так как он не определен
             template = template_no_his  # Fallback
+        elif prompt_template_type == 'single_token_action':
+            template_no_his = get_single_token_action_template_no_his()
+            template = template_no_his
         else:
             # Используем обычные шаблоны с учетом enable_reasoning
             template = get_craftext_template(enable_reasoning=enable_reasoning)
@@ -854,8 +863,8 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
             
             # Строим промпт
             # Для extended_template всегда используем template_no_his (так как extended шаблон определен только без истории)
-            if prompt_template_type == 'extended_template' or self.config.env.history_length == 0:
-                if prompt_template_type == 'extended_template':
+            if prompt_template_type in ('extended_template', 'single_token_action') or self.config.env.history_length == 0:
+                if prompt_template_type in ('extended_template', 'single_token_action'):
                     # Extended шаблон всегда без истории
                     prompt = template_no_his.format(
                         task_description=task,
