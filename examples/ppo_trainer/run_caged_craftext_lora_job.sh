@@ -159,7 +159,7 @@ python -m verl.trainer.main_ppo \
     +env.craftext_settings='achievements_safe_budget_energy_collect_wood' \
     +env.observation_type="$OBSERVATION_TYPE" \
     +env.prompt_template_type=$PROMPT_TEMPLATE_TYPE \
-    +actor_rollout_ref.actor.single_token_actions=$(if [ "$PROMPT_TEMPLATE_TYPE" = "single_token_action" ]; then echo "True"; else echo "False"; fi) \
+    actor_rollout_ref.actor.single_token_actions=$(if [ "$PROMPT_TEMPLATE_TYPE" = "single_token_action" ]; then echo "True"; else echo "False"; fi) \
     +env.auto_reset=$(if [ "$AUTO_RESET" = "true" ]; then echo "True"; else echo "False"; fi) \
     ++env.use_jax_gpu=False \
     +actor_rollout_ref.model.use_action_head=$(if [ "$USE_ACTION_HEAD" = "true" ]; then echo "True"; else echo "False"; fi) \
