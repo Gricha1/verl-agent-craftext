@@ -42,8 +42,6 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   actor_rollout_ref.rollout.gpu_memory_utilization=0.55 \
   actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
   actor_rollout_ref.actor.entropy_coeff=0.01 \
-  actor_rollout_ref.actor.entropy_coeff_schedule.enable=True \
-  actor_rollout_ref.actor.entropy_coeff_schedule.schedule=log \
   actor_rollout_ref.actor.entropy_over_valid_actions=False \
   trainer.resume_mode=disable \
   trainer.env_val_video_freq=100000 \
