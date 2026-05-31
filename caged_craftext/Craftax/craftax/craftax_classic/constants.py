@@ -90,6 +90,7 @@ SOLID_BLOCKS = jnp.array(
     [
         BlockType.WATER.value,
         BlockType.STONE.value,
+        BlockType.WOOD.value,
         BlockType.TREE.value,
         BlockType.COAL.value,
         BlockType.IRON.value,

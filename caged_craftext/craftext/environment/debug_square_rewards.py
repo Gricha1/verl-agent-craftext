@@ -43,11 +43,11 @@ def manhattan_distance(player_pos, target_cell) -> jnp.ndarray:
 
 def debug_square_adjacent_to_goal(player_pos, achievement_mask) -> jnp.ndarray:
     """
-    True when the player stands on a cell orthogonally adjacent to the task block
-    (Manhattan distance 1). Facing direction does not matter.
+    True when the player is orthogonally adjacent to the task block (L1 distance 1)
+    or standing on it (distance 0). Facing direction does not matter.
     """
     target = debug_square_target_cell(achievement_mask)
-    return manhattan_distance(player_pos, target) == 1
+    return manhattan_distance(player_pos, target) <= 1
 
 
 def debug_square_navigation_reward(prev_player_pos, new_player_pos, achievement_mask) -> jnp.ndarray:

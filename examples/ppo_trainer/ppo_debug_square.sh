@@ -20,6 +20,8 @@ echo "[INFO] prompt: single_token_action, max_response_length=1"
 echo "[INFO] entropy: per-token LM (entropy_over_valid_actions=False)"
 echo "[INFO] checkpoints: training_checkpoints/verl_agent_caged_craftext_debug_square"
 
+export RUN_NAME="${RUN_NAME:-PPO Debug Square 8x8}"
+
 bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   vllm \
   false \

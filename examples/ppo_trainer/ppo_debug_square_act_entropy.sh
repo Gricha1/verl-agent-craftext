@@ -22,6 +22,8 @@ echo "[INFO] entropy: action-set H over 17 tokens (entropy_over_valid_actions=Tr
 echo "[INFO] action-set forward: batched B×17, chunk_size=-1 (one forward)"
 echo "[INFO] checkpoints: training_checkpoints/verl_agent_caged_craftext_debug_square_act_entropy"
 
+export RUN_NAME="${RUN_NAME:-PPO Debug Square 8x8 action entropy}"
+
 bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   vllm \
   false \
@@ -48,7 +50,7 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   actor_rollout_ref.actor.entropy_coeff_schedule.schedule=log \
   actor_rollout_ref.actor.entropy_over_valid_actions=True \
   actor_rollout_ref.actor.entropy_action_batched_forward=True \
-  actor_rollout_ref.actor.entropy_action_batched_chunk_size=-1 \
+  actor_rollout_ref.actor.entropy_action_batched_chunk_size=16 \
   actor_rollout_ref.actor.entropy_action_length_normalize=True \
   trainer.resume_mode=disable \
   trainer.env_val_video_freq=100000 \
