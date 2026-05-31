@@ -171,7 +171,7 @@ python -m verl.trainer.main_ppo \
     trainer.critic_warmup=$CRITIC_WARMUP \
     trainer.logger=['console','comet'] \
     trainer.project_name='verl_agent_caged_craftext' \
-    trainer.experiment_name=$RUN_NAME \
+    trainer.experiment_name="$RUN_NAME" \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.save_freq=100 \
