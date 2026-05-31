@@ -12,7 +12,6 @@ NUM_OPTIMISTIC_ENVS="${NUM_OPTIMISTIC_ENVS:-64}"
 OPTIMISTIC_RESET_RATIO="${OPTIMISTIC_RESET_RATIO:-8}"
 # Action-set entropy: peak VRAM ~ chunk_size × prompt_len × vocab (1-token response does NOT shorten prompt).
 ACT_ENTROPY_CHUNK_SIZE="${ACT_ENTROPY_CHUNK_SIZE:-16}"
-PPO_MICRO_BATCH_PER_GPU="${PPO_MICRO_BATCH_PER_GPU:-8}"
 
 echo "=========================================="
 echo "PPO debug_square_8x8 (17-action entropy)"
@@ -23,7 +22,6 @@ echo "[INFO] Map: 8x8 — stone / wood / water (adjacent = success)"
 echo "[INFO] prompt: single_token_action, max_response_length=1"
 echo "[INFO] entropy: action-set H over 17 tokens (entropy_over_valid_actions=True)"
 echo "[INFO] action-set forward: batched B×17, chunk_size=$ACT_ENTROPY_CHUNK_SIZE (use 8 if OOM; 32 often fails on 80GB+vLLM)"
-echo "[INFO] ppo_micro_batch_size_per_gpu=$PPO_MICRO_BATCH_PER_GPU (default 8 for act-entropy VRAM)"
 echo "[INFO] checkpoints: training_checkpoints/verl_agent_caged_craftext_debug_square_act_entropy"
 
 export RUN_NAME="${RUN_NAME:-PPO Debug Square 8x8 action entropy}"
@@ -49,7 +47,6 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   ++env.jax_gpu_fraction=0.15 \
   actor_rollout_ref.rollout.gpu_memory_utilization=0.50 \
   actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
-  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu="$PPO_MICRO_BATCH_PER_GPU" \
   actor_rollout_ref.actor.entropy_coeff=0.01 \
   actor_rollout_ref.actor.entropy_coeff_schedule.enable=True \
   actor_rollout_ref.actor.entropy_coeff_schedule.schedule=log \
