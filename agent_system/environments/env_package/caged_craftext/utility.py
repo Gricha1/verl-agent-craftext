@@ -196,6 +196,7 @@ def render_craftax_ascii(state) -> str:
 
     # --- 2. Подготовка мобов ---
     mob_map = np.zeros((H, W), dtype=np.int32) - 1 # -1 means no mob
+    mob_types_on_screen = set()
     
     def add_mobs(mobs, idx):
         if not hasattr(mobs, 'position'): return
@@ -208,6 +209,7 @@ def render_craftax_ascii(state) -> str:
                 lx, ly = local_pos[i]
                 if 0 <= lx < H and 0 <= ly < W:
                     mob_map[int(lx), int(ly)] = idx
+                    mob_types_on_screen.add(idx)
 
     add_mobs(state.zombies, 0)
     add_mobs(state.cows, 1)
@@ -304,11 +306,11 @@ def render_craftax_ascii(state) -> str:
     legend_items.append(f"'{current_player_char}': You")
     
     # Добавляем в легенду мобов, если они есть на экране
-    if 3 in mob_map: # Arrow
+    if 3 in mob_types_on_screen: # Arrow
         legend_items.append(f"'{MOB_SYMBOLS[3]}': Arrow")
-    if 0 in mob_map: legend_items.append("Z: Zombie")
-    if 1 in mob_map: legend_items.append("C: Cow")
-    if 2 in mob_map: legend_items.append("S: Skeleton")
+    if 0 in mob_types_on_screen: legend_items.append("Z: Zombie")
+    if 1 in mob_types_on_screen: legend_items.append("C: Cow")
+    if 2 in mob_types_on_screen: legend_items.append("S: Skeleton")
 
     for val in sorted(list(visible_blocks)):
         char, name = get_block_info(val)
@@ -353,6 +355,7 @@ def render_craftax_ascii_v2(state) -> str:
 
     mob_map = np.zeros((H, W), dtype=np.int32) - 1
     mob_symbols = ["Z", "C", "S", "a"]
+    mob_types_on_screen = set()
 
     def add_mobs(mobs, idx):
         if not hasattr(mobs, "position"):
@@ -366,6 +369,7 @@ def render_craftax_ascii_v2(state) -> str:
                 lx, ly = local_pos[i]
                 if 0 <= lx < H and 0 <= ly < W:
                     mob_map[int(lx), int(ly)] = idx
+                    mob_types_on_screen.add(idx)
 
     add_mobs(state.zombies, 0)
     add_mobs(state.cows, 1)
@@ -462,13 +466,13 @@ def render_craftax_ascii_v2(state) -> str:
 
     legend_items = [f"'{current_player_char}': You"]
 
-    if 3 in mob_map:
+    if 3 in mob_types_on_screen:
         legend_items.append(f"'{mob_symbols[3]}': Arrow")
-    if 0 in mob_map:
+    if 0 in mob_types_on_screen:
         legend_items.append("Z: Zombie")
-    if 1 in mob_map:
+    if 1 in mob_types_on_screen:
         legend_items.append("C: Cow")
-    if 2 in mob_map:
+    if 2 in mob_types_on_screen:
         legend_items.append("S: Skeleton")
 
     for val in sorted(list(visible_blocks)):

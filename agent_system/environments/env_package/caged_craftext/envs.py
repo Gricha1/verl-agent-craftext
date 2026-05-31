@@ -67,6 +67,24 @@ def _craftax_env_params(env):
     return getattr(env, "_caged_debug_env_params", env.default_params)
 
 
+def _strip_all_mobs_state(state, static_params):
+    """Remove all mobs from craftax state (debug_square has no cows/zombies/skeletons)."""
+
+    def _clear(mobs):
+        return mobs.replace(
+            mask=jnp.zeros_like(mobs.mask),
+            position=jnp.full_like(mobs.position, -1),
+        )
+
+    return state.replace(
+        zombies=_clear(state.zombies),
+        cows=_clear(state.cows),
+        skeletons=_clear(state.skeletons),
+        arrows=_clear(state.arrows),
+        mob_map=jnp.zeros(static_params.map_size, dtype=bool),
+    )
+
+
 def _make_craftax_classic_pixels_env(env_kwargs: dict):
     """Classic Craftax env; optional fixed 8x8 debug square map."""
     if env_kwargs.get("use_debug_square_map", False):
@@ -92,19 +110,20 @@ def _make_craftax_classic_pixels_env(env_kwargs: dict):
         # Pip-installed craftax has no debug generator; patch reset (procedural gen breaks on 8x8).
         def reset_env(rng, params):
             state = generate_debug_square_world(rng, params, env.static_env_params)
+            state = _strip_all_mobs_state(state, env.static_env_params)
             return env.get_obs(state), state
 
         env.reset_env = reset_env
 
-        # Belt-and-suspenders: strip mobs after each step even if pip craftax lacks debug_square hooks.
+        # Belt-and-suspenders: strip mobs after each step (pip craftax may lack debug_square hooks).
         import craftax.craftax_classic.game_logic as _craftax_gl
 
         _orig_craftax_step = _craftax_gl.craftax_step
 
         def _craftax_step_debug_safe(rng, state, action, params, static_params):
             state, reward = _orig_craftax_step(rng, state, action, params, static_params)
-            if tuple(static_params.map_size) == (8, 8) and hasattr(_craftax_gl, "_strip_all_mobs"):
-                state = _craftax_gl._strip_all_mobs(state, static_params)
+            if tuple(static_params.map_size) == (8, 8):
+                state = _strip_all_mobs_state(state, static_params)
             return state, reward
 
         _craftax_gl.craftax_step = _craftax_step_debug_safe

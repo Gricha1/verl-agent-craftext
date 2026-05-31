@@ -41,7 +41,11 @@ echo "[INFO] STEPS=$STEPS SEED=$SEED"
 echo "[INFO] RUN_NAME=$RUN_NAME"
 echo "[INFO] Comet project=verl_agent_caged_craftext"
 echo "[INFO] prompt_template=single_token_action"
-echo "[INFO] output: $GIF_PATH and ${GIF_PATH%.gif}_prompt.txt"
+echo "[INFO] tasks: stone (idx=0), wood (idx=1), water (idx=2)"
+echo "[INFO] outputs:"
+echo "       ${GIF_PATH%.gif}_stone.gif"
+echo "       ${GIF_PATH%.gif}_wood.gif"
+echo "       ${GIF_PATH%.gif}_water.gif"
 
 python3 scripts/debug_square_random_policy_video.py \
   --steps "$STEPS" \

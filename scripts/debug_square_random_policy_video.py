@@ -2,7 +2,7 @@
 """
 Random single-token policy on debug_square_8x8 — no vLLM, no model.
 
-Runs one env slot, prints the full agent prompt, saves a validation-style GIF
+Runs one episode per task (stone / wood / water), prints prompts, saves GIFs
 with observation + action overlay (same idea as trainer val video).
 
 Usage:
@@ -15,9 +15,31 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import numpy as np
+
+# (instruction_idx, slug) — debug_square_8x8 easy scenarios
+DEBUG_SQUARE_TASKS: Tuple[Tuple[int, str], ...] = (
+    (0, "stone"),
+    (1, "wood"),
+    (2, "water"),
+)
+
+
+@dataclass
+class TaskRolloutResult:
+    slug: str
+    instruction_idx: int
+    instruction_text: Optional[str]
+    prompt: str
+    gif_path: str
+    prompt_file: str
+    valid: int
+    total: int
+    total_reward: float
+    instruction_done: bool
 
 
 def _repo_root() -> str:
@@ -33,39 +55,15 @@ def _setup_paths() -> None:
             sys.path.insert(0, p)
 
 
-def _make_config(
-    *,
-    prompt_template_type: str,
-    max_steps: int,
-    seed: int,
-):
-    from omegaconf import OmegaConf
+def _task_gif_path(base_gif_path: str, slug: str) -> str:
+    root, ext = os.path.splitext(base_gif_path)
+    if root.endswith(f"_{slug}"):
+        return base_gif_path
+    return f"{root}_{slug}{ext}"
 
-    return OmegaConf.create(
-        {
-            "env": {
-                "env_name": "caged_craftext/CagedCraftextEnv",
-                "craftext_settings": "debug_square_8x8",
-                "observation_type": "ascii",
-                "prompt_template_type": prompt_template_type,
-                "enable_reasoning": False,
-                "history_length": 0,
-                "max_steps": max_steps,
-                "seed": seed,
-                "use_optimistic_parallel": True,
-                "optimistic_reset_ratio": 1,
-                "use_ray_text_render_workers": False,
-                "use_jax_gpu": False,
-                "auto_reset": False,
-                "rollout": {"n": 0},
-                "resources_per_worker": {"num_cpus": 1},
-            },
-            "data": {
-                "train_batch_size": 1,
-                "val_batch_size": 1,
-            },
-        }
-    )
+
+def _format_prompt(template: str, task: str, text_render: str) -> str:
+    return template.format(task_description=task, current_observation=text_render)
 
 
 def _save_gif(
@@ -90,15 +88,12 @@ def _save_gif(
     print(f"[INFO] Saved GIF ({len(composed)} frames): {out_path}")
 
 
-def _log_to_comet(
+def _log_tasks_to_comet(
     *,
     project_name: str,
     experiment_name: str,
     config: dict,
-    gif_path: str,
-    prompt_file: str,
-    prompt: str,
-    metrics: dict,
+    results: List[TaskRolloutResult],
 ) -> None:
     try:
         from verl.utils.tracking import CometMLLogger
@@ -106,52 +101,81 @@ def _log_to_comet(
         raise RuntimeError("comet_ml / verl not available — pip install comet_ml") from exc
 
     logger = CometMLLogger(project_name=project_name, experiment_name=experiment_name, config=config)
-    logger.log(metrics, step=0)
-    logger.log_video(gif_path, step=0, name="random_policy_trajectory")
-    if os.path.isfile(prompt_file):
-        logger.experiment.log_asset(prompt_file, file_name=os.path.basename(prompt_file))
-    if prompt:
-        logger.experiment.log_text(prompt, metadata={"type": "full_prompt"})
+    for i, result in enumerate(results):
+        prefix = f"debug/{result.slug}"
+        valid_rate = result.valid / result.total if result.total else 0.0
+        logger.log(
+            {
+                f"{prefix}/valid_action_rate": valid_rate,
+                f"{prefix}/total_steps": result.total,
+                f"{prefix}/total_reward": result.total_reward,
+                f"{prefix}/instruction_done": float(result.instruction_done),
+                f"{prefix}/instruction_idx": float(result.instruction_idx),
+            },
+            step=i,
+        )
+        logger.log_video(result.gif_path, step=i, name=f"random_policy_{result.slug}")
+        if os.path.isfile(result.prompt_file):
+            logger.experiment.log_asset(
+                result.prompt_file,
+                file_name=os.path.basename(result.prompt_file),
+            )
+        if result.prompt:
+            logger.experiment.log_text(
+                result.prompt,
+                metadata={"type": "full_prompt", "task": result.slug},
+            )
     logger.finish()
-    print(f"[INFO] Logged to Comet ML: project={project_name!r} experiment={experiment_name!r}")
+    print(
+        f"[INFO] Logged {len(results)} GIFs to Comet ML: "
+        f"project={project_name!r} experiment={experiment_name!r}"
+    )
 
 
-def run_random_rollout(
+def run_random_rollout_for_task(
     *,
     steps: int,
     seed: int,
-    prompt_template_type: str,
+    instruction_idx: int,
+    task_slug: str,
     gif_path: str,
     print_prompt: bool,
-) -> Tuple[str, int, int, float, bool, Optional[str]]:
+) -> TaskRolloutResult:
     os.environ.setdefault("CRAFTAX_RELOAD_TEXTURES", "True")
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
     _setup_paths()
-    from agent_system.environments.env_manager import make_envs
     from agent_system.environments.env_package.caged_craftext.action_tokens import (
         action_token_strings,
     )
-
-    config = _make_config(
-        prompt_template_type=prompt_template_type,
-        max_steps=steps,
-        seed=seed,
+    from agent_system.environments.env_package.caged_craftext.envs import CagedCraftextWorker
+    from agent_system.environments.env_package.caged_craftext.projection import (
+        craftext_projection,
+        get_single_token_action_template_no_his,
     )
-    _envs, val_envs = make_envs(config)
-    val_envs.set_record_video(True, env_idx=0)
 
-    rng = np.random.RandomState(seed)
-    labels = list(action_token_strings())
+    env_kwargs = {
+        "config_name": "debug_square_8x8",
+        "use_debug_square_map": True,
+        "observation_type": "ascii",
+        "encode_form": "embedding",
+    }
+    worker = CagedCraftextWorker(seed=seed + instruction_idx * 1000, env_kwargs=env_kwargs)
+    template = get_single_token_action_template_no_his()
 
-    obs, _infos = val_envs.reset(kwargs=None)
-    prompt0 = obs["text"][0]
+    _, info = worker.reset(scenario_idx=instruction_idx, return_render=False)
+    instruction_text = info.get("instruction")
+    prompt_text = _format_prompt(template, instruction_text, info["text_render"])
+
     if print_prompt:
         print("=" * 72)
-        print("FULL PROMPT (env_idx=0, before step 0):")
+        print(f"FULL PROMPT (task={task_slug}, instruction_idx={instruction_idx}, before step 0):")
         print("=" * 72)
-        print(prompt0)
+        print(prompt_text)
         print("=" * 72)
+
+    rng = np.random.RandomState(seed + instruction_idx)
+    labels = list(action_token_strings())
 
     frames: List[np.ndarray] = []
     prompts: List[str] = []
@@ -160,27 +184,23 @@ def run_random_rollout(
     total = 0
     total_reward = 0.0
     instruction_done = False
-    instruction_text: Optional[str] = None
     is_done = False
 
     for t in range(steps):
         if is_done:
             break
-        prompt_text = obs["text"][0]
         token = str(rng.choice(labels))
-        text_actions = [token]
+        action_ids, valids = craftext_projection([token])
+        action_id = action_ids[0]
 
-        next_obs, rewards, dones, infos = val_envs.step(text_actions)
-        info = infos[0]
+        _, reward, done, info = worker.step(int(action_id), return_render=True)
         total += 1
-        total_reward += float(rewards[0])
-        if info.get("is_action_valid"):
+        total_reward += float(reward)
+        if valids[0]:
             valid += 1
-        if instruction_text is None:
-            instruction_text = info.get("instruction") or info.get("instruction_text")
         if info.get("instruction_done"):
             instruction_done = True
-        elif bool(dones[0]):
+        elif bool(done):
             instruction_done = True
 
         frame = info.get("render_frame")
@@ -188,43 +208,68 @@ def run_random_rollout(
             frames.append(np.asarray(frame))
             prompts.append(prompt_text)
             name = info.get("action_name") or "?"
-            raw = info.get("action_text") or token
-            actions.append(f"{name} | raw: {raw} | r={float(rewards[0]):.3f}")
+            raw = token
+            actions.append(f"{name} | raw: {raw} | r={float(reward):.3f}")
 
         if print_prompt and t == 0:
-            print(f"[step 0] token={token!r} action_id={info.get('action_id')} "
-                  f"valid={info.get('is_action_valid')} reward={rewards[0]:.3f} done={dones[0]}")
+            print(
+                f"[{task_slug} step 0] token={token!r} action_id={info.get('action_id')} "
+                f"valid={bool(valids[0])} reward={reward:.3f} done={done}"
+            )
 
-        obs = next_obs
-        is_done = bool(dones[0])
+        prompt_text = _format_prompt(template, info.get("instruction", instruction_text), info["text_render"])
+        is_done = bool(done)
+
+    worker.close()
 
     if not frames:
-        raise RuntimeError("No render_frame collected — check set_record_video / optimistic env.")
+        raise RuntimeError(
+            f"No render_frame collected for task {task_slug} — check return_render=True on step()."
+        )
 
     _save_gif(frames, prompts, actions, gif_path)
-    val_envs.close()
-    return prompt0, valid, total, total_reward, instruction_done, instruction_text
+
+    prompt_file = os.path.splitext(gif_path)[0] + "_prompt.txt"
+    with open(prompt_file, "w", encoding="utf-8") as f:
+        f.write(prompts[0] if prompts else prompt_text)
+
+    return TaskRolloutResult(
+        slug=task_slug,
+        instruction_idx=instruction_idx,
+        instruction_text=instruction_text,
+        prompt=prompts[0] if prompts else prompt_text,
+        gif_path=gif_path,
+        prompt_file=prompt_file,
+        valid=valid,
+        total=total,
+        total_reward=total_reward,
+        instruction_done=instruction_done,
+    )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Random single-token policy + val-style GIF (no vLLM)")
+    parser = argparse.ArgumentParser(
+        description="Random single-token policy + val-style GIFs for all debug_square tasks (no vLLM)"
+    )
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--prompt-template",
         default="single_token_action",
         choices=("single_token_action", "default_template"),
+        help="Only single_token_action is supported in this script",
     )
     parser.add_argument(
         "--gif-path",
         default="gif/random_policy_debug_square.gif",
+        help="Base path; outputs gif/random_policy_debug_square_{stone,wood,water}.gif",
     )
     parser.add_argument("--no-print-prompt", action="store_true")
     parser.add_argument(
         "--comet",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Log GIF, prompt, and metrics to Comet ML (needs COMET_API_KEY)",
+        help="Log GIFs and metrics to Comet ML (needs COMET_API_KEY)",
     )
     parser.add_argument(
         "--comet-project",
@@ -232,25 +277,33 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.prompt_template != "single_token_action":
+        raise SystemExit("This script only supports --prompt-template single_token_action")
+
     root = _repo_root()
     os.chdir(root)
-    gif_path = args.gif_path if os.path.isabs(args.gif_path) else os.path.join(root, args.gif_path)
+    base_gif = args.gif_path if os.path.isabs(args.gif_path) else os.path.join(root, args.gif_path)
 
-    prompt, valid, total, total_reward, instruction_done, instruction_text = run_random_rollout(
-        steps=args.steps,
-        seed=args.seed,
-        prompt_template_type=args.prompt_template,
-        gif_path=gif_path,
-        print_prompt=not args.no_print_prompt,
-    )
-
-    prompt_file = os.path.splitext(gif_path)[0] + "_prompt.txt"
-    with open(prompt_file, "w", encoding="utf-8") as f:
-        f.write(prompt)
-    print(f"[INFO] Wrote prompt to {prompt_file}")
-    valid_rate = valid / total if total else 0.0
-    print(f"[INFO] valid_action_rate={valid}/{total} ({valid_rate:.1%})")
-    print(f"[INFO] total_reward={total_reward:.3f} instruction_done={instruction_done}")
+    results: List[TaskRolloutResult] = []
+    for instruction_idx, slug in DEBUG_SQUARE_TASKS:
+        gif_path = _task_gif_path(base_gif, slug)
+        print(f"\n--- Task: {slug} (instruction_idx={instruction_idx}) -> {gif_path} ---")
+        result = run_random_rollout_for_task(
+            steps=args.steps,
+            seed=args.seed,
+            instruction_idx=instruction_idx,
+            task_slug=slug,
+            gif_path=gif_path,
+            print_prompt=not args.no_print_prompt,
+        )
+        results.append(result)
+        valid_rate = result.valid / result.total if result.total else 0.0
+        print(f"[INFO] {slug}: valid_action_rate={result.valid}/{result.total} ({valid_rate:.1%})")
+        print(
+            f"[INFO] {slug}: total_reward={result.total_reward:.3f} "
+            f"instruction_done={result.instruction_done}"
+        )
+        print(f"[INFO] {slug}: prompt -> {result.prompt_file}")
 
     if args.comet:
         if not os.environ.get("COMET_API_KEY"):
@@ -260,7 +313,7 @@ def main() -> None:
                 "RUN_NAME",
                 f"random_policy_debug_square_{args.seed}",
             )
-            _log_to_comet(
+            _log_tasks_to_comet(
                 project_name=args.comet_project,
                 experiment_name=experiment_name,
                 config={
@@ -269,17 +322,9 @@ def main() -> None:
                     "prompt_template": args.prompt_template,
                     "steps": args.steps,
                     "seed": args.seed,
-                    "instruction": instruction_text,
+                    "tasks": [slug for _, slug in DEBUG_SQUARE_TASKS],
                 },
-                gif_path=gif_path,
-                prompt_file=prompt_file,
-                prompt=prompt,
-                metrics={
-                    "debug/valid_action_rate": valid_rate,
-                    "debug/total_steps": total,
-                    "debug/total_reward": total_reward,
-                    "debug/instruction_done": float(instruction_done),
-                },
+                results=results,
             )
 
 

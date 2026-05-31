@@ -164,6 +164,25 @@ def render_craftax_pixels(state, block_pixel_size):
     )
 
     # Render mobs
+    def _draw_textured_mob(pixels, local_position, on_screen, mob_texture, mob_alpha):
+        slice_origin = (
+            local_position[0] * block_pixel_size,
+            local_position[1] * block_pixel_size,
+            0,
+        )
+        patch_shape = (block_pixel_size, block_pixel_size, 3)
+
+        def _draw(pixels):
+            tex = mob_texture * on_screen
+            bg_factor = 1 - mob_alpha * on_screen
+            background = bg_factor * jax.lax.dynamic_slice(
+                pixels, slice_origin, patch_shape
+            )
+            blended = background + tex * mob_alpha
+            return jax.lax.dynamic_update_slice(pixels, blended, slice_origin)
+
+        return jax.lax.cond(on_screen, _draw, lambda p: p, pixels)
+
     # Zombies
 
     def _add_zombie_to_pixels(pixels, zombie_index):
@@ -175,42 +194,15 @@ def render_craftax_pixels(state, block_pixel_size):
         on_screen = jnp.logical_and(
             local_position >= 0, local_position < obs_dim_array
         ).all()
-        on_screen *= state.zombies.mask[zombie_index]
+        on_screen = jnp.logical_and(on_screen, state.zombies.mask[zombie_index])
 
-        zombie_texture = textures["zombie_texture"] * on_screen
-
-        zombie_texture_with_background = (
-            1 - textures["zombie_texture_alpha"] * on_screen
-        )
-
-        zombie_texture_with_background = (
-            zombie_texture_with_background
-            * jax.lax.dynamic_slice(
-                pixels,
-                (
-                    local_position[0] * block_pixel_size,
-                    local_position[1] * block_pixel_size,
-                    0,
-                ),
-                (block_pixel_size, block_pixel_size, 3),
-            )
-        )
-
-        zombie_texture_with_background = (
-            zombie_texture_with_background
-            + zombie_texture * textures["zombie_texture_alpha"]
-        )
-
-        pixels = jax.lax.dynamic_update_slice(
+        pixels = _draw_textured_mob(
             pixels,
-            zombie_texture_with_background,
-            (
-                local_position[0] * block_pixel_size,
-                local_position[1] * block_pixel_size,
-                0,
-            ),
+            local_position,
+            on_screen,
+            textures["zombie_texture"],
+            textures["zombie_texture_alpha"],
         )
-
         return pixels, None
 
     map_pixels, _ = jax.lax.scan(
@@ -226,39 +218,15 @@ def render_craftax_pixels(state, block_pixel_size):
         on_screen = jnp.logical_and(
             local_position >= 0, local_position < obs_dim_array
         ).all()
-        on_screen *= state.cows.mask[cow_index]
+        on_screen = jnp.logical_and(on_screen, state.cows.mask[cow_index])
 
-        cow_texture = textures["cow_texture"] * on_screen
-
-        cow_texture_with_background = 1 - textures["cow_texture_alpha"] * on_screen
-
-        cow_texture_with_background = (
-            cow_texture_with_background
-            * jax.lax.dynamic_slice(
-                pixels,
-                (
-                    local_position[0] * block_pixel_size,
-                    local_position[1] * block_pixel_size,
-                    0,
-                ),
-                (block_pixel_size, block_pixel_size, 3),
-            )
-        )
-
-        cow_texture_with_background = (
-            cow_texture_with_background + cow_texture * textures["cow_texture_alpha"]
-        )
-
-        pixels = jax.lax.dynamic_update_slice(
+        pixels = _draw_textured_mob(
             pixels,
-            cow_texture_with_background,
-            (
-                local_position[0] * block_pixel_size,
-                local_position[1] * block_pixel_size,
-                0,
-            ),
+            local_position,
+            on_screen,
+            textures["cow_texture"],
+            textures["cow_texture_alpha"],
         )
-
         return pixels, None
 
     map_pixels, _ = jax.lax.scan(
@@ -274,42 +242,15 @@ def render_craftax_pixels(state, block_pixel_size):
         on_screen = jnp.logical_and(
             local_position >= 0, local_position < obs_dim_array
         ).all()
-        on_screen *= state.skeletons.mask[skeleton_index]
+        on_screen = jnp.logical_and(on_screen, state.skeletons.mask[skeleton_index])
 
-        skeleton_texture = textures["skeleton_texture"] * on_screen
-
-        skeleton_texture_with_background = (
-            1 - textures["skeleton_texture_alpha"] * on_screen
-        )
-
-        skeleton_texture_with_background = (
-            skeleton_texture_with_background
-            * jax.lax.dynamic_slice(
-                pixels,
-                (
-                    local_position[0] * block_pixel_size,
-                    local_position[1] * block_pixel_size,
-                    0,
-                ),
-                (block_pixel_size, block_pixel_size, 3),
-            )
-        )
-
-        skeleton_texture_with_background = (
-            skeleton_texture_with_background
-            + skeleton_texture * textures["skeleton_texture_alpha"]
-        )
-
-        pixels = jax.lax.dynamic_update_slice(
+        pixels = _draw_textured_mob(
             pixels,
-            skeleton_texture_with_background,
-            (
-                local_position[0] * block_pixel_size,
-                local_position[1] * block_pixel_size,
-                0,
-            ),
+            local_position,
+            on_screen,
+            textures["skeleton_texture"],
+            textures["skeleton_texture_alpha"],
         )
-
         return pixels, None
 
     map_pixels, _ = jax.lax.scan(
@@ -325,7 +266,7 @@ def render_craftax_pixels(state, block_pixel_size):
         on_screen = jnp.logical_and(
             local_position >= 0, local_position < obs_dim_array
         ).all()
-        on_screen *= state.arrows.mask[arrow_index]
+        on_screen = jnp.logical_and(on_screen, state.arrows.mask[arrow_index])
 
         arrow_texture = textures["arrow_texture"]
         arrow_texture_alpha = textures["arrow_texture_alpha"]
@@ -362,34 +303,12 @@ def render_craftax_pixels(state, block_pixel_size):
             arrow_texture_alpha,
         )
 
-        arrow_texture = arrow_texture * on_screen
-        arrow_texture_with_background = 1 - arrow_texture_alpha * on_screen
-
-        arrow_texture_with_background = (
-            arrow_texture_with_background
-            * jax.lax.dynamic_slice(
-                pixels,
-                (
-                    local_position[0] * block_pixel_size,
-                    local_position[1] * block_pixel_size,
-                    0,
-                ),
-                (block_pixel_size, block_pixel_size, 3),
-            )
-        )
-
-        arrow_texture_with_background = (
-            arrow_texture_with_background + arrow_texture * arrow_texture_alpha
-        )
-
-        pixels = jax.lax.dynamic_update_slice(
+        pixels = _draw_textured_mob(
             pixels,
-            arrow_texture_with_background,
-            (
-                local_position[0] * block_pixel_size,
-                local_position[1] * block_pixel_size,
-                0,
-            ),
+            local_position,
+            on_screen,
+            arrow_texture,
+            arrow_texture_alpha,
         )
 
         return pixels, None
