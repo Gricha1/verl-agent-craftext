@@ -514,6 +514,68 @@ class DataParallelPPOActor(BasePPOActor):
         return log_probs, entropys
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
+    def update_world_model(self, data: DataProto):
+        """SFT-style world model update on the full rollout batch (after PPO). One optimizer.step()."""
+        self.actor_module.train()
+
+        loss_coef = float(data.meta_info.get("world_model_loss_coef", 1.0))
+        if "temperature" not in data.meta_info:
+            raise KeyError(
+                "update_world_model requires meta_info['temperature'] "
+                "(set on driver from actor_rollout_ref.rollout.temperature)"
+            )
+        temperature = float(data.meta_info["temperature"])
+        wm_micro = data.meta_info.get("world_model_micro_batch_size_per_gpu")
+        if wm_micro is None:
+            wm_micro = self.config.get(
+                "world_model_micro_batch_size_per_gpu",
+                self.config.ppo_micro_batch_size_per_gpu,
+            )
+        wm_micro = int(wm_micro)
+
+        select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
+        batch = data.select(batch_keys=select_keys).batch
+        micro_batches = batch.split(wm_micro)
+
+        self.actor_optimizer.zero_grad()
+        metrics: dict = {}
+        num_micro = max(len(micro_batches), 1)
+        last_wm_loss = None
+
+        for micro_batch in micro_batches:
+            micro_data = {**micro_batch.to(get_torch_device().current_device())}
+            responses = micro_data["responses"]
+            response_length = responses.size(1)
+            attention_mask = micro_data["attention_mask"]
+            response_mask = attention_mask[:, -response_length:]
+
+            _, log_prob = self._forward_micro_batch(
+                micro_batch=micro_data,
+                temperature=temperature,
+                calculate_entropy=False,
+            )
+            wm_loss = -agg_loss(
+                loss_mat=log_prob,
+                loss_mask=response_mask,
+                loss_agg_mode="token-mean",
+            )
+            last_wm_loss = wm_loss
+            (wm_loss * loss_coef / num_micro).backward()
+
+        grad_norm = self._optimizer_step()
+        wm_loss_val = last_wm_loss.detach().item() if last_wm_loss is not None else 0.0
+        metrics.update({
+            "world_model/loss": wm_loss_val,
+            "world_model/scaled_loss": wm_loss_val * loss_coef,
+            "world_model/loss_coef": loss_coef,
+            "world_model/grad_norm": grad_norm.detach().item(),
+            "world_model/num_samples": float(batch.batch_size[0]),
+        })
+        self.actor_optimizer.zero_grad()
+        get_torch_device().empty_cache()
+        return metrics
+
+    @GPUMemoryLogger(role="dp actor", logger=logger)
     def update_policy(self, data: DataProto):
         # make sure we are in training mode
         self.actor_module.train()

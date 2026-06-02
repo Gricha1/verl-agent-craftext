@@ -705,6 +705,45 @@ class ActorRolloutRefWorker(Worker):
         return output
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
+    def update_world_model(self, data: DataProto):
+        data = data.to(get_torch_device().current_device())
+
+        assert self._is_actor
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.actor_module_fsdp)
+        if self._is_offload_optimizer:
+            load_fsdp_optimizer(optimizer=self.actor_optimizer, device_id=get_torch_device().current_device())
+
+        with self.ulysses_sharding_manager:
+            data = self.ulysses_sharding_manager.preprocess_data(data=data)
+            if "temperature" not in data.meta_info:
+                data.meta_info["temperature"] = self.config.rollout.temperature
+            with Timer(name="update_world_model", logger=None) as timer:
+                raw_metrics = self.actor.update_world_model(data=data)
+            _ = timer.last
+            from verl.utils.metric.utils import normalize_worker_metrics
+
+            metrics = normalize_worker_metrics(raw_metrics)
+            import torch.distributed as dist
+
+            if dist.get_rank() == 0:
+                print(
+                    f"[update_world_model rank0] keys={list(metrics.keys())} "
+                    f"loss={metrics.get('world_model/loss')}",
+                    flush=True,
+                )
+            output = DataProto(meta_info={"metrics": metrics})
+            output = self.ulysses_sharding_manager.postprocess_data(data=output)
+            output = output.to("cpu")
+
+        if self._is_offload_param:
+            offload_fsdp_model_to_cpu(self.actor_module_fsdp)
+        if self._is_offload_optimizer:
+            offload_fsdp_optimizer(optimizer=self.actor_optimizer)
+
+        return output
+
+    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def generate_sequences(self, prompts: DataProto):
         # Support all hardwares
         prompts = prompts.to(get_torch_device().current_device())

@@ -658,6 +658,32 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
         # Keep same API as MultiProcess env, but here idxs refer to env indices inside the batch.
         self._record_video_env_idxs = set(idxs) if idxs is not None else set()
 
+    def _render_text_from_state_batched(self, state_batched) -> list[str]:
+        """ASCII grid renders for each env slot from a batched TextEnvStateCMDP."""
+        state_cpu = jax.device_get(state_batched)
+        craftax_state_batched = getattr(state_cpu, "env_state", None)
+
+        if self._text_render_actors is not None and craftax_state_batched is not None:
+            futures = []
+            for i in range(self.env_num):
+                craftax_state_i = jax.tree_util.tree_map(
+                    lambda x: np.asarray(x[i]), craftax_state_batched
+                )
+                futures.append(self._text_render_actors[i].render_craftax_state.remote(craftax_state_i))
+            return ray.get(futures)
+
+        text_renders: list[str] = []
+        for i in range(self.env_num):
+            try:
+                if craftax_state_batched is not None:
+                    craftax_state_i = jax.tree_util.tree_map(lambda x: x[i], craftax_state_batched)
+                    text_renders.append(self.render_func(craftax_state_i))
+                else:
+                    text_renders.append("The world is empty.")
+            except Exception:
+                text_renders.append("The world is empty.")
+        return text_renders
+
     def _build_info_list(
         self,
         state_batched,
@@ -682,26 +708,7 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
         instruction_done_batched = getattr(state_cpu, "instruction_done", None)
         total_sr_batched = getattr(state_cpu, "total_success_rate", None)
 
-        # Parallel ASCII/text render via one Ray actor per env (optional).
-        if self._text_render_actors is not None and craftax_state_batched is not None:
-            futures = []
-            for i in range(self.env_num):
-                craftax_state_i = jax.tree_util.tree_map(
-                    lambda x: np.asarray(x[i]), craftax_state_batched
-                )
-                futures.append(self._text_render_actors[i].render_craftax_state.remote(craftax_state_i))
-            text_renders = ray.get(futures)
-        else:
-            text_renders = []
-            for i in range(self.env_num):
-                try:
-                    if craftax_state_batched is not None:
-                        craftax_state_i = jax.tree_util.tree_map(lambda x: x[i], craftax_state_batched)
-                        text_renders.append(self.render_func(craftax_state_i))
-                    else:
-                        text_renders.append("The world is empty.")
-                except Exception:
-                    text_renders.append("The world is empty.")
+        text_renders = self._render_text_from_state_batched(state_batched)
 
         for i in range(self.env_num):
             info = {}
@@ -853,6 +860,9 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
         self._rollout_steps += 1
         self._episode_steps += 1
         infos = self._build_info_list(new_state, reward, done, render_frames=render_frames)
+        transition_text_renders = self._render_text_from_state_batched(state_pre_reset)
+        for i, transition_render in enumerate(transition_text_renders):
+            infos[i]["transition_text_render"] = transition_render
         for i, d in enumerate(done_list):
             if d:
                 self._episode_return_cum[i] = 0.0

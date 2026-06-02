@@ -28,6 +28,20 @@ def action_token_strings() -> Tuple[str, ...]:
     return _ACTION_TOKEN_LABELS
 
 
+def format_single_token_action_display(text: str) -> tuple[str, int]:
+    """Format model output as ``NAME | raw: TOKEN``; returns (display, action_id)."""
+    from .projection import ACTION_TO_TEXT
+
+    raw = (text or "").strip().split()[0] if (text or "").strip() else ""
+    action_id = parse_single_token_action(text)
+    if action_id >= 0 and action_id < len(ACTION_TO_TEXT):
+        name = ACTION_TO_TEXT[action_id]
+    else:
+        name = "?"
+    display = f"{name} | raw: {raw}" if raw else ""
+    return display, action_id
+
+
 def parse_single_token_action(text: str) -> int:
     """
     Parse model output as one action token. Returns action id or INVALID_ACTION_ID.

@@ -537,6 +537,7 @@ def composite_frame_with_prompt_text(
     prompt_text: str,
     action_text: str,
     *,
+    inverse_action_text: str | None = None,
     font_size: int = 9,
     min_panel_width: int = 960,
     max_lines: int | None = None,
@@ -661,7 +662,13 @@ def composite_frame_with_prompt_text(
     for sub in _wrap_line(action_line):
         rendered_action.append((sub, (100, 0, 100)))
 
-    tail = rendered_constraint + rendered_action
+    rendered_inverse: list[tuple[str, tuple[int, int, int]]] = []
+    if inverse_action_text is not None:
+        inverse_line = f"inverse action: {inverse_action_text or ''}"
+        for sub in _wrap_line(inverse_line):
+            rendered_inverse.append((sub, (0, 80, 160)))
+
+    tail = rendered_constraint + rendered_action + rendered_inverse
     if max_lines is not None and len(tail) >= max_lines:
         kept: list[tuple[str, tuple[int, int, int]]] = []
         if rendered_constraint:
@@ -696,6 +703,151 @@ def composite_frame_with_prompt_text(
     out.paste(img, (0, 0))
     out.paste(panel, (0, fh))
     return np.asarray(out)
+
+
+def _render_wm_validation_text_panel(
+    sections: list[tuple[str, str, tuple[int, int, int]]],
+    panel_width: int = 1200,
+    font_size: int = 10,
+) -> np.ndarray:
+    font = _load_mono_font(font_size)
+    header_font = _load_mono_font(font_size + 1)
+    line_height = font_size + 3
+    header_line_height = font_size + 5
+
+    measure_img = Image.new("RGB", (panel_width, 10), (250, 250, 250))
+    draw = ImageDraw.Draw(measure_img)
+    max_text_width = max(40, panel_width - 16)
+
+    def _text_width_px(s: str, use_header: bool = False) -> float:
+        f = header_font if use_header else font
+        try:
+            return float(draw.textlength(s, font=f))
+        except Exception:
+            try:
+                bbox = draw.textbbox((0, 0), s, font=f)
+                return float(bbox[2] - bbox[0])
+            except Exception:
+                return float(len(s) * (font_size * 0.6))
+
+    def _truncate_to_width(s: str) -> str:
+        if not s or _text_width_px(s) <= max_text_width:
+            return s or ""
+        ell = ".."
+        lo, hi = 0, len(s)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            cand = s[:mid] + ell
+            if _text_width_px(cand) <= max_text_width:
+                lo = mid
+            else:
+                hi = mid - 1
+        return (s[:lo] + ell) if lo > 0 else ell
+
+    def _wrap_line(line: str) -> list[str]:
+        is_grid = ("|" in line) or ("+" in line and "-" in line)
+        if is_grid:
+            return [_truncate_to_width(line)]
+        out: list[str] = []
+        remaining = line
+        safety = 0
+        while remaining and safety < 400:
+            safety += 1
+            if _text_width_px(remaining) <= max_text_width:
+                out.append(remaining)
+                break
+            parts = remaining.split(" ")
+            if len(parts) == 1:
+                out.append(_truncate_to_width(remaining))
+                break
+            acc = parts[0]
+            cut_idx = len(parts[0])
+            for p in parts[1:]:
+                cand = acc + " " + p
+                if _text_width_px(cand) <= max_text_width:
+                    acc = cand
+                    cut_idx += 1 + len(p)
+                else:
+                    break
+            if acc == parts[0] and _text_width_px(acc) > max_text_width:
+                out.append(_truncate_to_width(acc))
+                remaining = remaining[len(parts[0]) :].lstrip()
+            else:
+                out.append(acc)
+                remaining = remaining[cut_idx:].lstrip()
+        return out or [_truncate_to_width(line)]
+
+    def _expand_block(text: str) -> list[tuple[str, tuple[int, int, int], bool]]:
+        rows: list[tuple[str, tuple[int, int, int], bool]] = []
+        for line in (text or "").split("\n"):
+            line = line.strip("\r")
+            for sub in _wrap_line(line):
+                rows.append((sub, (20, 20, 20), False))
+        if not rows:
+            rows.append(("", (20, 20, 20), False))
+        return rows
+
+    rendered: list[tuple[str, tuple[int, int, int], bool]] = []
+    for idx, (title, body, color) in enumerate(sections):
+        if idx > 0:
+            rendered.append(("", (200, 200, 200), False))
+        rendered.append((title, color, True))
+        rendered.extend(_expand_block(body))
+
+    panel_h = sum(header_line_height if is_hdr else line_height for _, _, is_hdr in rendered) + 16
+    panel = Image.new("RGB", (panel_width, panel_h), (248, 248, 248))
+    panel_draw = ImageDraw.Draw(panel)
+    y = 8
+    for txt, color, is_header in rendered:
+        if not txt and not is_header:
+            y += 4
+            continue
+        f = header_font if is_header else font
+        lh = header_line_height if is_header else line_height
+        panel_draw.text((8, y), txt, fill=color, font=f)
+        y += lh
+
+    return np.asarray(panel)
+
+
+def render_world_model_transition_panel(
+    *,
+    step: int,
+    world_model_input: str,
+    policy_action: str,
+    world_model_output: str,
+    panel_width: int = 1200,
+    font_size: int = 10,
+) -> np.ndarray:
+    """Validation PNG: inverse-action WM (s_t, s_{t+1}) -> a_t."""
+    sections = [
+        (f"Validation — step {step}", "", (0, 0, 120)),
+        ("World model INPUT (prompt + s_t + s_{t+1})", world_model_input or "", (0, 80, 160)),
+        ("Ground truth action (policy a_t)", policy_action or "", (100, 0, 100)),
+        ("World model OUTPUT (predicted a_t)", world_model_output or "", (0, 120, 0)),
+    ]
+    return _render_wm_validation_text_panel(sections, panel_width=panel_width, font_size=font_size)
+
+
+def render_world_model_reward_panel(
+    *,
+    step: int,
+    world_model_input: str,
+    policy_action: str,
+    ground_truth_reward: str,
+    world_model_output: str,
+    panel_width: int = 1200,
+    font_size: int = 10,
+) -> np.ndarray:
+    """Validation PNG: reward WM (s_t, a_t) -> r_t."""
+    sections = [
+        (f"Validation — step {step}", "", (0, 0, 120)),
+        ("Reward model INPUT (prompt + task + s_t + a_t)", world_model_input or "", (0, 80, 160)),
+        ("Action (policy a_t)", policy_action or "", (100, 0, 100)),
+        ("Ground truth reward r_t", ground_truth_reward or "", (120, 80, 0)),
+        ("Reward model OUTPUT (predicted r_t)", world_model_output or "", (0, 120, 0)),
+    ]
+    return _render_wm_validation_text_panel(sections, panel_width=panel_width, font_size=font_size)
 
 
 def add_grid_overlay(image_array, block_pixel_size, grid_color=(255, 255, 255, 200), line_width=1):

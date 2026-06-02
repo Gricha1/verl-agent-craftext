@@ -52,8 +52,10 @@ def func_generator(self, method_name, dispatch_fn, collect_fn, execute_fn, block
             output = collect_fn(self, output)
             if padding_count > 0:
                 if isinstance(output, DataProto):
-                    indices = [i for i in range(len(output))][:-padding_count]
-                    output = output.select_idxs(indices)
+                    # Metrics-only responses (batch=None, len=0) must keep meta_info intact.
+                    if output.batch is not None and len(output) > padding_count:
+                        indices = [i for i in range(len(output))][:-padding_count]
+                        output = output.select_idxs(indices)
                 elif isinstance(output, list):
                     output = output[:-padding_count]
             return output

@@ -256,16 +256,16 @@ class CometMLLogger:
 
     def log(self, data, step):
         """Log metrics to Comet ML"""
+        import numbers
+
         for key, value in data.items():
-            # Comet ML expects numeric values for metrics
-            if isinstance(value, (int, float)):
-                self.experiment.log_metric(key, value, step=step)
-            # Handle other types if needed
-            elif hasattr(value, 'item'):  # For torch tensors, numpy scalars, etc.
+            if isinstance(value, numbers.Real):
+                self.experiment.log_metric(key, float(value), step=step)
+            elif hasattr(value, "item"):
                 try:
-                    self.experiment.log_metric(key, value.item(), step=step)
-                except (AttributeError, ValueError):
-                    pass  # Skip if conversion fails
+                    self.experiment.log_metric(key, float(value.item()), step=step)
+                except (AttributeError, TypeError, ValueError):
+                    pass
 
     def log_video(self, gif_path: str, step: int, name: str = "validation_trajectory"):
         """Log a GIF video (e.g. validation trajectory) to Comet ML."""

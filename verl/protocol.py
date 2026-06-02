@@ -707,7 +707,22 @@ class DataProto:
             non_tensor_batch[key] = np.concatenate(val, axis=0)
 
         cls = type(data[0]) if len(data) > 0 else DataProto
-        return cls(batch=new_batch, non_tensor_batch=non_tensor_batch, meta_info=data[0].meta_info)
+        meta_info = dict(data[0].meta_info) if len(data) > 0 else {}
+        merged_metrics = {}
+        for d in data:
+            worker_metrics = d.meta_info.get("metrics")
+            if not worker_metrics:
+                continue
+            for metric_key, metric_val in worker_metrics.items():
+                if metric_key not in merged_metrics:
+                    merged_metrics[metric_key] = []
+                if isinstance(metric_val, list):
+                    merged_metrics[metric_key].extend(metric_val)
+                else:
+                    merged_metrics[metric_key].append(metric_val)
+        if merged_metrics:
+            meta_info["metrics"] = merged_metrics
+        return cls(batch=new_batch, non_tensor_batch=non_tensor_batch, meta_info=meta_info)
 
     def reorder(self, indices):
         """

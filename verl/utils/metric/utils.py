@@ -44,7 +44,9 @@ def reduce_metrics(metrics: Dict[str, List[Any]]) -> Dict[str, Any]:
         >>> reduce_metrics(metrics)
         {"loss": 2.0, "accuracy": 0.8, "max_reward": 8.0, "min_error": 0.05}
     """
-    for key, val in metrics.items():
+    for key, val in list(metrics.items()):
+        if not isinstance(val, (list, tuple, np.ndarray)):
+            val = [val]
         if "max" in key:
             metrics[key] = np.max(val)
         elif "min" in key:
@@ -52,3 +54,48 @@ def reduce_metrics(metrics: Dict[str, List[Any]]) -> Dict[str, Any]:
         else:
             metrics[key] = np.mean(val)
     return metrics
+
+
+def extract_metrics_from_dataproto(output) -> Dict[str, Any]:
+    """Read worker metrics from DataProto.meta_info (handles list or scalar values)."""
+    if output is None:
+        return {}
+    meta_info = getattr(output, "meta_info", None) or {}
+    metrics = meta_info.get("metrics")
+    if metrics is None:
+        return {}
+    if not isinstance(metrics, dict):
+        return {}
+    return dict(metrics)
+
+
+def scalarize_metrics(metrics: Dict[str, Any]) -> Dict[str, float]:
+    """Convert reduced worker metrics to plain Python floats for experiment loggers."""
+    out: Dict[str, float] = {}
+    for key, val in metrics.items():
+        try:
+            if isinstance(val, (list, tuple, np.ndarray)):
+                if len(val) == 0:
+                    continue
+                if "max" in key:
+                    val = np.max(val)
+                elif "min" in key:
+                    val = np.min(val)
+                else:
+                    val = np.mean(val)
+            scalar = float(val.item() if hasattr(val, "item") and not isinstance(val, (list, tuple, np.ndarray)) else val)
+        except (TypeError, ValueError):
+            continue
+        out[key] = scalar
+        if key == "world_model/loss":
+            out["loss/world_model"] = scalar
+        if key == "world_model/reward_loss":
+            out["loss/world_model_reward"] = scalar
+    return out
+
+
+def normalize_worker_metrics(metrics: Dict[str, Any]) -> Dict[str, float]:
+    """Reduce (multi-GPU lists) and scalarize worker metrics for logging."""
+    if not metrics:
+        return {}
+    return scalarize_metrics(reduce_metrics(dict(metrics)))

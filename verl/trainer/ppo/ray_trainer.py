@@ -56,6 +56,8 @@ from verl.trainer.ppo.reward import compute_reward, compute_reward_async
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path
 from verl.utils.metric import (
     reduce_metrics,
+    extract_metrics_from_dataproto,
+    normalize_worker_metrics,
 )
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.torch_functional import masked_mean
@@ -702,6 +704,9 @@ class RayPPOTrainer:
         sample_inputs = []
         sample_outputs = []
         sample_scores = []
+        val_wm_inverse_accuracy = None
+        val_wm_reward_mae = None
+        val_wm_reward_token_accuracy = None
 
         if record_video and hasattr(self.val_envs, 'set_record_video'):
             self.val_envs.set_record_video(True, env_idx=0)
@@ -776,6 +781,13 @@ class RayPPOTrainer:
                 prompts = test_output_gen_batch.meta_info.get('validation_video_prompts')
                 actions = test_output_gen_batch.meta_info.get('validation_video_actions')
                 action_ids = test_output_gen_batch.meta_info.get('validation_video_action_ids')
+                inverse_actions = test_output_gen_batch.meta_info.get('validation_video_inverse_actions')
+                inverse_action_ids = test_output_gen_batch.meta_info.get('validation_video_inverse_action_ids')
+                curr_ascii_list = test_output_gen_batch.meta_info.get('validation_video_curr_ascii')
+                next_ascii_list = test_output_gen_batch.meta_info.get('validation_video_next_ascii')
+                true_rewards_list = test_output_gen_batch.meta_info.get('validation_video_true_rewards')
+                pred_rewards_list = test_output_gen_batch.meta_info.get('validation_video_pred_rewards')
+                task_instructions_list = test_output_gen_batch.meta_info.get('validation_video_task_instructions')
                 import tempfile
                 try:
                     import imageio
@@ -805,7 +817,12 @@ class RayPPOTrainer:
                     for i, f in enumerate(frames):
                         arr = _frame_to_uint8_arr(f)
                         if prompts is not None and actions is not None and i < len(prompts) and i < len(actions):
-                            arr = composite_frame_with_prompt_text(arr, prompts[i], actions[i])
+                            inv_text = None
+                            if inverse_actions is not None and i < len(inverse_actions):
+                                inv_text = inverse_actions[i]
+                            arr = composite_frame_with_prompt_text(
+                                arr, prompts[i], actions[i], inverse_action_text=inv_text
+                            )
                         composed_frames.append(arr)
                     def _write_gif(path):
                         with imageio.get_writer(path, mode='I', duration=0.15, loop=0) as writer:
@@ -870,6 +887,321 @@ class RayPPOTrainer:
                             logger.log_image(png_path, step=self.total_env_steps, name=f"validation_action_hist_step{self.total_env_steps}")
                     except Exception as e:
                         print(f"[WARNING] Failed to log validation action histogram: {e}")
+
+                    # World model inverse-action accuracy table (when WM enabled).
+                    try:
+                        if (
+                            action_ids is not None
+                            and inverse_action_ids is not None
+                            and self.config.trainer.get("world_model", {}).get("enable", False)
+                            and self.config.trainer.world_model.get("task") == "inverse_action"
+                        ):
+                            from agent_system.environments.env_package.caged_craftext.projection import (
+                                ACTION_TO_TEXT as _ACTION_TO_TEXT,
+                            )
+
+                            rows = []
+                            matches = []
+                            for step_i, (aid, pid) in enumerate(zip(action_ids, inverse_action_ids)):
+                                if int(aid) < 0:
+                                    continue
+                                actual_name = _ACTION_TO_TEXT[int(aid)] if int(aid) < len(_ACTION_TO_TEXT) else str(aid)
+                                if int(pid) >= 0 and int(pid) < len(_ACTION_TO_TEXT):
+                                    pred_name = _ACTION_TO_TEXT[int(pid)]
+                                else:
+                                    pred_name = "?"
+                                inv_raw = ""
+                                if inverse_actions and step_i < len(inverse_actions):
+                                    inv_raw = inverse_actions[step_i]
+                                    if "raw:" in inv_raw:
+                                        inv_raw = inv_raw.split("raw:", 1)[1].strip()
+                                elif int(pid) >= 0:
+                                    from agent_system.environments.env_package.caged_craftext.action_tokens import (
+                                        action_token_label,
+                                    )
+                                    inv_raw = action_token_label(int(pid))
+                                ok = int(aid) == int(pid) and int(pid) >= 0
+                                matches.append(ok)
+                                rows.append([
+                                    str(step_i),
+                                    actual_name,
+                                    pred_name,
+                                    "✓" if ok else "✗",
+                                    inv_raw,
+                                ])
+
+                            if matches:
+                                val_wm_inverse_accuracy = float(np.mean(matches))
+                                print(
+                                    f"[INFO] Validation WM inverse-action accuracy: "
+                                    f"{val_wm_inverse_accuracy:.3f} ({sum(matches)}/{len(matches)})"
+                                )
+
+                            if rows:
+                                import matplotlib
+                                matplotlib.use("Agg")
+                                import matplotlib.pyplot as plt
+
+                                fig_h = max(2.5, 0.35 * len(rows) + 1.5)
+                                fig, ax = plt.subplots(figsize=(12, fig_h), dpi=140)
+                                ax.axis("off")
+                                col_labels = ["step", "action (policy)", "inverse action (WM)", "match", "WM raw"]
+                                table = ax.table(
+                                    cellText=rows,
+                                    colLabels=col_labels,
+                                    loc="center",
+                                    cellLoc="left",
+                                )
+                                table.auto_set_font_size(False)
+                                table.set_fontsize(8)
+                                table.scale(1, 1.25)
+                                title = "World model inverse-action vs policy"
+                                if val_wm_inverse_accuracy is not None:
+                                    title += f" — accuracy {val_wm_inverse_accuracy:.1%}"
+                                ax.set_title(title, fontsize=10, pad=12)
+
+                                tbl_name = f"val_wm_inverse_action_step{self.total_env_steps}.png"
+                                tbl_path = os.path.join(tempfile.gettempdir(), tbl_name)
+                                fig.tight_layout()
+                                fig.savefig(tbl_path, bbox_inches="tight")
+                                plt.close(fig)
+                                logger.log_image(
+                                    tbl_path,
+                                    step=self.total_env_steps,
+                                    name=f"validation_wm_inverse_action_step{self.total_env_steps}",
+                                )
+                    except Exception as e:
+                        print(f"[WARNING] Failed to log validation WM inverse-action table: {e}")
+
+                    # Reward world model: table + sample panel.
+                    try:
+                        if (
+                            self.config.trainer.get("world_model", {}).get("enable", False)
+                            and self.config.trainer.world_model.get("task") == "reward"
+                            and true_rewards_list is not None
+                            and pred_rewards_list is not None
+                            and actions is not None
+                        ):
+                            from agent_system.environments.prompts.world_model_reward import (
+                                format_reward_prompt,
+                                format_reward_target_display,
+                                parse_reward_prediction,
+                            )
+                            from agent_system.environments.env_package.caged_craftext.reward_tokens import (
+                                format_reward_display,
+                                reward_to_token,
+                            )
+
+                            rows = []
+                            abs_errors = []
+                            token_matches = []
+                            for step_i, (true_s, pred_s) in enumerate(
+                                zip(true_rewards_list, pred_rewards_list)
+                            ):
+                                if not str(true_s).strip():
+                                    continue
+                                true_part = str(true_s).split("(", 1)[0].strip()
+                                try:
+                                    true_val = float(true_part)
+                                except ValueError:
+                                    true_val = parse_reward_prediction(true_s)
+                                    if true_val is None:
+                                        continue
+                                pred_val = parse_reward_prediction(str(pred_s))
+                                pred_display, _ = format_reward_display(str(pred_s))
+                                true_tok = (
+                                    str(true_s).split("(", 1)[1].rstrip(")").strip()
+                                    if "(" in str(true_s)
+                                    else reward_to_token(true_val)
+                                )
+                                pred_tok = str(pred_s).strip().split()[0] if str(pred_s).strip() else ""
+                                if pred_val is None:
+                                    err_str = "—"
+                                    token_matches.append(False)
+                                else:
+                                    err_str = str(int(abs(true_val - pred_val)))
+                                    abs_errors.append(abs(true_val - pred_val))
+                                    token_matches.append(true_tok == pred_tok and pred_tok != "")
+                                action_disp = (
+                                    str(actions[step_i]) if step_i < len(actions) else ""
+                                )
+                                rows.append([
+                                    str(step_i),
+                                    action_disp,
+                                    str(true_s),
+                                    pred_display,
+                                    err_str,
+                                ])
+
+                            if token_matches:
+                                val_wm_reward_token_accuracy = float(np.mean(token_matches))
+                                print(
+                                    f"[INFO] Validation WM reward token accuracy: "
+                                    f"{val_wm_reward_token_accuracy:.3f} ({sum(token_matches)}/{len(token_matches)})"
+                                )
+
+                            if abs_errors:
+                                val_wm_reward_mae = float(np.mean(abs_errors))
+                                print(
+                                    f"[INFO] Validation WM reward MAE: {val_wm_reward_mae:.4f} "
+                                    f"({len(abs_errors)} steps)"
+                                )
+
+                            if rows:
+                                import matplotlib
+                                matplotlib.use("Agg")
+                                import matplotlib.pyplot as plt
+
+                                fig_h = max(2.5, 0.35 * len(rows) + 1.5)
+                                fig, ax = plt.subplots(figsize=(12, fig_h), dpi=140)
+                                ax.axis("off")
+                                col_labels = [
+                                    "step",
+                                    "action (policy)",
+                                    "reward (true)",
+                                    "reward (WM)",
+                                    "|error|",
+                                ]
+                                table = ax.table(
+                                    cellText=rows,
+                                    colLabels=col_labels,
+                                    loc="center",
+                                    cellLoc="left",
+                                )
+                                table.auto_set_font_size(False)
+                                table.set_fontsize(8)
+                                table.scale(1, 1.25)
+                                title = "Reward world model vs environment"
+                                if val_wm_reward_mae is not None:
+                                    title += f" — MAE {val_wm_reward_mae:.4f}"
+                                ax.set_title(title, fontsize=10, pad=12)
+
+                                tbl_name = f"val_wm_reward_step{self.total_env_steps}.png"
+                                tbl_path = os.path.join(tempfile.gettempdir(), tbl_name)
+                                fig.tight_layout()
+                                fig.savefig(tbl_path, bbox_inches="tight")
+                                plt.close(fig)
+                                logger.log_image(
+                                    tbl_path,
+                                    step=self.total_env_steps,
+                                    name=f"validation_wm_reward_step{self.total_env_steps}",
+                                )
+
+                            if (
+                                curr_ascii_list is not None
+                                and actions is not None
+                                and true_rewards_list is not None
+                                and pred_rewards_list is not None
+                            ):
+                                valid_steps = [
+                                    i
+                                    for i, tr in enumerate(true_rewards_list)
+                                    if str(tr).strip()
+                                    and i < len(actions)
+                                    and i < len(curr_ascii_list)
+                                    and i < len(pred_rewards_list)
+                                ]
+                                if valid_steps:
+                                    pick_i = valid_steps[len(valid_steps) // 2]
+                                    from agent_system.environments.env_package.caged_craftext.utility import (
+                                        render_world_model_reward_panel,
+                                    )
+
+                                    action_raw = str(actions[pick_i] or "")
+                                    if "raw:" in action_raw:
+                                        action_raw = action_raw.split("raw:", 1)[1].strip()
+                                    wm_input = format_reward_prompt(
+                                        state=str(curr_ascii_list[pick_i] or ""),
+                                        action=action_raw,
+                                        task=str(
+                                            task_instructions_list[pick_i]
+                                            if task_instructions_list is not None
+                                            and pick_i < len(task_instructions_list)
+                                            else ""
+                                        ),
+                                    )
+                                    reward_img = render_world_model_reward_panel(
+                                        step=int(pick_i),
+                                        world_model_input=wm_input,
+                                        policy_action=str(actions[pick_i] or ""),
+                                        ground_truth_reward=str(true_rewards_list[pick_i] or ""),
+                                        world_model_output=str(pred_rewards_list[pick_i] or ""),
+                                    )
+                                    from PIL import Image
+
+                                    png_name = f"val_wm_reward_input_step{self.total_env_steps}.png"
+                                    png_path = os.path.join(tempfile.gettempdir(), png_name)
+                                    Image.fromarray(reward_img).save(png_path)
+                                    logger.log_image(
+                                        png_path,
+                                        step=self.total_env_steps,
+                                        name=f"validation_wm_reward_input_step{self.total_env_steps}",
+                                    )
+                                    print(
+                                        f"[INFO] Validation reward WM panel logged (step {pick_i}): {png_path}"
+                                    )
+                    except Exception as e:
+                        print(f"[WARNING] Failed to log validation WM reward table: {e}")
+
+                    # One validation transition: WM input, policy a_t, WM output.
+                    try:
+                        wm_enabled = (
+                            self.config.trainer.get("world_model", {}).get("enable", False)
+                            and self.config.trainer.world_model.get("task") == "inverse_action"
+                        )
+                        if wm_enabled and (
+                            actions is not None
+                            and action_ids is not None
+                            and curr_ascii_list is not None
+                            and next_ascii_list is not None
+                            and inverse_actions is not None
+                        ):
+                            valid_steps = [
+                                i
+                                for i, aid in enumerate(action_ids)
+                                if int(aid) >= 0
+                                and i < len(actions)
+                                and i < len(curr_ascii_list)
+                                and i < len(next_ascii_list)
+                                and i < len(inverse_actions)
+                                and (curr_ascii_list[i] or next_ascii_list[i])
+                            ]
+                            if valid_steps:
+                                pick_i = valid_steps[len(valid_steps) // 2]
+
+                                from agent_system.environments.env_package.caged_craftext.utility import (
+                                    render_world_model_transition_panel,
+                                )
+                                from agent_system.environments.prompts.world_model_inverse_action import (
+                                    format_inverse_action_prompt,
+                                )
+
+                                wm_input = format_inverse_action_prompt(
+                                    state_before=str(curr_ascii_list[pick_i] or ""),
+                                    state_after=str(next_ascii_list[pick_i] or ""),
+                                )
+                                transition_img = render_world_model_transition_panel(
+                                    step=int(pick_i),
+                                    world_model_input=wm_input,
+                                    policy_action=str(actions[pick_i] or ""),
+                                    world_model_output=str(inverse_actions[pick_i] or ""),
+                                )
+
+                                from PIL import Image
+
+                                png_name = f"val_wm_transition_step{self.total_env_steps}.png"
+                                png_path = os.path.join(tempfile.gettempdir(), png_name)
+                                Image.fromarray(transition_img).save(png_path)
+                                logger.log_image(
+                                    png_path,
+                                    step=self.total_env_steps,
+                                    name=f"validation_wm_transition_step{self.total_env_steps}",
+                                )
+                                print(
+                                    f"[INFO] Validation WM transition logged (step index {pick_i}): {png_path}"
+                                )
+                    except Exception as e:
+                        print(f"[WARNING] Failed to log validation WM transition: {e}")
                 except Exception as e:
                     print(f"[WARNING] Failed to save/log validation video: {e}")
                 if hasattr(self.val_envs, 'set_record_video'):
@@ -967,6 +1299,13 @@ class RayPPOTrainer:
         for k, v in success_rate.items():
             metric_dict[f'val/{k}'] = v
 
+        if val_wm_inverse_accuracy is not None:
+            metric_dict['val/world_model/inverse_action_accuracy'] = val_wm_inverse_accuracy
+        if val_wm_reward_mae is not None:
+            metric_dict['val/world_model/reward_mae'] = val_wm_reward_mae
+        if val_wm_reward_token_accuracy is not None:
+            metric_dict['val/world_model/reward_token_accuracy'] = val_wm_reward_token_accuracy
+
         return metric_dict
 
     def init_workers(self):
@@ -1047,17 +1386,39 @@ class RayPPOTrainer:
         self.world_model_trainer = None
         self.world_model_loss_coef = 1.0
         if self.config.trainer.get("world_model", {}).get("enable", False):
-            from verl.trainer.world_model import WorldModelTrainer
             world_model_config = self.config.trainer.world_model
             self.world_model_loss_coef = world_model_config.get("loss_coef", 1.0)
-            self.world_model_trainer = WorldModelTrainer(
-                actor_rollout_wg=self.actor_rollout_wg,
-                tokenizer=self.tokenizer,
-                max_latent_tokens=world_model_config.get("max_latent_tokens", 64),
-                encoder_prompt=world_model_config.get("encoder_prompt", "Преобразуй наблюдение среды во внутреннее латентное состояние.\nВерни ТОЛЬКО латентные токены в формате:\n<LATENT> ... </LATENT>"),
-                transition_prompt=world_model_config.get("transition_prompt", "Предскажи следующее латентное состояние среды."),
-                device=self.device_name,
-            )
+            wm_task = world_model_config.get("task", "latent")
+            if wm_task == "inverse_action":
+                from verl.trainer.world_model import InverseActionWorldModelTrainer
+
+                self.world_model_trainer = InverseActionWorldModelTrainer(
+                    actor_rollout_wg=self.actor_rollout_wg,
+                    tokenizer=self.tokenizer,
+                    prompt_template=world_model_config.get("inverse_action_prompt"),
+                    device=self.device_name,
+                )
+            elif wm_task == "reward":
+                from verl.trainer.world_model import RewardWorldModelTrainer
+
+                self.world_model_trainer = RewardWorldModelTrainer(
+                    actor_rollout_wg=self.actor_rollout_wg,
+                    tokenizer=self.tokenizer,
+                    prompt_template=world_model_config.get("reward_prompt"),
+                    max_reward_tokens=int(world_model_config.get("max_reward_tokens", 8)),
+                    device=self.device_name,
+                )
+            else:
+                from verl.trainer.world_model import WorldModelTrainer
+
+                self.world_model_trainer = WorldModelTrainer(
+                    actor_rollout_wg=self.actor_rollout_wg,
+                    tokenizer=self.tokenizer,
+                    max_latent_tokens=world_model_config.get("max_latent_tokens", 64),
+                    encoder_prompt=world_model_config.get("encoder_prompt", "Преобразуй наблюдение среды во внутреннее латентное состояние.\nВерни ТОЛЬКО латентные токены в формате:\n<LATENT> ... </LATENT>"),
+                    transition_prompt=world_model_config.get("transition_prompt", "Предскажи следующее латентное состояние среды."),
+                    device=self.device_name,
+                )
 
         # create async rollout manager and request scheduler
         self.async_rollout_mode = False
@@ -1479,26 +1840,7 @@ class RayPPOTrainer:
 
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
-                        # Train world model (Step 3: LLM as world model)
-                        # NOTE: World model loss is computed BEFORE PPO update so that gradients
-                        # from both losses are accumulated and applied together in optimizer.step()
-                        # This ensures: L_total = L_PPO + loss_coef * L_world_model
-                        if self.config.trainer.get("world_model", {}).get("enable", False):
-                            if _verbose_phases:
-                                self._ppo_phase_log("▶ UPDATE: world_model …")
-                            _t_wm = time.monotonic()
-                            with _timer("update_world_model", timing_raw):
-                                world_model_metrics = self._train_world_model(batch, loss_coef=self.world_model_loss_coef)
-                            if _verbose_phases:
-                                self._ppo_phase_log(f"■ UPDATE world_model done in {time.monotonic() - _t_wm:.1f}s")
-                            if world_model_metrics:
-                                metrics.update(world_model_metrics)
-                                print(f"[World Model Debug] Added {len(world_model_metrics)} metrics: {list(world_model_metrics.keys())}")
-                            else:
-                                print("[World Model Debug] Warning: _train_world_model returned empty dict - no metrics to log")
-                        
-                        # update actor (PPO update)
-                        # This will call optimizer.step() which applies gradients from both PPO and world model
+                        # update actor (PPO update — minibatches with optimizer.step() each)
                         if _verbose_phases:
                             self._ppo_phase_log("▶ UPDATE: actor (PPO) …")
                         _t_ac = time.monotonic()
@@ -1528,10 +1870,23 @@ class RayPPOTrainer:
                             actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
-                        
-                        metrics.update(actor_output_metrics)
                         if _verbose_phases:
                             self._ppo_phase_log(f"■ UPDATE actor done in {time.monotonic() - _t_ac:.1f}s")
+
+                        # World model: separate step AFTER PPO (on-policy w.r.t. updated actor weights)
+                        if self.config.trainer.get("world_model", {}).get("enable", False):
+                            if _verbose_phases:
+                                self._ppo_phase_log("▶ UPDATE: world_model (after PPO) …")
+                            _t_wm = time.monotonic()
+                            with _timer("update_world_model", timing_raw):
+                                world_model_metrics = self._train_world_model(batch, loss_coef=self.world_model_loss_coef)
+                            if _verbose_phases:
+                                self._ppo_phase_log(f"■ UPDATE world_model done in {time.monotonic() - _t_wm:.1f}s")
+                            if world_model_metrics:
+                                metrics.update(world_model_metrics)
+                                logger.log(data=world_model_metrics, step=self.total_env_steps)
+                            else:
+                                print("[World Model Debug] Warning: _train_world_model returned empty dict - no metrics to log")
 
                     elif _verbose_phases:
                         self._ppo_phase_log(
@@ -1601,7 +1956,7 @@ class RayPPOTrainer:
                 # TODO: make a canonical logger that supports various backend
                 # Логируем с шагами среды вместо шагов PPO
                 # Debug: check if world model metrics are present
-                world_model_keys = [k for k in metrics.keys() if k.startswith("world_model/")]
+                world_model_keys = [k for k in metrics.keys() if k.startswith("world_model/") or k == "loss/world_model"]
                 if world_model_keys:
                     print(f"[World Model Debug] Metrics before logging: {world_model_keys}")
                 else:
@@ -1621,19 +1976,219 @@ class RayPPOTrainer:
     
     def _train_world_model(self, batch: DataProto, loss_coef: float = 1.0) -> Dict[str, float]:
         """
-        Train world model on collected experience.
-        
+        Train world model on collected experience (separate step after PPO actor update).
+
         Args:
             batch: Batch of experience data containing observations, actions, and next_obs
-            loss_coef: Coefficient for world model loss (for combining with PPO loss)
-            
+            loss_coef: Multiplier on world model loss in its own optimizer.step()
+
         Returns:
             Dictionary of world model training metrics
         """
         if self.world_model_trainer is None:
             return {}
-        
-        # Extract observations, actions, and next observations from batch
+
+        wm_task = self.config.trainer.world_model.get("task", "latent")
+        if wm_task == "inverse_action":
+            return self._train_inverse_action_world_model(batch, loss_coef=loss_coef)
+        if wm_task == "reward":
+            return self._train_reward_world_model(batch, loss_coef=loss_coef)
+        return self._train_latent_world_model(batch, loss_coef=loss_coef)
+
+    def _train_inverse_action_world_model(self, batch: DataProto, loss_coef: float = 1.0) -> Dict[str, float]:
+        driver_metrics: Dict[str, float] = {}
+
+        required_keys = ("curr_obs_ascii", "next_obs_ascii", "wm_action_token")
+        for key in required_keys:
+            if key not in batch.non_tensor_batch:
+                print(
+                    f"[World Model Debug] Warning: {key} not found in batch. "
+                    f"Available keys: {list(batch.non_tensor_batch.keys())}"
+                )
+                driver_metrics["world_model/num_valid_samples"] = 0.0
+                return driver_metrics
+
+        curr_observations = batch.non_tensor_batch["curr_obs_ascii"].tolist()
+        next_observations = batch.non_tensor_batch["next_obs_ascii"].tolist()
+        action_tokens = batch.non_tensor_batch["wm_action_token"].tolist()
+
+        filter_invalid = bool(self.config.trainer.world_model.get("filter_invalid_actions", True))
+        filter_unchanged = bool(self.config.trainer.world_model.get("filter_unchanged_transitions", True))
+        is_action_valid = batch.non_tensor_batch.get("is_action_valid")
+        if is_action_valid is not None:
+            is_action_valid = np.asarray(is_action_valid, dtype=bool).tolist()
+        else:
+            is_action_valid = [True] * len(curr_observations)
+
+        from agent_system.environments.env_package.caged_craftext.action_tokens import TOKEN_TO_ACTION_ID
+        from agent_system.environments.prompts.world_model_inverse_action import is_unchanged_transition
+
+        valid_indices = []
+        num_unchanged_filtered = 0
+        for i, (curr_obs, next_obs, action) in enumerate(
+            zip(curr_observations, next_observations, action_tokens)
+        ):
+            if not (curr_obs and next_obs and action):
+                continue
+            if filter_unchanged and is_unchanged_transition(curr_obs, next_obs):
+                num_unchanged_filtered += 1
+                continue
+            token = str(action).strip().split()[0] if str(action).strip() else ""
+            if not token or token not in TOKEN_TO_ACTION_ID:
+                continue
+            if filter_invalid and not is_action_valid[i]:
+                continue
+            valid_indices.append(i)
+
+        driver_metrics["world_model/num_valid_samples"] = float(len(valid_indices))
+        if filter_unchanged:
+            driver_metrics["world_model/num_filtered_unchanged"] = float(num_unchanged_filtered)
+        if len(valid_indices) == 0:
+            print("[World Model Debug] No valid inverse-action samples in batch")
+            return driver_metrics
+
+        curr_observations = [curr_observations[i] for i in valid_indices]
+        next_observations = [next_observations[i] for i in valid_indices]
+        action_tokens = [action_tokens[i] for i in valid_indices]
+
+        try:
+            wm_batch = self.world_model_trainer.prepare_batch(
+                curr_observations=curr_observations,
+                next_observations=next_observations,
+                action_tokens=action_tokens,
+            )
+            wm_batch.meta_info["world_model_loss_coef"] = loss_coef
+            wm_batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
+            wm_micro = self.config.trainer.world_model.get("micro_batch_size_per_gpu")
+            if wm_micro is not None:
+                wm_batch.meta_info["world_model_micro_batch_size_per_gpu"] = int(wm_micro)
+            from verl.protocol import DataProtoConfig
+
+            wm_batch.meta_info[DataProtoConfig.auto_padding_key] = True
+
+            output = self.actor_rollout_wg.update_world_model(wm_batch)
+            raw_metrics = extract_metrics_from_dataproto(output)
+            metrics = normalize_worker_metrics(raw_metrics)
+            metrics.update(driver_metrics)
+            if metrics.get("world_model/loss") is not None:
+                print(
+                    f"[Inverse Action World Model] loss={metrics['world_model/loss']:.4f} "
+                    f"samples={int(metrics['world_model/num_valid_samples'])} "
+                    f"keys={sorted(k for k in metrics if k.startswith('world_model/') or k == 'loss/world_model')}"
+                )
+            elif raw_metrics:
+                print(
+                    "[World Model Debug] Warning: worker returned metrics but loss missing after reduce: "
+                    f"raw={raw_metrics} normalized={metrics}"
+                )
+            else:
+                print("[World Model Debug] Warning: update_world_model returned empty meta_info['metrics']")
+            return metrics
+        except Exception as e:
+            print(f"Error training inverse-action world model: {e}")
+            import traceback
+            traceback.print_exc()
+            return driver_metrics
+
+    def _train_reward_world_model(self, batch: DataProto, loss_coef: float = 1.0) -> Dict[str, float]:
+        """Train reward WM on (s_t, a_t) -> r_t. No s_t == s_{t+1} filtering."""
+        driver_metrics: Dict[str, float] = {}
+
+        required_keys = ("curr_obs_ascii", "wm_action_token")
+        for key in required_keys:
+            if key not in batch.non_tensor_batch:
+                print(
+                    f"[World Model Debug] Warning: {key} not found in batch. "
+                    f"Available keys: {list(batch.non_tensor_batch.keys())}"
+                )
+                driver_metrics["world_model/num_valid_samples"] = 0.0
+                return driver_metrics
+
+        curr_observations = batch.non_tensor_batch["curr_obs_ascii"].tolist()
+        action_tokens = batch.non_tensor_batch["wm_action_token"].tolist()
+        task_instructions = batch.non_tensor_batch.get("wm_task_instruction")
+        if task_instructions is not None:
+            task_instructions = np.asarray(task_instructions, dtype=object).reshape(-1).tolist()
+        else:
+            task_instructions = [""] * len(curr_observations)
+        step_rewards_raw = batch.non_tensor_batch.get("wm_step_reward")
+        if step_rewards_raw is None:
+            step_rewards_raw = batch.non_tensor_batch.get("rewards")
+        if step_rewards_raw is None:
+            print("[World Model Debug] Warning: wm_step_reward / rewards not in batch")
+            driver_metrics["world_model/num_valid_samples"] = 0.0
+            return driver_metrics
+        step_rewards = np.asarray(step_rewards_raw, dtype=np.float64).reshape(-1).tolist()
+
+        valid_indices = []
+        for i, (curr_obs, action) in enumerate(zip(curr_observations, action_tokens)):
+            if not (curr_obs and action):
+                continue
+            valid_indices.append(i)
+
+        driver_metrics["world_model/num_valid_samples"] = float(len(valid_indices))
+        if len(valid_indices) == 0:
+            print("[World Model Debug] No valid reward-model samples in batch")
+            return driver_metrics
+
+        curr_observations = [curr_observations[i] for i in valid_indices]
+        action_tokens = [action_tokens[i] for i in valid_indices]
+        step_rewards = [float(step_rewards[i]) for i in valid_indices]
+        task_instructions = [str(task_instructions[i] or "") for i in valid_indices]
+
+        # Log target distribution for debugging (helps diagnose collapse to always-0).
+        try:
+            from agent_system.environments.env_package.caged_craftext.reward_tokens import quantize_step_reward
+
+            q = [int(quantize_step_reward(r)) for r in step_rewards]
+            if q:
+                n = float(len(q))
+                driver_metrics["world_model/reward_frac_-1"] = float(sum(v == -1 for v in q) / n)
+                driver_metrics["world_model/reward_frac_0"] = float(sum(v == 0 for v in q) / n)
+                driver_metrics["world_model/reward_frac_1"] = float(sum(v == 1 for v in q) / n)
+                driver_metrics["world_model/reward_frac_2"] = float(sum(v == 2 for v in q) / n)
+        except Exception:
+            pass
+
+        try:
+            wm_batch = self.world_model_trainer.prepare_batch(
+                curr_observations=curr_observations,
+                action_tokens=action_tokens,
+                step_rewards=step_rewards,
+                task_instructions=task_instructions,
+            )
+            wm_batch.meta_info["world_model_loss_coef"] = loss_coef
+            wm_batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
+            wm_micro = self.config.trainer.world_model.get("micro_batch_size_per_gpu")
+            if wm_micro is not None:
+                wm_batch.meta_info["world_model_micro_batch_size_per_gpu"] = int(wm_micro)
+            from verl.protocol import DataProtoConfig
+
+            wm_batch.meta_info[DataProtoConfig.auto_padding_key] = True
+
+            output = self.actor_rollout_wg.update_world_model(wm_batch)
+            raw_metrics = extract_metrics_from_dataproto(output)
+            metrics = normalize_worker_metrics(raw_metrics)
+            metrics.update(driver_metrics)
+            if metrics.get("world_model/loss") is not None:
+                metrics["world_model/reward_loss"] = metrics["world_model/loss"]
+                print(
+                    f"[Reward World Model] loss={metrics['world_model/loss']:.4f} "
+                    f"samples={int(metrics['world_model/num_valid_samples'])} "
+                    f"target_frac(-1/0/1/2)="
+                    f"{metrics.get('world_model/reward_frac_-1', float('nan')):.2f}/"
+                    f"{metrics.get('world_model/reward_frac_0', float('nan')):.2f}/"
+                    f"{metrics.get('world_model/reward_frac_1', float('nan')):.2f}/"
+                    f"{metrics.get('world_model/reward_frac_2', float('nan')):.2f}"
+                )
+            return metrics
+        except Exception as e:
+            print(f"Error training reward world model: {e}")
+            import traceback
+            traceback.print_exc()
+            return driver_metrics
+
+    def _train_latent_world_model(self, batch: DataProto, loss_coef: float = 1.0) -> Dict[str, float]:
         # Observations are in batch.non_tensor_batch['raw_prompt'] or similar
         # Actions are in batch.batch['responses'] (decoded)
         # Next observations should be in batch.non_tensor_batch['next_obs_text']
@@ -1706,10 +2261,8 @@ class RayPPOTrainer:
                 print("Warning: Optimizer not available for world model training")
                 return {}
             
-            # Train world model
-            # Note: This computes loss and calls backward(), but NOT optimizer.step()
-            # The optimizer.step() is called in update_actor(), so gradients from
-            # both PPO and world model are combined: L_total = L_PPO + loss_coef * L_world_model
+            # Note: latent WM still uses legacy driver-side train_step (not migrated to update_world_model).
+            print("[World Model] Warning: task=latent uses legacy train_step; inverse_action uses post-PPO worker update")
             metrics = self.world_model_trainer.train_step(
                 observations=observations,
                 next_observations=next_observations,

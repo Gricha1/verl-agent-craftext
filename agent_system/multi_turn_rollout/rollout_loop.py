@@ -330,6 +330,29 @@ class TrajectoryCollector:
         validation_video_prompts = [] if record_video_env_idx is not None else None
         validation_video_actions = [] if record_video_env_idx is not None else None
         validation_video_action_ids = [] if record_video_env_idx is not None else None
+        validation_video_inverse_actions = [] if record_video_env_idx is not None else None
+        validation_video_inverse_action_ids = [] if record_video_env_idx is not None else None
+        validation_video_curr_ascii = [] if record_video_env_idx is not None else None
+        validation_video_next_ascii = [] if record_video_env_idx is not None else None
+        validation_video_true_rewards = [] if record_video_env_idx is not None else None
+        validation_video_pred_rewards = [] if record_video_env_idx is not None else None
+        validation_video_task_instructions = [] if record_video_env_idx is not None else None
+
+        wm_cfg = self.config.trainer.get("world_model", {}) if hasattr(self.config, "trainer") else {}
+        wm_inverse_val_enabled = (
+            not is_train
+            and world_model_trainer is not None
+            and bool(wm_cfg.get("enable", False))
+            and wm_cfg.get("task", "latent") == "inverse_action"
+            and hasattr(world_model_trainer, "predict_inverse_actions")
+        )
+        wm_reward_val_enabled = (
+            not is_train
+            and world_model_trainer is not None
+            and bool(wm_cfg.get("enable", False))
+            and wm_cfg.get("task", "latent") == "reward"
+            and hasattr(world_model_trainer, "predict_rewards")
+        )
 
         # Initial observations from the environment
         obs, infos = envs.reset(kwargs=gen_batch.non_tensor_batch.pop('env_kwargs', None))
@@ -358,6 +381,20 @@ class TrajectoryCollector:
                 validation_video_prompts.append(prompt_text or "")
                 validation_video_actions.append("")
                 validation_video_action_ids.append(-1)
+                if validation_video_inverse_actions is not None:
+                    validation_video_inverse_actions.append("")
+                    validation_video_inverse_action_ids.append(-1)
+                if validation_video_curr_ascii is not None:
+                    init_ascii = ""
+                    if isinstance(obs, dict) and obs.get("anchor") is not None:
+                        init_ascii = obs["anchor"][record_video_env_idx]
+                    validation_video_curr_ascii.append(init_ascii)
+                    validation_video_next_ascii.append("")
+                if validation_video_true_rewards is not None:
+                    validation_video_true_rewards.append("")
+                    validation_video_pred_rewards.append("")
+                if validation_video_task_instructions is not None:
+                    validation_video_task_instructions.append("")
 
         lenght_obs = len(obs['text']) if obs['text'] is not None else len(obs['image'])
         assert len(gen_batch.batch) == lenght_obs, f"gen_batch size {len(gen_batch.batch)} does not match obs size {lenght_obs}"
@@ -620,14 +657,38 @@ class TrajectoryCollector:
             wm_cfg = self.config.trainer.get("world_model", {}) if hasattr(self.config, "trainer") else {}
             wm_enabled = bool(wm_cfg.get("enable", False))
             if wm_enabled:
-                # Convert next_obs to a format that can be stored
-                if isinstance(next_obs, dict):
-                    if 'text' in next_obs and next_obs['text'] is not None:
-                        batch.non_tensor_batch['next_obs_text'] = np.array(next_obs['text'], dtype=object)
-                    if 'image' in next_obs and next_obs['image'] is not None:
-                        batch.non_tensor_batch['next_obs_image'] = torch_to_numpy(next_obs['image'], is_object=True)
+                wm_task = wm_cfg.get("task", "latent")
+                if wm_task == "inverse_action":
+                    if isinstance(obs, dict) and obs.get("anchor") is not None:
+                        batch.non_tensor_batch["curr_obs_ascii"] = np.array(obs["anchor"], dtype=object)
+                    else:
+                        batch.non_tensor_batch["curr_obs_ascii"] = np.array([""] * batch_size, dtype=object)
+                    next_ascii = [
+                        info.get("transition_text_render", info.get("text_render", ""))
+                        for info in infos
+                    ]
+                    batch.non_tensor_batch["next_obs_ascii"] = np.array(next_ascii, dtype=object)
+                    batch.non_tensor_batch["wm_action_token"] = np.array(text_actions, dtype=object)
+                elif wm_task == "reward":
+                    if isinstance(obs, dict) and obs.get("anchor") is not None:
+                        batch.non_tensor_batch["curr_obs_ascii"] = np.array(obs["anchor"], dtype=object)
+                    else:
+                        batch.non_tensor_batch["curr_obs_ascii"] = np.array([""] * batch_size, dtype=object)
+                    batch.non_tensor_batch["wm_action_token"] = np.array(text_actions, dtype=object)
+                    batch.non_tensor_batch["wm_step_reward"] = torch_to_numpy(rewards, is_object=True)
+                    batch.non_tensor_batch["wm_task_instruction"] = np.array(
+                        [info.get("instruction", "") for info in infos],
+                        dtype=object,
+                    )
                 else:
-                    batch.non_tensor_batch['next_obs'] = torch_to_numpy(next_obs, is_object=True)
+                    # Convert next_obs to a format that can be stored (latent WM)
+                    if isinstance(next_obs, dict):
+                        if 'text' in next_obs and next_obs['text'] is not None:
+                            batch.non_tensor_batch['next_obs_text'] = np.array(next_obs['text'], dtype=object)
+                        if 'image' in next_obs and next_obs['image'] is not None:
+                            batch.non_tensor_batch['next_obs_image'] = torch_to_numpy(next_obs['image'], is_object=True)
+                    else:
+                        batch.non_tensor_batch['next_obs'] = torch_to_numpy(next_obs, is_object=True)
             
             # Update episode lengths for active environments
             batch_list: list[dict] = to_list_of_dict(batch)
@@ -662,6 +723,74 @@ class TrajectoryCollector:
                         validation_video_action_ids.append(int(infos[record_video_env_idx].get("action_id", -1)))
                     except Exception:
                         validation_video_action_ids.append(-1)
+
+                    inverse_display = ""
+                    inverse_action_id = -1
+                    if wm_inverse_val_enabled and isinstance(obs, dict) and obs.get("anchor") is not None:
+                        try:
+                            from agent_system.environments.env_package.caged_craftext.action_tokens import (
+                                format_single_token_action_display,
+                            )
+
+                            curr_ascii = obs["anchor"][record_video_env_idx]
+                            next_ascii = infos[record_video_env_idx].get(
+                                "transition_text_render",
+                                infos[record_video_env_idx].get("text_render", ""),
+                            )
+                            pred_raw = world_model_trainer.predict_inverse_actions(
+                                [curr_ascii], [next_ascii]
+                            )[0]
+                            inverse_display, inverse_action_id = format_single_token_action_display(pred_raw)
+                            if not inverse_display and pred_raw:
+                                inverse_display = f"? | raw: {pred_raw.strip()}"
+                        except Exception as e:
+                            import traceback
+                            print(f"[validation WM] inverse action predict failed: {e}", flush=True)
+                            traceback.print_exc()
+                    if validation_video_inverse_actions is not None:
+                        validation_video_inverse_actions.append(inverse_display)
+                        validation_video_inverse_action_ids.append(inverse_action_id)
+
+                    if validation_video_curr_ascii is not None:
+                        curr_ascii = ""
+                        if isinstance(obs, dict) and obs.get("anchor") is not None:
+                            curr_ascii = obs["anchor"][record_video_env_idx]
+                        next_ascii = infos[record_video_env_idx].get(
+                            "transition_text_render",
+                            infos[record_video_env_idx].get("text_render", ""),
+                        )
+                        validation_video_curr_ascii.append(curr_ascii)
+                        validation_video_next_ascii.append(next_ascii)
+
+                    if wm_reward_val_enabled and isinstance(obs, dict) and obs.get("anchor") is not None:
+                        try:
+                            from agent_system.environments.prompts.world_model_reward import (
+                                format_reward_target_display,
+                            )
+
+                            curr_ascii = obs["anchor"][record_video_env_idx]
+                            action_raw = text_actions[record_video_env_idx]
+                            task_text = infos[record_video_env_idx].get("instruction", "")
+                            step_r = float(np.asarray(rewards).reshape(-1)[record_video_env_idx])
+                            pred_raw = world_model_trainer.predict_rewards(
+                                [curr_ascii], [action_raw], [task_text]
+                            )[0]
+                            if validation_video_task_instructions is not None:
+                                validation_video_task_instructions.append(str(task_text or ""))
+                            if validation_video_true_rewards is not None:
+                                validation_video_true_rewards.append(format_reward_target_display(step_r))
+                            if validation_video_pred_rewards is not None:
+                                validation_video_pred_rewards.append(str(pred_raw or "").strip())
+                        except Exception as e:
+                            import traceback
+                            print(f"[validation WM] reward predict failed: {e}", flush=True)
+                            traceback.print_exc()
+                            if validation_video_true_rewards is not None:
+                                validation_video_true_rewards.append("")
+                            if validation_video_pred_rewards is not None:
+                                validation_video_pred_rewards.append("")
+                            if validation_video_task_instructions is not None:
+                                validation_video_task_instructions.append("")
 
             # Обновляем счетчики шагов для активных сред (если auto reset включен)
             if auto_reset_enabled:
@@ -744,7 +873,29 @@ class TrajectoryCollector:
                     episode_lengths=episode_lengths,
                     )
 
-        return total_batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings, validation_video_frames, validation_video_prompts, validation_video_actions, validation_video_action_ids, completed_episode_returns, completed_episode_lengths, completed_episode_costs
+        return (
+            total_batch_list,
+            episode_rewards,
+            episode_lengths,
+            episode_costs,
+            success,
+            traj_uid,
+            tool_callings,
+            validation_video_frames,
+            validation_video_prompts,
+            validation_video_actions,
+            validation_video_action_ids,
+            validation_video_inverse_actions,
+            validation_video_inverse_action_ids,
+            validation_video_curr_ascii,
+            validation_video_next_ascii,
+            validation_video_true_rewards,
+            validation_video_pred_rewards,
+            validation_video_task_instructions,
+            completed_episode_returns,
+            completed_episode_lengths,
+            completed_episode_costs,
+        )
     
     def dynamic_multi_turn_loop(
             self,
@@ -789,7 +940,29 @@ class TrajectoryCollector:
                 print(f"valid num={len(total_batch_list)} < target num={self.config.data.train_batch_size * self.config.env.rollout.n}. Keep generating... ({try_count}/{max_try_count})")
             try_count += 1
 
-            batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings, _vframes, _vprompts, _vactions, _vaction_ids, completed_returns, completed_lengths, completed_costs = self.vanilla_multi_turn_loop(
+            (
+                batch_list,
+                episode_rewards,
+                episode_lengths,
+                episode_costs,
+                success,
+                traj_uid,
+                tool_callings,
+                _vframes,
+                _vprompts,
+                _vactions,
+                _vaction_ids,
+                _via,
+                _viaid,
+                _vca,
+                _vna,
+                _vtr,
+                _vpr,
+                _vti,
+                completed_returns,
+                completed_lengths,
+                completed_costs,
+            ) = self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
                 envs=envs,
@@ -863,10 +1036,36 @@ class TrajectoryCollector:
             validation_video_frames = None
             validation_video_prompts = None
             validation_video_actions = None
+            validation_video_action_ids = None
+            validation_video_inverse_actions = None
+            validation_video_inverse_action_ids = None
+            validation_video_curr_ascii = None
+            validation_video_next_ascii = None
         else:
             # Vanilla Sampling   
-            total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, totoal_tool_callings, validation_video_frames, validation_video_prompts, validation_video_actions, validation_video_action_ids, completed_episode_returns, completed_episode_lengths, completed_episode_costs = \
-                self.vanilla_multi_turn_loop(
+            (
+                total_batch_list,
+                total_episode_rewards,
+                total_episode_lengths,
+                total_episode_costs,
+                total_success,
+                total_traj_uid,
+                totoal_tool_callings,
+                validation_video_frames,
+                validation_video_prompts,
+                validation_video_actions,
+                validation_video_action_ids,
+                validation_video_inverse_actions,
+                validation_video_inverse_action_ids,
+                validation_video_curr_ascii,
+                validation_video_next_ascii,
+                validation_video_true_rewards,
+                validation_video_pred_rewards,
+                validation_video_task_instructions,
+                completed_episode_returns,
+                completed_episode_lengths,
+                completed_episode_costs,
+            ) = self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
                 envs=envs,
@@ -901,6 +1100,20 @@ class TrajectoryCollector:
             gen_batch_output.meta_info['validation_video_actions'] = validation_video_actions
         if validation_video_action_ids is not None:
             gen_batch_output.meta_info['validation_video_action_ids'] = validation_video_action_ids
+        if validation_video_inverse_actions is not None:
+            gen_batch_output.meta_info['validation_video_inverse_actions'] = validation_video_inverse_actions
+        if validation_video_inverse_action_ids is not None:
+            gen_batch_output.meta_info['validation_video_inverse_action_ids'] = validation_video_inverse_action_ids
+        if validation_video_curr_ascii is not None:
+            gen_batch_output.meta_info['validation_video_curr_ascii'] = validation_video_curr_ascii
+        if validation_video_next_ascii is not None:
+            gen_batch_output.meta_info['validation_video_next_ascii'] = validation_video_next_ascii
+        if validation_video_true_rewards is not None:
+            gen_batch_output.meta_info['validation_video_true_rewards'] = validation_video_true_rewards
+        if validation_video_pred_rewards is not None:
+            gen_batch_output.meta_info['validation_video_pred_rewards'] = validation_video_pred_rewards
+        if validation_video_task_instructions is not None:
+            gen_batch_output.meta_info['validation_video_task_instructions'] = validation_video_task_instructions
         # Метрики по завершённым эпизодам (среднее по эпизодам, как в caged_craftext baselines)
         if completed_episode_returns is not None and len(completed_episode_returns) > 0:
             gen_batch_output.meta_info['completed_episode_returns'] = np.array(completed_episode_returns, dtype=np.float32)

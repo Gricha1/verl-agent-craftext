@@ -12,6 +12,7 @@ from typing import Dict, Optional, Tuple, List
 import numpy as np
 import re
 from verl import DataProto
+from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
 import verl.utils.torch_functional as verl_F
 from verl.utils.model import compute_position_id_with_mask
 
@@ -492,3 +493,384 @@ class WorldModelTrainer:
             import traceback
             traceback.print_exc()
             return {}
+
+
+class InverseActionWorldModelTrainer:
+    """
+    Inverse-action world model: given ASCII state s and s', predict the action token.
+    One forward pass per sample (single-token target).
+    """
+
+    def __init__(
+        self,
+        actor_rollout_wg,
+        tokenizer,
+        prompt_template: Optional[str] = None,
+        device: str = "cuda",
+    ):
+        from agent_system.environments.prompts.world_model_inverse_action import (
+            format_inverse_action_prompt,
+            get_inverse_action_prompt_template,
+        )
+
+        self.actor_rollout_wg = actor_rollout_wg
+        self.tokenizer = tokenizer
+        self.device = device
+        if prompt_template:
+            self._format_prompt = lambda state_before, state_after: prompt_template.format(
+                state_before=state_before,
+                state_after=state_after,
+            )
+        else:
+            self._format_prompt = format_inverse_action_prompt
+
+    def _build_prompts(self, curr_obs: list[str], next_obs: list[str]) -> list[str]:
+        return [
+            self._format_prompt(state_before=s, state_after=s_prime)
+            for s, s_prime in zip(curr_obs, next_obs)
+        ]
+
+    def prepare_batch(
+        self,
+        curr_observations: list[str],
+        next_observations: list[str],
+        action_tokens: list[str],
+    ) -> DataProto:
+        """Tokenize (s, s') -> action pairs for a separate actor update_world_model step."""
+        prompts = self._build_prompts(curr_observations, next_observations)
+        sequences: list[torch.Tensor] = []
+        response_rows: list[torch.Tensor] = []
+
+        for prompt, action in zip(prompts, action_tokens):
+            chat = [{"role": "user", "content": prompt}]
+            prompt_text = self.tokenizer.apply_chat_template(
+                chat, add_generation_prompt=True, tokenize=False
+            )
+            prompt_encoded = self.tokenizer(prompt_text, return_tensors="pt", add_special_tokens=False)
+            prompt_ids = prompt_encoded["input_ids"][0]
+
+            token = action.strip().split()[0] if action.strip() else ""
+            response_ids = torch.tensor(
+                self.tokenizer.encode(token, add_special_tokens=False)[:1],
+                dtype=torch.long,
+            )
+            if response_ids.numel() == 0:
+                response_ids = torch.tensor([self.tokenizer.pad_token_id or 0], dtype=torch.long)
+
+            sequences.append(torch.cat([prompt_ids, response_ids], dim=0))
+            response_rows.append(response_ids)
+
+        max_len = max(seq.shape[0] for seq in sequences)
+        max_response_len = max(r.shape[0] for r in response_rows)
+
+        input_ids_rows = []
+        attention_rows = []
+        response_padded = []
+        pad_id = self.tokenizer.pad_token_id
+
+        for seq, resp in zip(sequences, response_rows):
+            seq_len = seq.shape[0]
+            pad_len = max_len - seq_len
+            if pad_len > 0:
+                seq = torch.cat([
+                    torch.full((pad_len,), pad_id, dtype=torch.long),
+                    seq,
+                ])
+            attn = torch.zeros(max_len, dtype=torch.long)
+            attn[-seq_len:] = 1
+            input_ids_rows.append(seq)
+            attention_rows.append(attn)
+
+            if resp.shape[0] < max_response_len:
+                resp = torch.cat([
+                    resp,
+                    torch.full((max_response_len - resp.shape[0],), pad_id, dtype=torch.long),
+                ])
+            response_padded.append(resp)
+
+        batch_dict = {
+            "input_ids": torch.stack(input_ids_rows),
+            "attention_mask": torch.stack(attention_rows),
+            "responses": torch.stack(response_padded),
+        }
+        batch_dict["position_ids"] = compute_position_id_with_mask(batch_dict["attention_mask"])
+        return DataProto.from_dict(tensors=batch_dict, non_tensors={}, meta_info={})
+
+    def _build_inverse_action_scoring_batch(
+        self,
+        curr_observations: list[str],
+        next_observations: list[str],
+    ) -> DataProto:
+        """Build a batch with one row per (transition, candidate action token) for argmax inference."""
+        from agent_system.environments.env_package.caged_craftext.action_tokens import action_token_strings
+
+        action_labels = action_token_strings()
+        sequences: list[torch.Tensor] = []
+        response_rows: list[torch.Tensor] = []
+
+        for curr, nxt in zip(curr_observations, next_observations):
+            prompt = self._format_prompt(state_before=curr, state_after=nxt)
+            chat = [{"role": "user", "content": prompt}]
+            prompt_text = self.tokenizer.apply_chat_template(
+                chat, add_generation_prompt=True, tokenize=False
+            )
+            prompt_ids = self.tokenizer(
+                prompt_text, return_tensors="pt", add_special_tokens=False
+            )["input_ids"][0]
+
+            for label in action_labels:
+                response_ids = torch.tensor(
+                    self.tokenizer.encode(label, add_special_tokens=False)[:1],
+                    dtype=torch.long,
+                )
+                if response_ids.numel() == 0:
+                    response_ids = torch.tensor([self.tokenizer.pad_token_id or 0], dtype=torch.long)
+                sequences.append(torch.cat([prompt_ids, response_ids], dim=0))
+                response_rows.append(response_ids)
+
+        max_len = max(seq.shape[0] for seq in sequences)
+        max_response_len = max(r.shape[0] for r in response_rows)
+        pad_id = self.tokenizer.pad_token_id
+
+        input_ids_rows = []
+        attention_rows = []
+        response_padded = []
+        for seq, resp in zip(sequences, response_rows):
+            seq_len = seq.shape[0]
+            pad_len = max_len - seq_len
+            if pad_len > 0:
+                seq = torch.cat([torch.full((pad_len,), pad_id, dtype=torch.long), seq])
+            attn = torch.zeros(max_len, dtype=torch.long)
+            attn[-seq_len:] = 1
+            input_ids_rows.append(seq)
+            attention_rows.append(attn)
+
+            if resp.shape[0] < max_response_len:
+                resp = torch.cat([
+                    resp,
+                    torch.full((max_response_len - resp.shape[0],), pad_id, dtype=torch.long),
+                ])
+            response_padded.append(resp)
+
+        batch_dict = {
+            "input_ids": torch.stack(input_ids_rows),
+            "attention_mask": torch.stack(attention_rows),
+            "responses": torch.stack(response_padded),
+        }
+        batch_dict["position_ids"] = compute_position_id_with_mask(batch_dict["attention_mask"])
+        return DataProto.from_dict(tensors=batch_dict, non_tensors={}, meta_info={})
+
+    def predict_inverse_actions(
+        self,
+        curr_observations: list[str],
+        next_observations: list[str],
+    ) -> list[str]:
+        """Pick the best action token via actor log-prob over all 17 candidates (no vLLM generate)."""
+        from agent_system.environments.env_package.caged_craftext.action_tokens import action_token_strings
+
+        if not curr_observations:
+            return []
+
+        action_labels = action_token_strings()
+        n_actions = len(action_labels)
+        n_prompts = len(curr_observations)
+
+        scoring_batch = self._build_inverse_action_scoring_batch(curr_observations, next_observations)
+        scoring_batch_padded, pad_size = pad_dataproto_to_divisor(
+            scoring_batch, self.actor_rollout_wg.world_size
+        )
+        log_prob_output = self.actor_rollout_wg.compute_log_prob(scoring_batch_padded)
+        log_prob_output = unpad_dataproto(log_prob_output, pad_size=pad_size)
+
+        log_probs = log_prob_output.batch["old_log_probs"]
+        responses = scoring_batch.batch["responses"]
+        pad_id = self.tokenizer.pad_token_id
+        response_mask = (responses != pad_id).float()
+        scores = (log_probs * response_mask).sum(dim=-1)
+
+        predictions: list[str] = []
+        for prompt_idx in range(n_prompts):
+            start = prompt_idx * n_actions
+            end = start + n_actions
+            best = int(scores[start:end].argmax().item())
+            predictions.append(action_labels[best])
+        return predictions
+
+
+class RewardWorldModelTrainer:
+    """
+    Reward world model: given ASCII state s_t and action a_t, predict scalar reward r_t.
+    Target is a short decimal string (e.g. 0.0000).
+    """
+
+    def __init__(
+        self,
+        actor_rollout_wg,
+        tokenizer,
+        prompt_template: Optional[str] = None,
+        max_reward_tokens: int = 1,
+        device: str = "cuda",
+    ):
+        from agent_system.environments.prompts.world_model_reward import (
+            format_reward_prompt,
+            format_reward_target,
+        )
+
+        self.actor_rollout_wg = actor_rollout_wg
+        self.tokenizer = tokenizer
+        self.device = device
+        self.max_reward_tokens = max_reward_tokens
+        self._format_reward_target = format_reward_target
+        self._parse_reward_prediction = None
+        from agent_system.environments.prompts import world_model_reward as _wm_reward
+
+        self._parse_reward_prediction = _wm_reward.parse_reward_prediction
+
+        if prompt_template:
+            self._format_prompt = lambda state, action, task="": prompt_template.format(
+                state=state,
+                action=action,
+                task=(task or "").strip() or "Unknown task",
+            )
+        else:
+            self._format_prompt = format_reward_prompt
+
+    def prepare_batch(
+        self,
+        curr_observations: list[str],
+        action_tokens: list[str],
+        step_rewards: list[float],
+        task_instructions: list[str] | None = None,
+    ) -> DataProto:
+        """Tokenize (task, s_t, a_t) -> r_t pairs for update_world_model."""
+        if task_instructions is None:
+            task_instructions = [""] * len(curr_observations)
+        sequences: list[torch.Tensor] = []
+        response_rows: list[torch.Tensor] = []
+
+        for state, action, reward, task in zip(
+            curr_observations, action_tokens, step_rewards, task_instructions
+        ):
+            prompt = self._format_prompt(state=state, action=action, task=task)
+            chat = [{"role": "user", "content": prompt}]
+            prompt_text = self.tokenizer.apply_chat_template(
+                chat, add_generation_prompt=True, tokenize=False
+            )
+            prompt_ids = self.tokenizer(
+                prompt_text, return_tensors="pt", add_special_tokens=False
+            )["input_ids"][0]
+
+            target_text = self._format_reward_target(reward)
+            response_ids = torch.tensor(
+                self.tokenizer.encode(target_text, add_special_tokens=False)[:1],
+                dtype=torch.long,
+            )
+            if response_ids.numel() == 0:
+                response_ids = torch.tensor([self.tokenizer.pad_token_id or 0], dtype=torch.long)
+
+            sequences.append(torch.cat([prompt_ids, response_ids], dim=0))
+            response_rows.append(response_ids)
+
+        max_len = max(seq.shape[0] for seq in sequences)
+        max_response_len = max(r.shape[0] for r in response_rows)
+        pad_id = self.tokenizer.pad_token_id
+
+        input_ids_rows = []
+        attention_rows = []
+        response_padded = []
+        for seq, resp in zip(sequences, response_rows):
+            seq_len = seq.shape[0]
+            pad_len = max_len - seq_len
+            if pad_len > 0:
+                seq = torch.cat([torch.full((pad_len,), pad_id, dtype=torch.long), seq])
+            attn = torch.zeros(max_len, dtype=torch.long)
+            attn[-seq_len:] = 1
+            input_ids_rows.append(seq)
+            attention_rows.append(attn)
+
+            if resp.shape[0] < max_response_len:
+                resp = torch.cat([
+                    resp,
+                    torch.full((max_response_len - resp.shape[0],), pad_id, dtype=torch.long),
+                ])
+            response_padded.append(resp)
+
+        batch_dict = {
+            "input_ids": torch.stack(input_ids_rows),
+            "attention_mask": torch.stack(attention_rows),
+            "responses": torch.stack(response_padded),
+        }
+        batch_dict["position_ids"] = compute_position_id_with_mask(batch_dict["attention_mask"])
+        return DataProto.from_dict(tensors=batch_dict, non_tensors={}, meta_info={})
+
+    def _build_generation_batch(
+        self,
+        curr_observations: list[str],
+        action_tokens: list[str],
+        task_instructions: list[str] | None = None,
+    ) -> DataProto:
+        if task_instructions is None:
+            task_instructions = [""] * len(curr_observations)
+        batch_dict = {
+            "input_ids": [],
+            "attention_mask": [],
+            "position_ids": [],
+        }
+        for state, action, task in zip(curr_observations, action_tokens, task_instructions):
+            prompt = self._format_prompt(state=state, action=action, task=task)
+            chat = [{"role": "user", "content": prompt}]
+            prompt_text = self.tokenizer.apply_chat_template(
+                chat, add_generation_prompt=True, tokenize=False
+            )
+            input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(
+                prompt=prompt_text,
+                tokenizer=self.tokenizer,
+                max_length=2048,
+                pad_token_id=self.tokenizer.pad_token_id,
+                left_pad=True,
+                truncation="error",
+            )
+            position_ids = compute_position_id_with_mask(attention_mask)
+            batch_dict["input_ids"].append(input_ids[0])
+            batch_dict["attention_mask"].append(attention_mask[0])
+            batch_dict["position_ids"].append(position_ids[0])
+
+        batch_dict["input_ids"] = torch.stack(batch_dict["input_ids"])
+        batch_dict["attention_mask"] = torch.stack(batch_dict["attention_mask"])
+        batch_dict["position_ids"] = torch.stack(batch_dict["position_ids"])
+
+        gen_batch = DataProto.from_dict(tensors=batch_dict, non_tensors={}, meta_info={})
+        gen_batch.meta_info = {
+            "max_new_tokens": self.max_reward_tokens,
+            "temperature": 0.1,
+            "do_sample": False,
+            "eos_token_id": self.tokenizer.eos_token_id,
+            "pad_token_id": self.tokenizer.pad_token_id,
+        }
+        return gen_batch
+
+    def predict_rewards(
+        self,
+        curr_observations: list[str],
+        action_tokens: list[str],
+        task_instructions: list[str] | None = None,
+    ) -> list[str]:
+        """Generate reward strings for validation / inference."""
+        if not curr_observations:
+            return []
+        if task_instructions is None:
+            task_instructions = [""] * len(curr_observations)
+
+        gen_batch = self._build_generation_batch(
+            curr_observations, action_tokens, task_instructions
+        )
+        gen_batch_padded, pad_size = pad_dataproto_to_divisor(
+            gen_batch, self.actor_rollout_wg.world_size
+        )
+        with torch.no_grad():
+            output = self.actor_rollout_wg.generate_sequences(gen_batch_padded)
+        output = unpad_dataproto(output, pad_size=pad_size)
+
+        responses = output.batch["responses"]
+        texts = self.tokenizer.batch_decode(responses, skip_special_tokens=True)
+        return [t.strip() for t in texts[: len(curr_observations)]]

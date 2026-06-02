@@ -314,11 +314,18 @@ trainer:
   # World Model training configuration
   world_model:
     enable: False  # Set to True to enable world model training
+    task: latent  # latent | inverse_action | reward
+    reward_prompt: null  # null = default template in world_model_reward.py
+    max_reward_tokens: 1  # single reward token (i/j/k/l)
     use_latent_in_policy: False  # Set to True to use latent state zt in agent's prompt during rollout and training
-    max_latent_tokens: 64  # Maximum number of latent tokens to generate
+    filter_invalid_actions: True  # inverse_action: skip steps where env rejected the action
+    filter_unchanged_transitions: True  # inverse_action: skip when ASCII s_t == s_{t+1} (no-op / ineffective DO, etc.)
+    micro_batch_size_per_gpu: null  # null = use actor ppo_micro_batch_size_per_gpu for WM forward chunks
+    max_latent_tokens: 64  # Maximum number of latent tokens to generate (latent task only)
     encoder_prompt: "Преобразуй наблюдение среды во внутреннее латентное состояние.\nВерни ТОЛЬКО латентные токены в формате:\n<LATENT> ... </LATENT>"  # Prompt for encoder mode
     transition_prompt: "Предскажи следующее латентное состояние среды."  # Prompt for transition model mode
-    loss_coef: 1.0  # Coefficient for world model loss: L_total = L_PPO + loss_coef * L_world_model
+    inverse_action_prompt: null  # null = default template in world_model_inverse_action.py
+    loss_coef: 1.0  # Multiplier on WM loss in the separate post-PPO update_world_model step
 
 ray_init:
   num_cpus: null # `None` means using all CPUs, which might cause hang if limited in systems like SLURM. Please set to a number allowed then.

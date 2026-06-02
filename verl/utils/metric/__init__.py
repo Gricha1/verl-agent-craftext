@@ -12,6 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .utils import reduce_metrics
+from .utils import (
+    extract_metrics_from_dataproto,
+    normalize_worker_metrics,
+    reduce_metrics,
+    scalarize_metrics,
+)
 
-__all__ = ["reduce_metrics"]
+__all__ = [
+    "reduce_metrics",
+    "extract_metrics_from_dataproto",
+    "scalarize_metrics",
+    "normalize_worker_metrics",
+]
