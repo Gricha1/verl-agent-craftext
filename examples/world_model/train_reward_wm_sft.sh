@@ -18,6 +18,9 @@ set -e
 # Return-conditioned planning (DT-style): (s_t, R̂=+4) -> 6 action tokens from dataset trajectory:
 #   PLANNING_WM=true REWARD_HORIZON=6 bash examples/world_model/train_reward_wm_sft.sh
 #
+# Max-return planner with advantage loss (Ĝ vs G_data baseline, w(A)=σ(A/T)):
+#   PLANNING_ADVANTAGE_WM=true REWARD_HORIZON=6 bash examples/world_model/train_reward_wm_sft.sh
+#
 # Reward + inverse + planning (recommended for H=6):
 #   CUDA_VISIBLE_DEVICES=1 INVERSE_ACTION_WM=true PLANNING_WM=true REWARD_HORIZON=6 \
 #     bash examples/world_model/train_reward_wm_sft.sh
@@ -74,6 +77,9 @@ INVERSE_VAL_TABLE_N="${INVERSE_VAL_TABLE_N:-40}"
 PLANNING_WM="${PLANNING_WM:-false}"
 PLANNING_LOSS_COEF="${PLANNING_LOSS_COEF:-1.0}"
 PLANNING_VAL_TABLE_N="${PLANNING_VAL_TABLE_N:-40}"
+# Advantage-loss planner: sample plan, score via reward WM, baseline G_data from dataset.
+PLANNING_ADVANTAGE_WM="${PLANNING_ADVANTAGE_WM:-false}"
+PLANNING_ADV_SIGMOID_T="${PLANNING_ADV_SIGMOID_T:-1.0}"
 # DataLoader workers: 0 avoids JAX+fork deadlock after caged_craftext import.
 DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-0}"
 
@@ -109,20 +115,37 @@ else
   INVERSE_HYDRA_ARGS=(+trainer.inverse_action_wm.enable=false)
 fi
 
-if [ "$PLANNING_WM" = "true" ] || [ "$PLANNING_WM" = "1" ]; then
-  echo "[INFO] PLANNING_WM=true  loss_coef=$PLANNING_LOSS_COEF  horizon=$REWARD_HORIZON"
+if [ "$PLANNING_ADVANTAGE_WM" = "true" ] || [ "$PLANNING_ADVANTAGE_WM" = "1" ]; then
+  echo "[INFO] PLANNING_ADVANTAGE_WM=true  loss_coef=$PLANNING_LOSS_COEF  sigmoid_T=$PLANNING_ADV_SIGMOID_T  horizon=$REWARD_HORIZON"
   PLANNING_HYDRA_ARGS=(
-    +trainer.planning_wm.enable=true
+    +trainer.planning_wm.enable=false
+    +trainer.planning_wm.advantage_enable=true
+    +trainer.planning_wm.advantage_sigmoid_T="$PLANNING_ADV_SIGMOID_T"
     +trainer.planning_wm.loss_coef="$PLANNING_LOSS_COEF"
     +trainer.planning_wm.val_enable="$LOG_VAL_TABLES"
     +trainer.planning_wm.val_table_n="$PLANNING_VAL_TABLE_N"
     +data.planning_wm_enable=true
+    +data.planning_advantage_wm_enable=true
+    +data.planning_wm_horizon="$REWARD_HORIZON"
+  )
+elif [ "$PLANNING_WM" = "true" ] || [ "$PLANNING_WM" = "1" ]; then
+  echo "[INFO] PLANNING_WM=true  loss_coef=$PLANNING_LOSS_COEF  horizon=$REWARD_HORIZON"
+  PLANNING_HYDRA_ARGS=(
+    +trainer.planning_wm.enable=true
+    +trainer.planning_wm.advantage_enable=false
+    +trainer.planning_wm.loss_coef="$PLANNING_LOSS_COEF"
+    +trainer.planning_wm.val_enable="$LOG_VAL_TABLES"
+    +trainer.planning_wm.val_table_n="$PLANNING_VAL_TABLE_N"
+    +data.planning_wm_enable=true
+    +data.planning_advantage_wm_enable=false
     +data.planning_wm_horizon="$REWARD_HORIZON"
   )
 else
   PLANNING_HYDRA_ARGS=(
     +trainer.planning_wm.enable=false
+    +trainer.planning_wm.advantage_enable=false
     +data.planning_wm_enable=false
+    +data.planning_advantage_wm_enable=false
   )
 fi
 

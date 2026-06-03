@@ -39,6 +39,46 @@ def describe_planning_prompt_schema(*, horizon: int) -> str:
     )
 
 
+def get_max_return_planning_prompt_template(*, horizon: int) -> str:
+    """Ask for a plan that maximizes cumulative reward (advantage-loss planner)."""
+    h = max(1, int(horizon))
+    return f"""You are a planning world model. Given the task and current grid state, predict a sequence of {h} action tokens that **maximizes the total cumulative reward** over the next {h} steps.
+
+Action tokens: {{action_legend}}
+
+Per-step rewards are each in -1, 0, 1, or 2; total return is their sum over {h} steps.
+
+**TASK:** {{task}}
+
+State:
+{{state}}
+
+Reply with exactly {h} action tokens from the action list above, with no spaces between them (best plan for maximum total reward):"""
+
+
+def format_max_return_planning_prompt(
+    state: str,
+    *,
+    task: str = "",
+    horizon: int = 1,
+) -> str:
+    h = max(1, int(horizon))
+    return get_max_return_planning_prompt_template(horizon=h).format(
+        action_legend=action_token_legend(),
+        task=(task or "").strip() or "Unknown task",
+        state=state,
+    )
+
+
+def describe_max_return_planning_schema(*, horizon: int) -> str:
+    h = max(1, int(horizon))
+    return (
+        f"Template: max-return planning (advantage loss), H={h}.\n"
+        f"Fields: TASK, State (s_t), Action token legend.\n"
+        f"Goal: output {h} action tokens maximizing sum of step rewards (not a fixed R̂ target)."
+    )
+
+
 def format_planning_prompt(
     state: str,
     *,

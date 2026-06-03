@@ -127,10 +127,21 @@ class FSDPSFTTrainer:
         )
         self._inverse_loss_coef = float(getattr(inv_cfg, "loss_coef", 1.0) or 1.0) if inv_cfg is not None else 1.0
         plan_cfg = getattr(self.config.trainer, "planning_wm", None)
-        self._planning_wm_enabled = (
-            plan_cfg is not None and self._config_bool(getattr(plan_cfg, "enable", False))
+        self._planning_advantage_enabled = (
+            plan_cfg is not None and self._config_bool(getattr(plan_cfg, "advantage_enable", False))
+        )
+        self._planning_ce_enabled = (
+            plan_cfg is not None
+            and self._config_bool(getattr(plan_cfg, "enable", False))
+            and not self._planning_advantage_enabled
         )
         self._planning_loss_coef = float(getattr(plan_cfg, "loss_coef", 1.0) or 1.0) if plan_cfg is not None else 1.0
+        self._planning_adv_sigmoid_T = float(
+            getattr(plan_cfg, "advantage_sigmoid_T", 1.0) or 1.0
+        ) if plan_cfg is not None else 1.0
+        self._planning_any_enabled = self._planning_ce_enabled or self._planning_advantage_enabled
+        self._action_token_ids_tensor = None
+        self._id_to_action_tok: dict[int, str] = {}
         if self.config.data.chat_template is not None:
             raise ValueError("Apply Chat template from config is not supported yet.")
 
@@ -158,16 +169,22 @@ class FSDPSFTTrainer:
                 f"loss_coef={self._inverse_loss_coef}",
                 flush=True,
             )
-        if self._planning_wm_enabled and not getattr(train_dataset, "has_planning_columns", False):
+        if self._planning_any_enabled and not getattr(train_dataset, "has_planning_columns", False):
             raise ValueError(
-                "trainer.planning_wm.enable=true but dataset lacks planning columns "
+                "Planning WM enabled but dataset lacks planning columns "
                 "(horizon, state, future_rewards, future_actions). Recollect with matching "
-                f"REWARD_HORIZON={self._reward_wm_max_horizon} and enable planning in data config."
+                f"REWARD_HORIZON={self._reward_wm_max_horizon}."
             )
-        if self._planning_wm_enabled and self.device_mesh.get_rank() == 0:
+        if self._planning_ce_enabled and self.device_mesh.get_rank() == 0:
             print(
-                f"Return-conditioned planning WM enabled (DT-style, H={self._reward_wm_max_horizon}): "
+                f"Planning WM SFT (DT CE): H={self._reward_wm_max_horizon} "
                 f"loss_coef={self._planning_loss_coef}",
+                flush=True,
+            )
+        if self._planning_advantage_enabled and self.device_mesh.get_rank() == 0:
+            print(
+                f"Planning WM advantage loss: H={self._reward_wm_max_horizon} "
+                f"loss_coef={self._planning_loss_coef} sigmoid_T={self._planning_adv_sigmoid_T}",
                 flush=True,
             )
         # build model
@@ -177,6 +194,8 @@ class FSDPSFTTrainer:
         if self.device_mesh.get_rank() == 0:
             print(self.config)
         self.device_name = get_device_name()
+        if self._planning_advantage_enabled:
+            self._init_action_token_ids()
 
     @staticmethod
     def _config_bool(value) -> bool:
@@ -306,6 +325,7 @@ class FSDPSFTTrainer:
                 batch_sampler=self.train_batch_sampler,
                 num_workers=dl_workers,
                 pin_memory=True,
+                collate_fn=self._sft_collate_fn if self._planning_advantage_enabled else None,
             )
         else:
             self.train_batch_sampler = None
@@ -319,6 +339,7 @@ class FSDPSFTTrainer:
                 num_workers=dl_workers,
                 pin_memory=True,
                 drop_last=True,
+                collate_fn=self._sft_collate_fn if self._planning_advantage_enabled else None,
             )
 
         self.val_sampler = DistributedSampler(self.val_dataset, shuffle=False, num_replicas=world_size, rank=rank, drop_last=True)
@@ -329,7 +350,209 @@ class FSDPSFTTrainer:
             num_workers=dl_workers,
             pin_memory=True,
             drop_last=True,
+            collate_fn=self._sft_collate_fn if self._planning_advantage_enabled else None,
         )
+
+    @staticmethod
+    def _sft_collate_fn(batch):
+        from torch.utils.data.default_collate import default_collate
+
+        text_keys = ("planning_state_text", "planning_task_text")
+        tensor_batch = [{k: v for k, v in sample.items() if k not in text_keys} for sample in batch]
+        collated = default_collate(tensor_batch)
+        for key in text_keys:
+            collated[key] = [sample.get(key, "") for sample in batch]
+        return collated
+
+    def _prepare_batch(self, data):
+        sidecar: dict = {}
+        if isinstance(data, dict):
+            for key in ("planning_state_text", "planning_task_text"):
+                if key in data:
+                    sidecar[key] = data.pop(key)
+        return self._to_tensor_dict(data), sidecar
+
+    def _init_action_token_ids(self):
+        from agent_system.environments.env_package.caged_craftext.action_tokens import action_token_strings
+
+        ids = []
+        id_map: dict[int, str] = {}
+        for tok in action_token_strings():
+            enc = self.tokenizer.encode(tok, add_special_tokens=False)
+            if len(enc) == 1:
+                tid = int(enc[0])
+                ids.append(tid)
+                id_map[tid] = tok
+        self._action_token_ids_tensor = torch.tensor(ids, dtype=torch.long, device=self.device_name)
+        self._id_to_action_tok = id_map
+
+    def _init_action_token_ids_lazy(self):
+        if self._action_token_ids_tensor is None:
+            self._init_action_token_ids()
+
+    def _sample_plan_with_logprob(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        position_ids: torch.Tensor,
+        num_actions: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Autoregressively sample H action tokens; return token ids (B,H) and log p(plan)."""
+        from verl.utils.model import compute_position_id_with_mask
+
+        self._init_action_token_ids_lazy()
+        assert self._action_token_ids_tensor is not None
+        action_ids = self._action_token_ids_tensor
+        bsz = input_ids.shape[0]
+        device = input_ids.device
+        logp_sum = torch.zeros(bsz, device=device, dtype=torch.float32)
+        chosen = []
+
+        ids = input_ids.clone()
+        attn = attention_mask.clone()
+        pos = position_ids.clone()
+
+        for _ in range(max(1, int(num_actions))):
+            out = self.fsdp_model(input_ids=ids, attention_mask=attn, position_ids=pos, use_cache=False)
+            logits = out.logits
+            last_idx = attn.sum(dim=1).long() - 1
+            step_logits = logits[torch.arange(bsz, device=device), last_idx, :]
+            masked = torch.full_like(step_logits, float("-inf"))
+            masked[:, action_ids] = step_logits[:, action_ids]
+            log_probs = F.log_softmax(masked, dim=-1)
+            probs = log_probs.exp()
+            token = torch.multinomial(probs, num_samples=1).squeeze(-1)
+            dist = torch.distributions.Categorical(probs=probs)
+            logp_sum = logp_sum + dist.log_prob(token)
+            chosen.append(token)
+
+            write_pos = attn.sum(dim=1).long()
+            rows = torch.arange(bsz, device=device)
+            ids[rows, write_pos] = token
+            attn[rows, write_pos] = 1
+            pos = compute_position_id_with_mask(attn)
+
+        token_ids = torch.stack(chosen, dim=1) if chosen else torch.zeros(bsz, 0, device=device, dtype=torch.long)
+        return token_ids, logp_sum, ids
+
+    @torch.no_grad()
+    def _predict_return_sum_from_plan(
+        self,
+        states: list[str],
+        tasks: list[str],
+        action_token_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        """Reward WM greedy decode (no grad): sum of H predicted step rewards."""
+        from agent_system.environments.env_package.caged_craftext.reward_tokens import (
+            parse_reward_token_sequence,
+            sum_quantized_rewards,
+        )
+        from agent_system.environments.prompts.world_model_reward import format_reward_prompt
+
+        was_training = self.fsdp_model.training
+        self.fsdp_model.eval()
+        try:
+            h = int(self._reward_wm_max_horizon)
+            sums = []
+            for i in range(action_token_ids.shape[0]):
+                acts = [
+                    self._id_to_action_tok.get(int(tid), "")
+                    for tid in action_token_ids[i].tolist()
+                ]
+                acts = [a for a in acts if a]
+                if len(acts) < h:
+                    sums.append(0.0)
+                    continue
+                prompt = format_reward_prompt(
+                    state=str(states[i] or ""),
+                    action=acts[0],
+                    task=str(tasks[i] or ""),
+                    horizon=h,
+                    actions=acts[:h],
+                )
+                pred = self._greedy_decode_reward_response(prompt, max_reward_tokens=h)
+                vals = parse_reward_token_sequence(pred)
+                if len(vals) >= h:
+                    sums.append(float(sum_quantized_rewards(vals[:h])))
+                else:
+                    sums.append(float(sum(vals)) if vals else 0.0)
+            return torch.tensor(sums, dtype=torch.float32, device=action_token_ids.device)
+        finally:
+            if was_training:
+                self.fsdp_model.train()
+
+    def _accumulate_planning_advantage_grads(
+        self,
+        batch: TensorDict,
+        sidecar: dict,
+        *,
+        loss_coef: float,
+    ) -> dict | None:
+        if "planning_adv_valid" not in batch.keys():
+            return None
+        valid = batch["planning_adv_valid"].to(self.device_name).bool()
+        if not valid.any():
+            return None
+
+        states = sidecar.get("planning_state_text", [""] * int(valid.shape[0]))
+        tasks = sidecar.get("planning_task_text", [""] * int(valid.shape[0]))
+        g_data = batch["planning_g_data"].to(self.device_name).float()
+
+        micro_bs = int(self.config.data.micro_batch_size_per_gpu)
+        n_valid = 0
+        loss_sum = 0.0
+        adv_sum = 0.0
+        g_hat_sum = 0.0
+        g_data_sum = 0.0
+        weight_sum = 0.0
+        pos_adv = 0
+        neg_adv = 0
+
+        indices = valid.nonzero(as_tuple=False).view(-1).tolist()
+        for start in range(0, len(indices), micro_bs):
+            chunk = indices[start : start + micro_bs]
+            if not chunk:
+                continue
+            idx_t = torch.tensor(chunk, device=self.device_name, dtype=torch.long)
+            input_ids = batch["planning_adv_input_ids"].index_select(0, idx_t)
+            attention_mask = batch["planning_adv_attention_mask"].index_select(0, idx_t)
+            position_ids = batch["planning_adv_position_ids"].index_select(0, idx_t)
+
+            token_ids, logp_plan, _ = self._sample_plan_with_logprob(
+                input_ids, attention_mask, position_ids, int(self._reward_wm_max_horizon)
+            )
+            sub_states = [states[i] for i in chunk]
+            sub_tasks = [tasks[i] for i in chunk]
+            with torch.no_grad():
+                g_hat = self._predict_return_sum_from_plan(sub_states, sub_tasks, token_ids)
+            g_d = g_data.index_select(0, idx_t)
+            advantage = g_hat - g_d
+            weight = torch.sigmoid(advantage / float(self._planning_adv_sigmoid_T))
+            loss = -(weight * logp_plan).mean() * float(loss_coef)
+            loss.backward()
+
+            n = len(chunk)
+            n_valid += n
+            loss_sum += float(loss.detach().item()) * n
+            adv_sum += float(advantage.sum().item())
+            g_hat_sum += float(g_hat.sum().item())
+            g_data_sum += float(g_d.sum().item())
+            weight_sum += float(weight.sum().item())
+            pos_adv += int((advantage > 0).sum().item())
+            neg_adv += int((advantage <= 0).sum().item())
+
+        if n_valid <= 0:
+            return None
+        return {
+            "loss": loss_sum / n_valid,
+            "n": n_valid,
+            "advantage_mean": adv_sum / n_valid,
+            "g_hat_mean": g_hat_sum / n_valid,
+            "g_data_mean": g_data_sum / n_valid,
+            "weight_mean": weight_sum / n_valid,
+            "frac_positive_adv": pos_adv / n_valid,
+            "frac_negative_adv": neg_adv / n_valid,
+        }
 
     def _extract_inverse_batch(self, batch: TensorDict) -> TensorDict | None:
         """Inverse-action tensors from the same reward batch (zero loss_mask when invalid)."""
@@ -872,19 +1095,20 @@ class FSDPSFTTrainer:
                 pass
         return metrics
 
-    def training_step(self, batch: TensorDict):
+    def training_step(self, batch: TensorDict, sidecar: dict | None = None):
         self.fsdp_model.train()
 
         log_gpu_memory_usage("Before optimizer zero_grad", logger=logger)
         self.optimizer.zero_grad()
         log_gpu_memory_usage("After optimizer zero_grad", logger=logger)
 
+        sidecar = sidecar or {}
         use_horizon_acc = self._reward_wm_max_horizon > 1
         inverse_batch = None
         if self._inverse_action_wm_enabled:
             inverse_batch = self._extract_inverse_batch(batch)
         planning_batch = None
-        if self._planning_wm_enabled:
+        if self._planning_ce_enabled:
             planning_batch = self._extract_planning_batch(batch)
         rm_accum = self._accumulate_batch_grads(
             batch, use_horizon_acc=use_horizon_acc, loss_coef=1.0
@@ -902,6 +1126,11 @@ class FSDPSFTTrainer:
                 planning_batch,
                 use_horizon_acc=False,
                 loss_coef=self._planning_loss_coef,
+            )
+        plan_adv_accum = None
+        if self._planning_advantage_enabled:
+            plan_adv_accum = self._accumulate_planning_advantage_grads(
+                batch, sidecar, loss_coef=self._planning_loss_coef
             )
 
         if self.config.model.strategy == 'fsdp':
@@ -937,7 +1166,7 @@ class FSDPSFTTrainer:
                 )
             else:
                 metrics["train/inverse_action/n_supervised_tokens"] = 0.0
-        if self._planning_wm_enabled:
+        if self._planning_ce_enabled:
             if plan_accum is not None:
                 metrics.update(
                     self._metrics_from_accum(
@@ -946,6 +1175,18 @@ class FSDPSFTTrainer:
                 )
             else:
                 metrics["train/planning/n_supervised_tokens"] = 0.0
+        if self._planning_advantage_enabled:
+            if plan_adv_accum is not None:
+                metrics["train/planning_adv/loss"] = plan_adv_accum["loss"]
+                metrics["train/planning_adv/n"] = float(plan_adv_accum["n"])
+                metrics["train/planning_adv/advantage_mean"] = plan_adv_accum["advantage_mean"]
+                metrics["train/planning_adv/g_hat_mean"] = plan_adv_accum["g_hat_mean"]
+                metrics["train/planning_adv/g_data_mean"] = plan_adv_accum["g_data_mean"]
+                metrics["train/planning_adv/weight_mean"] = plan_adv_accum["weight_mean"]
+                metrics["train/planning_adv/frac_positive_adv"] = plan_adv_accum["frac_positive_adv"]
+                metrics["train/planning_adv/frac_negative_adv"] = plan_adv_accum["frac_negative_adv"]
+            else:
+                metrics["train/planning_adv/n"] = 0.0
         return metrics
 
     def _greedy_decode_reward_response(self, prompt_text: str, max_reward_tokens: int) -> str:
@@ -1190,7 +1431,7 @@ class FSDPSFTTrainer:
                     f"[val] metrics batch {batch_idx}" + (f"/{max_batches}" if max_batches else ""),
                     flush=True,
                 )
-            val_data = self._to_tensor_dict(val_data)
+            val_data, _ = self._prepare_batch(val_data)
             if return_entropy:
                 out = self.validation_metrics(val_data, return_entropy=True)
                 vloss, vcorr, vtot = out[0], out[1], out[2]
@@ -1222,8 +1463,10 @@ class FSDPSFTTrainer:
             metrics.update(self._reward_wm_horizon_metrics("val", val_h_corr, val_h_tot))
         if self._inverse_action_wm_enabled:
             metrics.update(self._evaluate_inverse_validation(return_entropy=return_entropy))
-        if self._planning_wm_enabled:
+        if self._planning_ce_enabled:
             metrics.update(self._evaluate_planning_validation(return_entropy=return_entropy))
+        if self._planning_advantage_enabled:
+            metrics.update(self._evaluate_planning_advantage_validation())
         return metrics
 
     def _evaluate_planning_validation(self, return_entropy: bool = True) -> dict:
@@ -1236,7 +1479,7 @@ class FSDPSFTTrainer:
         for batch_idx, val_data in enumerate(self.val_dataloader):
             if max_batches > 0 and batch_idx >= max_batches:
                 break
-            val_data = self._to_tensor_dict(val_data)
+            val_data, _ = self._prepare_batch(val_data)
             plan_batch = self._extract_planning_batch(val_data)
             if plan_batch is None:
                 continue
@@ -1266,6 +1509,93 @@ class FSDPSFTTrainer:
             metrics["val/planning/entropy_vocab"] = float(plan_entropy_sum / plan_entropy_count)
         return metrics
 
+    def _evaluate_planning_advantage_validation(self) -> dict:
+        """Val stats for max-return planner: Ĝ vs G_data baseline (greedy decode, no grad)."""
+        max_batches = self._val_max_batches()
+        h_plan = int(self._reward_wm_max_horizon)
+        n_rows = 0
+        adv_sum = 0.0
+        g_hat_sum = 0.0
+        g_data_sum = 0.0
+        pos_adv = 0
+        neg_adv = 0
+
+        from agent_system.environments.prompts.world_model_planning import format_max_return_planning_prompt
+
+        self.fsdp_model.eval()
+        self._init_action_token_ids_lazy()
+        with torch.no_grad():
+            for batch_idx, val_data in enumerate(self.val_dataloader):
+                if max_batches > 0 and batch_idx >= max_batches:
+                    break
+                val_data, sidecar = self._prepare_batch(val_data)
+                if "planning_adv_valid" not in val_data.keys():
+                    continue
+                valid = val_data["planning_adv_valid"].to(self.device_name).bool()
+                if not valid.any():
+                    continue
+                states = sidecar.get("planning_state_text", [""] * int(valid.shape[0]))
+                tasks = sidecar.get("planning_task_text", [""] * int(valid.shape[0]))
+                g_data = val_data["planning_g_data"].to(self.device_name).float()
+                indices = valid.nonzero(as_tuple=False).view(-1).tolist()
+                for i in indices:
+                    prompt = format_max_return_planning_prompt(
+                        str(states[i] or ""),
+                        task=str(tasks[i] or ""),
+                        horizon=h_plan,
+                    )
+                    pred = self._greedy_decode_planning_action_sequence(prompt, num_actions=h_plan)
+                    token_ids = self._action_seq_str_to_ids(pred, device=self.device_name)
+                    if token_ids is None:
+                        continue
+                    g_hat = self._predict_return_sum_from_plan(
+                        [str(states[i] or "")],
+                        [str(tasks[i] or "")],
+                        token_ids,
+                    )
+                    g_d = float(g_data[i].item())
+                    g_h = float(g_hat[0].item())
+                    adv = g_h - g_d
+                    n_rows += 1
+                    adv_sum += adv
+                    g_hat_sum += g_h
+                    g_data_sum += g_d
+                    if adv > 0:
+                        pos_adv += 1
+                    else:
+                        neg_adv += 1
+
+        if n_rows <= 0:
+            return {"val/planning_adv/n": 0.0}
+        return {
+            "val/planning_adv/n": float(n_rows),
+            "val/planning_adv/advantage_mean": adv_sum / n_rows,
+            "val/planning_adv/g_hat_mean": g_hat_sum / n_rows,
+            "val/planning_adv/g_data_mean": g_data_sum / n_rows,
+            "val/planning_adv/frac_positive_adv": pos_adv / n_rows,
+            "val/planning_adv/frac_negative_adv": neg_adv / n_rows,
+        }
+
+    def _action_seq_str_to_ids(self, seq: str, device: str) -> torch.Tensor | None:
+        """Parse concatenated action token string -> (1, H) id tensor."""
+        from agent_system.environments.env_package.caged_craftext.action_tokens import (
+            parse_action_token_sequence,
+        )
+
+        self._init_action_token_ids_lazy()
+        toks = parse_action_token_sequence(str(seq or ""))
+        h = int(self._reward_wm_max_horizon)
+        if len(toks) < h:
+            return None
+        tok_to_id = {v: k for k, v in self._id_to_action_tok.items()}
+        ids = []
+        for t in toks[:h]:
+            tid = tok_to_id.get(t)
+            if tid is None:
+                return None
+            ids.append(int(tid))
+        return torch.tensor([ids], dtype=torch.long, device=device)
+
     def _evaluate_inverse_validation(self, return_entropy: bool = True) -> dict:
         """Val loss/accuracy on inverse-action tensors from the same val batches."""
         max_batches = self._val_max_batches()
@@ -1277,7 +1607,7 @@ class FSDPSFTTrainer:
         for batch_idx, val_data in enumerate(self.val_dataloader):
             if max_batches > 0 and batch_idx >= max_batches:
                 break
-            val_data = self._to_tensor_dict(val_data)
+            val_data, _ = self._prepare_batch(val_data)
             inv_batch = self._extract_inverse_batch(val_data)
             if inv_batch is None:
                 continue
@@ -1497,6 +1827,149 @@ class FSDPSFTTrainer:
             "val/planning/greedy_n": float(n),
         }
 
+    def _sample_planning_advantage_val_rows(self, n_rows: int, seed: int = 0):
+        """Sample full-horizon rows for max-return planning val tables."""
+        try:
+            import pandas as pd
+        except Exception:
+            return None
+
+        val_path = self.config.data.val_files
+        if isinstance(val_path, (list, tuple)):
+            val_path = val_path[0]
+        try:
+            df = pd.read_parquet(val_path)
+        except Exception:
+            return None
+
+        required = {"state", "future_rewards", "future_actions", "horizon"}
+        if not required.issubset(set(df.columns)):
+            return None
+
+        h_plan = int(self._reward_wm_max_horizon)
+        from agent_system.environments.prompts.world_model_planning import (
+            cumulative_return_from_rewards,
+            format_max_return_planning_prompt,
+            format_planning_target,
+            parse_future_json_list,
+            planning_row_valid,
+        )
+
+        valid_idx = []
+        for idx, row in df.iterrows():
+            horizon = int(row.get("horizon", 0))
+            future_acts = parse_future_json_list(row.get("future_actions"))
+            future_rews = parse_future_json_list(row.get("future_rewards"))
+            if planning_row_valid(
+                horizon=horizon,
+                planning_horizon=h_plan,
+                future_actions=future_acts,
+                future_rewards=future_rews,
+            ):
+                valid_idx.append(idx)
+        if not valid_idx:
+            return None
+
+        valid_df = df.loc[valid_idx].copy()
+        rng = torch.Generator().manual_seed(int(seed))
+        pick = torch.randperm(len(valid_df), generator=rng)[: min(int(n_rows), len(valid_df))].tolist()
+        sub = valid_df.iloc[pick].copy()
+
+        prompts = []
+        gt_seqs = []
+        g_data_list = []
+        for _, row in sub.iterrows():
+            future_acts = parse_future_json_list(row.get("future_actions"))
+            future_rews = parse_future_json_list(row.get("future_rewards"))
+            g_data = float(cumulative_return_from_rewards(future_rews))
+            task = str(row.get("instruction", "") or "").strip()
+            prompts.append(
+                format_max_return_planning_prompt(
+                    str(row["state"]),
+                    task=task,
+                    horizon=h_plan,
+                )
+            )
+            gt_seqs.append(format_planning_target(future_acts))
+            g_data_list.append(g_data)
+        return sub, prompts, gt_seqs, g_data_list
+
+    def _compute_planning_advantage_greedy_val_accuracy(self, n_rows: int | None = None, seed: int = 0) -> dict:
+        """Greedy max-return plans: Ĝ vs G_data and token match vs dataset trajectory."""
+        plan_cfg = getattr(self.config.trainer, "planning_wm", None)
+        h_plan = int(self._reward_wm_max_horizon)
+        if n_rows is None:
+            n_rows = int(getattr(plan_cfg, "val_table_n", 40) or 40) if plan_cfg is not None else 40
+        if seed == 0 and plan_cfg is not None:
+            seed = int(getattr(plan_cfg, "val_seed", getattr(plan_cfg, "seed", 0)) or 0)
+
+        sampled = self._sample_planning_advantage_val_rows(n_rows=n_rows, seed=seed)
+        if sampled is None:
+            return {}
+        sub, prompts, gt_seqs, g_data_list = sampled
+
+        from agent_system.environments.env_package.caged_craftext.action_tokens import (
+            parse_action_token_sequence,
+        )
+
+        self.fsdp_model.eval()
+        self._init_action_token_ids_lazy()
+        adv_sum = 0.0
+        g_hat_sum = 0.0
+        g_data_sum = 0.0
+        pos_adv = 0
+        correct_tokens = 0
+        total_tokens = 0
+        seq_matches = 0
+
+        with torch.no_grad():
+            for i, (prompt, gt, g_d) in enumerate(zip(prompts, gt_seqs, g_data_list)):
+                pred = self._greedy_decode_planning_action_sequence(prompt, num_actions=h_plan)
+                row = sub.iloc[i]
+                task = str(row.get("instruction", "") or "").strip()
+                token_ids = self._action_seq_str_to_ids(pred, device=self.device_name)
+                g_h = 0.0
+                if token_ids is not None:
+                    g_hat = self._predict_return_sum_from_plan(
+                        [str(row["state"])],
+                        [task],
+                        token_ids,
+                    )
+                    g_h = float(g_hat[0].item())
+                adv = g_h - float(g_d)
+                adv_sum += adv
+                g_hat_sum += g_h
+                g_data_sum += float(g_d)
+                if adv > 0:
+                    pos_adv += 1
+
+                gt_toks = parse_action_token_sequence(gt)
+                pred_toks = parse_action_token_sequence(pred)
+                for j in range(h_plan):
+                    total_tokens += 1
+                    if j < len(gt_toks) and j < len(pred_toks) and gt_toks[j] == pred_toks[j]:
+                        correct_tokens += 1
+                if (
+                    len(gt_toks) >= h_plan
+                    and len(pred_toks) >= h_plan
+                    and gt_toks[:h_plan] == pred_toks[:h_plan]
+                ):
+                    seq_matches += 1
+
+        n = len(gt_seqs)
+        if n == 0:
+            return {}
+        tok_acc = float(correct_tokens / total_tokens) if total_tokens > 0 else 0.0
+        return {
+            "val/planning_adv/greedy_token_accuracy": tok_acc,
+            "val/planning_adv/greedy_sequence_accuracy": float(seq_matches / n),
+            "val/planning_adv/greedy_n": float(n),
+            "val/planning_adv/advantage_mean": adv_sum / n,
+            "val/planning_adv/g_hat_mean": g_hat_sum / n,
+            "val/planning_adv/g_data_mean": g_data_sum / n,
+            "val/planning_adv/frac_positive_adv": pos_adv / n,
+        }
+
     def _run_and_log_validation(self, tracking: Tracking, step: int, tag: str = "") -> None:
         """Run full val, log metrics/tables to Comet, print to console."""
         label = f" ({tag})" if tag else ""
@@ -1507,8 +1980,10 @@ class FSDPSFTTrainer:
         metric = self._evaluate_validation(return_entropy=True)
         if self.device_mesh.get_rank() == 0 and self._inverse_action_wm_enabled:
             metric.update(self._compute_inverse_greedy_val_accuracy())
-        if self.device_mesh.get_rank() == 0 and self._planning_wm_enabled:
+        if self.device_mesh.get_rank() == 0 and self._planning_ce_enabled:
             metric.update(self._compute_planning_greedy_val_accuracy())
+        if self.device_mesh.get_rank() == 0 and self._planning_advantage_enabled:
+            metric.update(self._compute_planning_advantage_greedy_val_accuracy())
         if self.device_mesh.get_rank() == 0:
             tracking.log(data=metric, step=step)
             inv_parts = [
@@ -1519,7 +1994,7 @@ class FSDPSFTTrainer:
             plan_parts = [
                 f"{k}={v:.4g}"
                 for k, v in sorted(metric.items())
-                if k.startswith("val/planning/")
+                if k.startswith("val/planning/") or k.startswith("val/planning_adv/")
             ]
             print(
                 f"[val] step={step}{label} "
@@ -1534,8 +2009,10 @@ class FSDPSFTTrainer:
             self._log_reward_wm_validation_examples(tracking=tracking, step=step)
             if self._inverse_action_wm_enabled:
                 self._log_inverse_action_validation_examples(tracking=tracking, step=step)
-            if self._planning_wm_enabled:
+            if self._planning_ce_enabled:
                 self._log_planning_validation_examples(tracking=tracking, step=step)
+            if self._planning_advantage_enabled:
+                self._log_planning_advantage_validation_examples(tracking=tracking, step=step)
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
 
@@ -1968,7 +2445,7 @@ class FSDPSFTTrainer:
     def _log_planning_validation_examples(self, tracking: Tracking, step: int) -> None:
         """Planning WM val table: prompt, target return, gt/pred action trajectories."""
         plan_cfg = getattr(self.config.trainer, "planning_wm", None)
-        enable = self._planning_wm_enabled and (
+        enable = self._planning_ce_enabled and (
             bool(getattr(plan_cfg, "val_enable", True)) if plan_cfg is not None else False
         )
         if not enable:
@@ -2088,6 +2565,141 @@ class FSDPSFTTrainer:
         except Exception as e:
             print(f"[planning_val] failed to save/log example panel: {e}", flush=True)
 
+    def _log_planning_advantage_validation_examples(self, tracking: Tracking, step: int) -> None:
+        """Max-return planner val table: G_data baseline, Ĝ from reward WM, greedy plan."""
+        plan_cfg = getattr(self.config.trainer, "planning_wm", None)
+        enable = self._planning_advantage_enabled and (
+            bool(getattr(plan_cfg, "val_enable", True)) if plan_cfg is not None else False
+        )
+        if not enable:
+            return
+
+        n_rows = int(getattr(plan_cfg, "val_table_n", 40) or 40)
+        seed = int(getattr(plan_cfg, "val_seed", getattr(plan_cfg, "seed", 0)) or 0)
+        h_plan = int(self._reward_wm_max_horizon)
+        sampled = self._sample_planning_advantage_val_rows(n_rows=n_rows, seed=seed)
+        if sampled is None:
+            print("[planning_adv_val] no full-horizon rows in val parquet.", flush=True)
+            return
+        sub, prompts, gt_seqs, g_data_list = sampled
+
+        try:
+            from agent_system.environments.env_package.caged_craftext.action_tokens import (
+                parse_action_token_sequence,
+                parse_single_token_action,
+            )
+            from agent_system.environments.env_package.caged_craftext.projection import ACTION_TO_TEXT
+        except Exception as e:
+            print(f"[planning_adv_val] import error: {e}", flush=True)
+            return
+
+        def _fmt_seq(seq: str) -> str:
+            toks = parse_action_token_sequence(seq)
+            parts = []
+            for t in toks:
+                aid = parse_single_token_action(t)
+                name = ACTION_TO_TEXT[aid] if 0 <= int(aid) < len(ACTION_TO_TEXT) else "?"
+                parts.append(f"{name}({t})")
+            return " → ".join(parts) if parts else seq
+
+        self.fsdp_model.eval()
+        self._init_action_token_ids_lazy()
+        pred_seqs = []
+        g_hat_list = []
+        adv_list = []
+        with torch.no_grad():
+            for i, prompt in enumerate(prompts):
+                pred = self._greedy_decode_planning_action_sequence(prompt, num_actions=h_plan)
+                pred_seqs.append(pred)
+                row = sub.iloc[i]
+                task = str(row.get("instruction", "") or "").strip()
+                token_ids = self._action_seq_str_to_ids(pred, device=self.device_name)
+                g_h = 0.0
+                if token_ids is not None:
+                    g_hat = self._predict_return_sum_from_plan(
+                        [str(row["state"])],
+                        [task],
+                        token_ids,
+                    )
+                    g_h = float(g_hat[0].item())
+                g_hat_list.append(g_h)
+                adv_list.append(g_h - float(g_data_list[i]))
+
+        def _truncate(text: str, max_len: int = 200) -> str:
+            text = str(text or "").replace("\n", " ")
+            return text if len(text) <= max_len else text[: max_len - 3] + "..."
+
+        frac_pos = float(sum(1 for a in adv_list if a > 0) / len(adv_list)) if adv_list else 0.0
+
+        def _render_table(rows, title: str, out_path: str) -> None:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            fig_h = max(2.5, 0.32 * len(rows) + 2.2)
+            fig, ax = plt.subplots(figsize=(16, fig_h), dpi=140)
+            ax.axis("off")
+            col_labels = ["G_data", "Ĝ", "A", "plan (pred)", "plan (data)", "prompt"]
+            table = ax.table(
+                cellText=rows,
+                colLabels=col_labels,
+                loc="center",
+                cellLoc="left",
+            )
+            table.auto_set_font_size(False)
+            table.set_fontsize(7)
+            table.scale(1, 1.15)
+            ax.set_title(title, fontsize=10, pad=12)
+            fig.tight_layout()
+            fig.savefig(out_path, bbox_inches="tight")
+            plt.close(fig)
+
+        table_rows = []
+        for i in range(len(sub)):
+            table_rows.append([
+                f"{g_data_list[i]:.0f}",
+                f"{g_hat_list[i]:.0f}",
+                f"{adv_list[i]:+.0f}",
+                _fmt_seq(pred_seqs[i]),
+                _fmt_seq(gt_seqs[i]),
+                _truncate(prompts[i]),
+            ])
+        title = (
+            f"Planning advantage WM (N={len(sub)}, H={h_plan}, frac(A>0)={frac_pos:.1%})\n"
+            f"max-return planner — Ĝ from reward WM vs G_data baseline"
+        )
+        p_table = os.path.join(
+            tempfile.gettempdir(), f"val_planning_adv_table{len(sub)}_step{step}.png"
+        )
+        _render_table(table_rows, title, p_table)
+        tracking.log_image(p_table, step=step, name=f"validation_planning_adv_table_{len(sub)}")
+
+        try:
+            from agent_system.environments.env_package.caged_craftext.utility import (
+                render_world_model_planning_advantage_panel,
+            )
+            from agent_system.environments.prompts.world_model_planning import (
+                describe_max_return_planning_schema,
+            )
+            from PIL import Image
+
+            pick = min(len(prompts) // 2, len(prompts) - 1)
+            panel = render_world_model_planning_advantage_panel(
+                step=int(pick),
+                prompt_schema=describe_max_return_planning_schema(horizon=h_plan),
+                world_model_input=prompts[pick],
+                dataset_plan=_fmt_seq(gt_seqs[pick]),
+                model_plan=_fmt_seq(pred_seqs[pick]) or pred_seqs[pick],
+                g_data=float(g_data_list[pick]),
+                g_hat=float(g_hat_list[pick]),
+                horizon=h_plan,
+            )
+            p_ex = os.path.join(tempfile.gettempdir(), f"val_planning_adv_example_step{step}.png")
+            Image.fromarray(panel).save(p_ex)
+            tracking.log_image(p_ex, step=step, name="validation_planning_adv_example")
+        except Exception as e:
+            print(f"[planning_adv_val] failed to save/log example panel: {e}", flush=True)
+
     def save_checkpoint(self, step):
         # save checkpoint
         path = os.path.join(self.config.trainer.default_local_dir, f"global_step_{step}")
@@ -2174,8 +2786,8 @@ class FSDPSFTTrainer:
                 disable=rank != 0
             ):
                 global_step += 1
-                data = self._to_tensor_dict(data)
-                metric = self.training_step(data)
+                batch, sidecar = self._prepare_batch(data)
+                metric = self.training_step(batch, sidecar=sidecar)
                 if rank == 0:
                     tracking.log(data=metric, step=global_step)
 

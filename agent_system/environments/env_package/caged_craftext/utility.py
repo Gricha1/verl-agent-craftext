@@ -858,6 +858,42 @@ def render_world_model_planning_panel(
     return _render_wm_validation_text_panel(sections, panel_width=panel_width, font_size=font_size)
 
 
+def render_world_model_planning_advantage_panel(
+    *,
+    step: int,
+    prompt_schema: str,
+    world_model_input: str,
+    dataset_plan: str,
+    model_plan: str,
+    g_data: float,
+    g_hat: float,
+    horizon: int = 1,
+    panel_width: int = 1200,
+    font_size: int = 10,
+) -> np.ndarray:
+    """Validation PNG: max-return planner — G_data baseline vs Ĝ from reward WM."""
+    h = max(1, int(horizon))
+    advantage = float(g_hat) - float(g_data)
+    sections = [
+        (
+            f"Validation — step {step} (max-return planner, H={h}, A={advantage:+.0f})",
+            "",
+            (0, 0, 120),
+        ),
+        ("Prompt template (schema)", prompt_schema or "", (80, 80, 80)),
+        (
+            "Planning model INPUT (task + s_t — maximize total return)",
+            world_model_input or "",
+            (0, 80, 160),
+        ),
+        (f"G_data (dataset trajectory sum)", f"{float(g_data):.0f}", (120, 80, 0)),
+        (f"Ĝ (reward WM on predicted plan)", f"{float(g_hat):.0f}", (0, 100, 140)),
+        (f"Dataset plan ({h} actions)", dataset_plan or "", (100, 0, 100)),
+        (f"Model plan ({h} actions, greedy)", model_plan or "", (0, 120, 0)),
+    ]
+    return _render_wm_validation_text_panel(sections, panel_width=panel_width, font_size=font_size)
+
+
 def render_world_model_reward_panel(
     *,
     step: int,

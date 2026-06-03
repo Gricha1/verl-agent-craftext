@@ -153,11 +153,14 @@ class SFTDataset(Dataset):
         self._planning_wm_enable = self._config_bool(
             getattr(self.data_config, "planning_wm_enable", False)
         )
+        self._planning_advantage_wm_enable = self._config_bool(
+            getattr(self.data_config, "planning_advantage_wm_enable", False)
+        )
         self._planning_wm_horizon = max(
             1, int(getattr(self.data_config, "planning_wm_horizon", 1) or 1)
         )
         self.has_planning_columns = (
-            self._planning_wm_enable
+            (self._planning_wm_enable or self._planning_advantage_wm_enable)
             and self.states is not None
             and self.future_rewards_raw is not None
             and self.future_actions_raw is not None
@@ -361,6 +364,76 @@ class SFTDataset(Dataset):
         response = format_planning_target(future_acts)
         return prompt, response, True, int(target_return)
 
+    def _planning_advantage_sample_for_index(self, item: int):
+        """Max-return planning row: G_data baseline only (no fixed-R̂ CE target)."""
+        if not self.has_planning_columns or not self._planning_advantage_wm_enable:
+            return None, None, "", "", False, 0.0
+        try:
+            from agent_system.environments.prompts.world_model_planning import (
+                cumulative_return_from_rewards,
+                format_max_return_planning_prompt,
+                parse_future_json_list,
+                planning_row_valid,
+            )
+        except Exception:
+            return None, None, "", "", False, 0.0
+
+        h_plan = int(self._planning_wm_horizon)
+        horizon = int(self.horizons[item])
+        state = str(self.states[item] or "").strip()
+        if not state:
+            return None, None, "", "", False, 0.0
+
+        future_acts = parse_future_json_list(self.future_actions_raw[item])
+        future_rews = parse_future_json_list(self.future_rewards_raw[item])
+        if not planning_row_valid(
+            horizon=horizon,
+            planning_horizon=h_plan,
+            future_actions=future_acts,
+            future_rewards=future_rews,
+        ):
+            return None, None, "", "", False, 0.0
+
+        task = ""
+        if self.instructions is not None:
+            task = str(self.instructions[item] or "").strip()
+        g_data = float(cumulative_return_from_rewards(future_rews))
+        prompt = format_max_return_planning_prompt(state, task=task, horizon=h_plan)
+        return prompt, None, state, task, True, g_data
+
+    def _build_prompt_only_tensors(self, prompt: str):
+        """Tokenize user prompt only (for policy-gradient planning)."""
+        tokenizer = self.tokenizer
+        prompt_chat = [{"role": "user", "content": prompt}]
+        prompt_chat_str = tokenizer.apply_chat_template(
+            prompt_chat, add_generation_prompt=True, tokenize=False
+        )
+        prompt_ids_output = tokenizer(prompt_chat_str, return_tensors="pt", add_special_tokens=False)
+        input_ids = prompt_ids_output["input_ids"][0]
+        attention_mask = prompt_ids_output["attention_mask"][0]
+        sequence_length = input_ids.shape[0]
+        if sequence_length < self.max_length:
+            padded_input_ids = torch.ones(
+                size=(self.max_length - sequence_length,), dtype=input_ids.dtype
+            ) * self.tokenizer.pad_token_id
+            padded_attention_mask = torch.zeros(
+                size=(self.max_length - sequence_length,), dtype=attention_mask.dtype
+            )
+            input_ids = torch.cat((input_ids, padded_input_ids))
+            attention_mask = torch.cat((attention_mask, padded_attention_mask))
+        elif sequence_length > self.max_length:
+            if self.truncation == "error":
+                raise NotImplementedError(f"{sequence_length=} is larger than {self.max_length=}")
+            input_ids = input_ids[: self.max_length]
+            attention_mask = attention_mask[: self.max_length]
+        position_ids = compute_position_id_with_mask(attention_mask)
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "position_ids": position_ids,
+            "prompt_length": torch.tensor(int(prompt_ids_output["input_ids"].shape[1]), dtype=torch.long),
+        }
+
     def __len__(self):
         return len(self.prompts)
 
@@ -394,7 +467,13 @@ class SFTDataset(Dataset):
         out["inverse_valid"] = torch.tensor(1 if inv_valid else 0, dtype=torch.long)
 
         plan_prompt, plan_response, plan_valid, plan_return = self._planning_sample_for_index(item)
-        if plan_valid and plan_prompt is not None and plan_response is not None:
+        if (
+            plan_valid
+            and plan_prompt is not None
+            and plan_response is not None
+            and self._planning_wm_enable
+            and not self._planning_advantage_wm_enable
+        ):
             plan = self._build_sft_tensors(
                 plan_prompt,
                 plan_response,
@@ -411,6 +490,32 @@ class SFTDataset(Dataset):
         out["planning_attention_mask"] = plan["attention_mask"]
         out["planning_position_ids"] = plan["position_ids"]
         out["planning_loss_mask"] = plan["loss_mask"]
-        out["planning_valid"] = torch.tensor(1 if plan_valid else 0, dtype=torch.long)
+        out["planning_valid"] = torch.tensor(
+            1 if plan_valid and self._planning_wm_enable and not self._planning_advantage_wm_enable else 0,
+            dtype=torch.long,
+        )
         out["planning_target_return"] = torch.tensor(int(plan_return), dtype=torch.long)
+
+        adv_prompt, _, adv_state, adv_task, adv_valid, g_data = self._planning_advantage_sample_for_index(item)
+        if adv_valid and adv_prompt is not None and self._planning_advantage_wm_enable:
+            adv = self._build_prompt_only_tensors(adv_prompt)
+        else:
+            adv = {
+                "input_ids": out["input_ids"].clone(),
+                "attention_mask": out["attention_mask"].clone(),
+                "position_ids": out["position_ids"].clone(),
+                "prompt_length": torch.tensor(0, dtype=torch.long),
+            }
+            adv_state = ""
+            adv_task = ""
+        out["planning_adv_input_ids"] = adv["input_ids"]
+        out["planning_adv_attention_mask"] = adv["attention_mask"]
+        out["planning_adv_position_ids"] = adv["position_ids"]
+        out["planning_adv_prompt_length"] = adv["prompt_length"]
+        out["planning_adv_valid"] = torch.tensor(
+            1 if adv_valid and self._planning_advantage_wm_enable else 0, dtype=torch.long
+        )
+        out["planning_g_data"] = torch.tensor(float(g_data), dtype=torch.float32)
+        out["planning_state_text"] = adv_state if adv_valid else ""
+        out["planning_task_text"] = adv_task if adv_valid else ""
         return out
