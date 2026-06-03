@@ -35,4 +35,5 @@ python3 scripts/collect_reward_wm_dataset_debug_square.py \
 echo "[OK] Dataset ready (REWARD_HORIZON=$REWARD_HORIZON):"
 echo "  - $OUT_DIR/train.parquet"
 echo "  - $OUT_DIR/val.parquet"
+echo "  (columns state, state_after, action_token enable INVERSE_ACTION_WM from same batch)"
 

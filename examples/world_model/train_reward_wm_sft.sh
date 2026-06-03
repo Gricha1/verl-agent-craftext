@@ -12,6 +12,9 @@ set -e
 # Usage:
 #   REWARD_HORIZON=6 bash examples/world_model/train_reward_wm_sft.sh
 #
+# Joint inverse-action WM (s_t, s_{t+1}) -> a_t from the same reward batch (needs state_after column):
+#   INVERSE_ACTION_WM=true REWARD_HORIZON=6 bash examples/world_model/train_reward_wm_sft.sh
+#
 # Common overrides:
 #   DATA_DIR=data/reward_wm_debug_square_8x8_h6 MODEL=Qwen/Qwen2.5-1.5B-Instruct bash ...
 #   EXP_NAME=rm_sft_test TOTAL_EPOCHS=1 LR=1e-5 bash examples/world_model/train_reward_wm_sft.sh
@@ -56,6 +59,10 @@ VAL_MAX_BATCHES="${VAL_MAX_BATCHES:-64}"
 
 # true = equal h1..hH per train batch; false = random shuffle (h mix varies per step).
 REWARD_WM_BALANCE_BATCHES="${REWARD_WM_BALANCE_BATCHES:-true}"
+# Joint inverse-action WM SFT: (s_t, s_{t+1}) -> a_t from same batch as reward (after reward backward).
+INVERSE_ACTION_WM="${INVERSE_ACTION_WM:-false}"
+INVERSE_ACTION_LOSS_COEF="${INVERSE_ACTION_LOSS_COEF:-1.0}"
+INVERSE_VAL_TABLE_N="${INVERSE_VAL_TABLE_N:-40}"
 # DataLoader workers: 0 avoids JAX+fork deadlock after caged_craftext import.
 DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-0}"
 
@@ -78,6 +85,18 @@ if [ ! -f "$TRAIN_PARQUET" ] || [ ! -f "$VAL_PARQUET" ]; then
 fi
 
 echo "[INFO] REWARD_HORIZON=$REWARD_HORIZON  DATA_DIR=$DATA_DIR"
+
+if [ "$INVERSE_ACTION_WM" = "true" ] || [ "$INVERSE_ACTION_WM" = "1" ]; then
+  echo "[INFO] INVERSE_ACTION_WM=true  loss_coef=$INVERSE_ACTION_LOSS_COEF (same batch as reward)"
+  INVERSE_HYDRA_ARGS=(
+    +trainer.inverse_action_wm.enable=true
+    +trainer.inverse_action_wm.loss_coef="$INVERSE_ACTION_LOSS_COEF"
+    +trainer.inverse_action_wm.val_enable="$LOG_VAL_TABLES"
+    +trainer.inverse_action_wm.val_table_n="$INVERSE_VAL_TABLE_N"
+  )
+else
+  INVERSE_HYDRA_ARGS=(+trainer.inverse_action_wm.enable=false)
+fi
 
 python3 -m verl.trainer.fsdp_sft_trainer \
   data.train_files="$TRAIN_PARQUET" \
@@ -104,6 +123,7 @@ python3 -m verl.trainer.fsdp_sft_trainer \
   +trainer.reward_wm_val.table_n="$VAL_TABLE_N" \
   +trainer.reward_horizon="$REWARD_HORIZON" \
   +trainer.reward_wm_balance_horizon_batches="$REWARD_WM_BALANCE_BATCHES" \
+  "${INVERSE_HYDRA_ARGS[@]}" \
   optim.lr="$LR" \
   optim.lr_scheduler=constant \
   optim.warmup_steps_ratio=0 \

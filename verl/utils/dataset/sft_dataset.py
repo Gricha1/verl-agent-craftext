@@ -136,6 +136,24 @@ class SFTDataset(Dataset):
         else:
             self.horizons = [self._infer_horizon_from_response(r) for r in self.responses]
 
+        self.states = self._load_optional_column("state")
+        self.states_after = self._load_optional_column("state_after")
+        self.action_tokens = self._load_optional_column("action_token")
+        self.has_inverse_columns = (
+            self.states is not None
+            and self.states_after is not None
+            and self.action_tokens is not None
+            and any(str(s).strip() for s in self.states_after)
+        )
+
+    def _load_optional_column(self, name: str):
+        if name not in self.dataframe.columns:
+            return None
+        series = self.dataframe[name]
+        if isinstance(series, pd.DataFrame):
+            series = series.squeeze()
+        return [str(x or "") for x in series.tolist()]
+
     @staticmethod
     def _infer_horizon_from_response(response: str) -> int:
         """Reward targets are concatenated i/j/k/l chars without spaces."""
@@ -178,22 +196,12 @@ class SFTDataset(Dataset):
         response_ids_output = tokenizer(response_chat_str, return_tensors="pt", add_special_tokens=False)
         return response_ids_output["input_ids"][0], response_ids_output["attention_mask"][0]
 
-    def __len__(self):
-        return len(self.prompts)
-
-    def __getitem__(self, item):
+    def _build_sft_tensors(self, prompt: str, response: str):
+        """Tokenize one (prompt, response) pair with prompt masked in loss."""
         tokenizer = self.tokenizer
-
-        prompt = self.prompts[item]
-        response = self.responses[item]
-
-        # apply chat template
         prompt_chat = [{"role": "user", "content": prompt}]
-
-        # string
         prompt_chat_str = tokenizer.apply_chat_template(prompt_chat, add_generation_prompt=True, tokenize=False)
 
-        # tokenize
         prompt_ids_output = tokenizer(prompt_chat_str, return_tensors="pt", add_special_tokens=False)
         prompt_ids = prompt_ids_output["input_ids"][0]
         prompt_attention_mask = prompt_ids_output["attention_mask"][0]
@@ -206,17 +214,18 @@ class SFTDataset(Dataset):
         input_ids = torch.cat((prompt_ids, response_ids), dim=-1)
         attention_mask = torch.cat((prompt_attention_mask, response_attention_mask), dim=-1)
 
-        # padding to max length
         sequence_length = input_ids.shape[0]
         if sequence_length < self.max_length:
-            padded_input_ids = torch.ones(size=(self.max_length - sequence_length,), dtype=input_ids.dtype) * self.tokenizer.pad_token_id
-            padded_attention_mask = torch.zeros(size=(self.max_length - sequence_length,), dtype=attention_mask.dtype)
-
+            padded_input_ids = torch.ones(
+                size=(self.max_length - sequence_length,), dtype=input_ids.dtype
+            ) * self.tokenizer.pad_token_id
+            padded_attention_mask = torch.zeros(
+                size=(self.max_length - sequence_length,), dtype=attention_mask.dtype
+            )
             input_ids = torch.cat((input_ids, padded_input_ids))
             attention_mask = torch.cat((attention_mask, padded_attention_mask))
         elif sequence_length > self.max_length:
             if self.truncation == "left":
-                # actually, left truncation may not be reasonable
                 input_ids = input_ids[-self.max_length :]
                 attention_mask = attention_mask[-self.max_length :]
             elif self.truncation == "right":
@@ -231,20 +240,66 @@ class SFTDataset(Dataset):
 
         loss_mask = attention_mask.clone()
         if prompt_length > 1:
-            # mask out prompt for SFT.
             loss_mask[: min(prompt_length, loss_mask.size(0)) - 1] = 0
-        # mask out the last token in response
         loss_mask[min(prompt_length + response_length, loss_mask.size(0)) - 1] = 0
 
-        out = {
+        return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "position_ids": position_ids,
             "loss_mask": loss_mask,
         }
+
+    def _inverse_sample_for_index(self, item: int):
+        """Build (prompt, response) for inverse-action WM from reward row metadata."""
+        if not self.has_inverse_columns:
+            return None, None, False
+        try:
+            from agent_system.environments.prompts.world_model_inverse_action import (
+                format_inverse_action_prompt,
+                is_unchanged_transition,
+            )
+        except Exception:
+            return None, None, False
+
+        state_before = str(self.states[item] or "").strip()
+        state_after = str(self.states_after[item] or "").strip()
+        action = str(self.action_tokens[item] or "").strip().split()[0]
+        if not state_before or not state_after or not action:
+            return None, None, False
+        if is_unchanged_transition(state_before, state_after):
+            return None, None, False
+        return format_inverse_action_prompt(state_before, state_after), action, True
+
+    def __len__(self):
+        return len(self.prompts)
+
+    def __getitem__(self, item):
+        prompt = self.prompts[item]
+        response = self.responses[item]
+
+        out = self._build_sft_tensors(prompt, response)
+
         if self.horizons is not None:
             horizon = int(self.horizons[item])
         else:
             horizon = self._infer_horizon_from_response(response)
         out["horizon"] = torch.tensor(horizon, dtype=torch.long)
+
+        inv_prompt, inv_response, inv_valid = self._inverse_sample_for_index(item)
+        if inv_valid and inv_prompt is not None and inv_response is not None:
+            inv = self._build_sft_tensors(inv_prompt, inv_response)
+        else:
+            inv = {
+                "input_ids": out["input_ids"].clone(),
+                "attention_mask": out["attention_mask"].clone(),
+                "position_ids": out["position_ids"].clone(),
+                "loss_mask": torch.zeros_like(out["loss_mask"]),
+            }
+
+        out["inverse_input_ids"] = inv["input_ids"]
+        out["inverse_attention_mask"] = inv["attention_mask"]
+        out["inverse_position_ids"] = inv["position_ids"]
+        out["inverse_loss_mask"] = inv["loss_mask"]
+        out["inverse_valid"] = torch.tensor(1 if inv_valid else 0, dtype=torch.long)
         return out

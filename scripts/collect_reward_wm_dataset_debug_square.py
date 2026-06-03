@@ -63,6 +63,7 @@ class Row:
     instruction: str
     state: str
     action_token: str
+    state_after: str
     reward: float
     reward_q: int
     done: int
@@ -71,14 +72,19 @@ class Row:
     future_actions: str
 
 
-def _write_parquet(rows: List[Row], out_path: str) -> None:
+def _write_parquet(rows, out_path: str) -> None:
     try:
         import pandas as pd
     except Exception as exc:  # pragma: no cover
         raise RuntimeError("pandas is required to write parquet") from exc
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    df = pd.DataFrame([asdict(r) for r in rows])
+    if not rows:
+        return
+    if hasattr(rows[0], "__dataclass_fields__"):
+        df = pd.DataFrame([asdict(r) for r in rows])
+    else:
+        df = pd.DataFrame(rows)
     df.to_parquet(out_path, index=False)
 
 
@@ -286,6 +292,9 @@ def main() -> None:
                 for h in range(1, max_h + 1):
                     future = [float(episode_steps[i + j]["reward"]) for j in range(h)]
                     future_acts = [str(episode_steps[i + j]["action_token"]) for j in range(h)]
+                    state_after = (
+                        str(episode_steps[i + 1]["state"]) if i + 1 < len(episode_steps) else ""
+                    )
                     response = format_reward_token_sequence(future)
                     prompt = format_reward_prompt(
                         state=str(step["state"]),
@@ -303,6 +312,7 @@ def main() -> None:
                             instruction=str(step["instruction"]),
                             state=str(step["state"]),
                             action_token=str(step["action_token"]),
+                            state_after=state_after,
                             reward=float(future[0]),
                             reward_q=int(quantize_step_reward(future[0])),
                             done=int(step["done"]),
@@ -334,8 +344,9 @@ def main() -> None:
                 task_slug="",
                 instruction_idx=0,
                 instruction="",
-                state="",
-                action_token="",
+                state=str(r.state),
+                action_token=str(r.action_token),
+                state_after=str(r.state_after),
                 reward=0.0,
                 reward_q=0,
                 done=0,

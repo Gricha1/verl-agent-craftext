@@ -87,7 +87,15 @@ def extract_step(path):
 
 
 class FSDPSFTTrainer:
-    def __init__(self, config, device_mesh: DeviceMesh, ulysses_device_mesh: DeviceMesh, tokenizer, train_dataset: Dataset, val_dataset: Dataset):
+    def __init__(
+        self,
+        config,
+        device_mesh: DeviceMesh,
+        ulysses_device_mesh: DeviceMesh,
+        tokenizer,
+        train_dataset: Dataset,
+        val_dataset: Dataset,
+    ):
         self.config = config
         self.device_mesh = device_mesh
         self.ulysses_device_mesh = ulysses_device_mesh
@@ -113,6 +121,11 @@ class FSDPSFTTrainer:
         except Exception:
             self._reward_wm_token_ids = None
         self._reward_wm_max_horizon = max(1, int(getattr(self.config.trainer, "reward_horizon", 1) or 1))
+        inv_cfg = getattr(self.config.trainer, "inverse_action_wm", None)
+        self._inverse_action_wm_enabled = (
+            inv_cfg is not None and self._config_bool(getattr(inv_cfg, "enable", False))
+        )
+        self._inverse_loss_coef = float(getattr(inv_cfg, "loss_coef", 1.0) or 1.0) if inv_cfg is not None else 1.0
         if self.config.data.chat_template is not None:
             raise ValueError("Apply Chat template from config is not supported yet.")
 
@@ -127,6 +140,19 @@ class FSDPSFTTrainer:
             print(f"Using remove padding: {self.use_remove_padding}")
 
         self._build_dataloader(train_dataset, val_dataset)
+        if self._inverse_action_wm_enabled and not getattr(train_dataset, "has_inverse_columns", False):
+            raise ValueError(
+                "trainer.inverse_action_wm.enable=true but train parquet lacks "
+                "state/state_after/action_token columns. Recollect:\n"
+                f"  REWARD_HORIZON={self._reward_wm_max_horizon} "
+                "bash examples/world_model/collect_reward_wm_dataset_debug_square.sh"
+            )
+        if self._inverse_action_wm_enabled and self.device_mesh.get_rank() == 0:
+            print(
+                f"Inverse-action WM SFT enabled (same batch as reward): "
+                f"loss_coef={self._inverse_loss_coef}",
+                flush=True,
+            )
         # build model
         self._build_model_optimizer()
 
@@ -134,6 +160,12 @@ class FSDPSFTTrainer:
         if self.device_mesh.get_rank() == 0:
             print(self.config)
         self.device_name = get_device_name()
+
+    @staticmethod
+    def _config_bool(value) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
 
     def _normalize_config_bsz(self):
         dp_size = self.device_mesh.size(0) if not self.ulysses_device_mesh else self.ulysses_device_mesh.size(0)
@@ -281,6 +313,24 @@ class FSDPSFTTrainer:
             pin_memory=True,
             drop_last=True,
         )
+
+    def _extract_inverse_batch(self, batch: TensorDict) -> TensorDict | None:
+        """Inverse-action tensors from the same reward batch (zero loss_mask when invalid)."""
+        if "inverse_input_ids" not in batch:
+            return None
+        inv = TensorDict(
+            {
+                "input_ids": batch["inverse_input_ids"].clone(),
+                "attention_mask": batch["inverse_attention_mask"].clone(),
+                "position_ids": batch["inverse_position_ids"].clone(),
+                "loss_mask": batch["inverse_loss_mask"].clone(),
+            },
+            batch_size=batch.batch_size,
+        )
+        loss_mask = inv["loss_mask"][:, :-1]
+        if not (loss_mask > 0).any():
+            return None
+        return inv
 
     def _build_model_optimizer(self):
         # TODO (zhangchi.usc1992):
@@ -629,23 +679,21 @@ class FSDPSFTTrainer:
                 return tuple(out)
             return loss
 
-    def training_step(self, batch: TensorDict):
-        self.fsdp_model.train()
-
-        log_gpu_memory_usage("Before optimizer zero_grad", logger=logger)
-
-        self.optimizer.zero_grad()
-
-        log_gpu_memory_usage("After optimizer zero_grad", logger=logger)
-
+    def _accumulate_batch_grads(
+        self,
+        batch: TensorDict,
+        *,
+        use_horizon_acc: bool,
+        loss_coef: float = 1.0,
+    ) -> dict:
+        """Forward + backward on one batch; gradients accumulate (no optimizer step)."""
         micro_batches = batch.split(self.config.data.micro_batch_size_per_gpu)
         n_micro_batches = len(micro_batches)
-        step_loss = 0
+        step_loss = 0.0
         step_correct = 0
         step_total = 0
         step_entropy_sum = 0.0
         step_entropy_count = 0
-        use_horizon_acc = self._reward_wm_max_horizon > 1
         step_h_corr = None
         step_h_tot = None
         if use_horizon_acc:
@@ -658,12 +706,15 @@ class FSDPSFTTrainer:
         for micro_batch in micro_batches:
             out = self._compute_loss_and_backward(
                 batch=micro_batch,
+                do_backward=False,
                 return_accuracy=True,
                 return_entropy=True,
                 return_horizon_accuracy=use_horizon_acc,
             )
             loss = out[0] / n_micro_batches
-            step_loss += loss.item()
+            backward_loss = loss * float(loss_coef) if float(loss_coef) != 1.0 else loss
+            backward_loss.backward()
+            step_loss += float(loss.detach().item())
             try:
                 step_correct += int(out[1].item())
                 step_total += int(out[2].item())
@@ -674,6 +725,132 @@ class FSDPSFTTrainer:
                     step_h_tot += out[6]
             except Exception:
                 pass
+        return {
+            "loss": step_loss,
+            "correct": step_correct,
+            "total": step_total,
+            "entropy_sum": step_entropy_sum,
+            "entropy_count": step_entropy_count,
+            "horizon_correct": step_h_corr,
+            "horizon_total": step_h_tot,
+            "batch": batch,
+        }
+
+    @staticmethod
+    def _is_inverse_action_metric_prefix(prefix: str) -> bool:
+        return "inverse_action" in str(prefix or "")
+
+    @staticmethod
+    def _accuracy_metric_key(prefix: str) -> str:
+        if prefix == "train":
+            return "train/reward_token_accuracy"
+        if FSDPSFTTrainer._is_inverse_action_metric_prefix(prefix):
+            return f"{prefix}/accuracy"
+        return f"{prefix}/token_accuracy"
+
+    def _metrics_from_accum(
+        self,
+        accum: dict,
+        *,
+        prefix: str,
+        use_horizon_acc: bool,
+        log_reward_fracs: bool = False,
+    ) -> dict:
+        metrics = {}
+        loss_t = torch.tensor(float(accum["loss"]), device=self.device_name)
+        if torch.distributed.is_initialized():
+            if is_cuda_available:
+                torch.distributed.all_reduce(loss_t, op=torch.distributed.ReduceOp.AVG)
+            else:
+                torch.distributed.all_reduce(loss_t)
+                if is_npu_available:
+                    loss_t /= self.ulysses_device_mesh.size(0)
+        metrics[f"{prefix}/loss"] = float(loss_t.detach().item())
+
+        try:
+            corr_t = torch.tensor(float(accum["correct"]), device=self.device_name)
+            tot_t = torch.tensor(float(accum["total"]), device=self.device_name)
+            if torch.distributed.is_initialized():
+                torch.distributed.all_reduce(corr_t, op=torch.distributed.ReduceOp.SUM)
+                torch.distributed.all_reduce(tot_t, op=torch.distributed.ReduceOp.SUM)
+            if float(tot_t.item()) > 0:
+                acc = float((corr_t / tot_t).item())
+                metrics[self._accuracy_metric_key(prefix)] = acc
+                if self._is_inverse_action_metric_prefix(prefix):
+                    metrics[f"{prefix}/token_accuracy"] = acc
+            if self._is_inverse_action_metric_prefix(prefix):
+                metrics[f"{prefix}/n_supervised_tokens"] = float(tot_t.item())
+        except Exception:
+            pass
+
+        if use_horizon_acc and accum.get("horizon_correct") is not None:
+            try:
+                h_corr, h_tot = self._reduce_horizon_counts(
+                    accum["horizon_correct"], accum["horizon_total"]
+                )
+                metrics.update(self._reward_wm_horizon_metrics(prefix, h_corr, h_tot))
+                batch = accum.get("batch")
+                max_h = int(self._reward_wm_max_horizon)
+                if batch is not None and "horizon" in batch:
+                    hz = batch["horizon"].detach().cpu().tolist()
+                    if not isinstance(hz, list):
+                        hz = [hz]
+                    for h in range(1, max_h + 1):
+                        metrics[f"{prefix}/batch_samples_h{h}"] = float(
+                            sum(1 for x in hz if int(x) == h)
+                        )
+            except Exception:
+                pass
+
+        try:
+            ent_sum_t = torch.tensor(float(accum["entropy_sum"]), device=self.device_name)
+            ent_cnt_t = torch.tensor(float(accum["entropy_count"]), device=self.device_name)
+            if torch.distributed.is_initialized():
+                torch.distributed.all_reduce(ent_sum_t, op=torch.distributed.ReduceOp.SUM)
+                torch.distributed.all_reduce(ent_cnt_t, op=torch.distributed.ReduceOp.SUM)
+            if float(ent_cnt_t.item()) > 0:
+                metrics[f"{prefix}/entropy_vocab"] = float((ent_sum_t / ent_cnt_t).item())
+        except Exception:
+            pass
+
+        if log_reward_fracs and self._reward_wm_token_ids is not None:
+            batch = accum.get("batch")
+            try:
+                if batch is not None and "loss_mask" in batch and "input_ids" in batch:
+                    input_ids = batch["input_ids"]
+                    loss_mask = batch["loss_mask"][:, :-1]
+                    labels = input_ids[:, 1:]
+                    mask = loss_mask > 0
+                    if mask.any():
+                        target_ids = labels[mask]
+                        for val, tid in self._reward_wm_token_ids.items():
+                            frac = float((target_ids == int(tid)).to(dtype=torch.float32).mean().item())
+                            metrics[f"{prefix}/reward_frac_{val}"] = frac
+            except Exception:
+                pass
+        return metrics
+
+    def training_step(self, batch: TensorDict):
+        self.fsdp_model.train()
+
+        log_gpu_memory_usage("Before optimizer zero_grad", logger=logger)
+        self.optimizer.zero_grad()
+        log_gpu_memory_usage("After optimizer zero_grad", logger=logger)
+
+        use_horizon_acc = self._reward_wm_max_horizon > 1
+        inverse_batch = None
+        if self._inverse_action_wm_enabled:
+            inverse_batch = self._extract_inverse_batch(batch)
+        rm_accum = self._accumulate_batch_grads(
+            batch, use_horizon_acc=use_horizon_acc, loss_coef=1.0
+        )
+        inv_accum = None
+        if inverse_batch is not None:
+            inv_accum = self._accumulate_batch_grads(
+                inverse_batch,
+                use_horizon_acc=False,
+                loss_coef=self._inverse_loss_coef,
+            )
 
         if self.config.model.strategy == 'fsdp':
             grad_norm = self.fsdp_model.clip_grad_norm_(max_norm=self.config.optim.clip_grad)
@@ -684,7 +861,6 @@ class FSDPSFTTrainer:
 
         log_gpu_memory_usage("Before optimizer step", logger=logger)
 
-        # if grad_norm is not finite, skip the update
         if not torch.isfinite(grad_norm):
             print(f"WARN: grad_norm is not finite: {grad_norm}")
             self.optimizer.zero_grad()
@@ -692,79 +868,23 @@ class FSDPSFTTrainer:
             self.optimizer.step()
 
         log_gpu_memory_usage("After optimizer step", logger=logger)
-
         self.lr_scheduler.step()
-
-        # reduce loss across dp ranks
         lr = self.lr_scheduler.get_last_lr()[0]
-
         log_gpu_memory_usage("After offload weights", logger=logger)
 
-        step_loss = torch.tensor(step_loss).to(self.device_name)
-        if is_cuda_available:
-            torch.distributed.all_reduce(step_loss, op=torch.distributed.ReduceOp.AVG)
-        elif is_npu_available:
-            torch.distributed.all_reduce(step_loss)
-            step_loss /= self.ulysses_device_mesh.size(0)
-        metrics = {'train/loss': step_loss.detach().item(), 'train/lr(1e-3)': lr * 1e3}
-
-        # Reduce and log train accuracy on supervised tokens (for reward WM: reward token only).
-        try:
-            corr_t = torch.tensor(float(step_correct), device=self.device_name)
-            tot_t = torch.tensor(float(step_total), device=self.device_name)
-            if torch.distributed.is_initialized():
-                torch.distributed.all_reduce(corr_t, op=torch.distributed.ReduceOp.SUM)
-                torch.distributed.all_reduce(tot_t, op=torch.distributed.ReduceOp.SUM)
-            if float(tot_t.item()) > 0:
-                metrics["train/reward_token_accuracy"] = float((corr_t / tot_t).item())
-        except Exception:
-            pass
-
-        if use_horizon_acc and step_h_corr is not None and step_h_tot is not None:
-            try:
-                step_h_corr, step_h_tot = self._reduce_horizon_counts(step_h_corr, step_h_tot)
-                metrics.update(self._reward_wm_horizon_metrics("train", step_h_corr, step_h_tot))
-                # Sample counts per horizon in this step (should be equal with balanced sampler).
-                max_h = int(self._reward_wm_max_horizon)
-                if "horizon" in batch:
-                    try:
-                        hz = batch["horizon"].detach().cpu().tolist()
-                        if not isinstance(hz, list):
-                            hz = [hz]
-                        for h in range(1, max_h + 1):
-                            metrics[f"train/batch_samples_h{h}"] = float(sum(1 for x in hz if int(x) == h))
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-        # Reduce and log entropy over vocabulary at supervised positions.
-        try:
-            ent_sum_t = torch.tensor(float(step_entropy_sum), device=self.device_name)
-            ent_cnt_t = torch.tensor(float(step_entropy_count), device=self.device_name)
-            if torch.distributed.is_initialized():
-                torch.distributed.all_reduce(ent_sum_t, op=torch.distributed.ReduceOp.SUM)
-                torch.distributed.all_reduce(ent_cnt_t, op=torch.distributed.ReduceOp.SUM)
-            if float(ent_cnt_t.item()) > 0:
-                metrics["train/entropy_vocab"] = float((ent_sum_t / ent_cnt_t).item())
-        except Exception:
-            pass
-
-        # Optional: log reward label distribution per batch for reward-WM datasets.
-        if self._reward_wm_token_ids is not None and "loss_mask" in batch and "input_ids" in batch:
-            try:
-                input_ids = batch["input_ids"]
-                loss_mask = batch["loss_mask"][:, :-1]
-                labels = input_ids[:, 1:]
-                mask = loss_mask > 0
-                if mask.any():
-                    target_ids = labels[mask]
-                    for val, tid in self._reward_wm_token_ids.items():
-                        frac = float((target_ids == int(tid)).to(dtype=torch.float32).mean().item())
-                        metrics[f"train/reward_frac_{val}"] = frac
-            except Exception:
-                pass
-
+        metrics = self._metrics_from_accum(
+            rm_accum, prefix="train", use_horizon_acc=use_horizon_acc, log_reward_fracs=True
+        )
+        metrics["train/lr(1e-3)"] = lr * 1e3
+        if self._inverse_action_wm_enabled:
+            if inv_accum is not None:
+                metrics.update(
+                    self._metrics_from_accum(
+                        inv_accum, prefix="train/inverse_action", use_horizon_acc=False
+                    )
+                )
+            else:
+                metrics["train/inverse_action/n_supervised_tokens"] = 0.0
         return metrics
 
     def _greedy_decode_reward_response(self, prompt_text: str, max_reward_tokens: int) -> str:
@@ -816,6 +936,46 @@ class FSDPSFTTrainer:
                 position_ids = compute_position_id_with_mask(attention_mask).to(self.device_name)
 
         return "".join(decoded_chars)
+
+    def _greedy_decode_action_response(self, prompt_text: str) -> str:
+        """Greedy decode a single action token after the inverse-action prompt."""
+        from agent_system.environments.env_package.caged_craftext.action_tokens import action_token_strings
+        from verl.utils.model import compute_position_id_with_mask
+
+        action_toks = list(action_token_strings())
+        action_tok_ids = []
+        id_to_action_tok: dict[int, str] = {}
+        for t in action_toks:
+            ids = self.tokenizer.encode(t, add_special_tokens=False)
+            if len(ids) == 1:
+                tid = int(ids[0])
+                action_tok_ids.append(tid)
+                id_to_action_tok[tid] = t
+        action_id_set = set(action_tok_ids)
+        eos_id = self.tokenizer.eos_token_id
+
+        chat = [{"role": "user", "content": str(prompt_text)}]
+        prompt_str = self.tokenizer.apply_chat_template(chat, add_generation_prompt=True, tokenize=False)
+        tok = self.tokenizer(prompt_str, return_tensors="pt", add_special_tokens=False)
+        input_ids = tok["input_ids"].to(self.device_name)
+        attention_mask = tok["attention_mask"].to(self.device_name)
+        position_ids = compute_position_id_with_mask(attention_mask).to(self.device_name)
+
+        self.fsdp_model.eval()
+        with torch.no_grad(), torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
+            out = self.fsdp_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                use_cache=False,
+            )
+            seq_len = int(attention_mask.sum(dim=1).item()) - 1
+            next_id = int(out.logits[0, seq_len, :].argmax(dim=-1).item())
+            if eos_id is not None and next_id == int(eos_id):
+                return ""
+            if next_id in action_id_set:
+                return id_to_action_tok[next_id]
+            return self.tokenizer.decode([next_id], skip_special_tokens=True).strip()
 
     def validation_step(self, batch: TensorDict):
         self.fsdp_model.eval()
@@ -949,7 +1109,128 @@ class FSDPSFTTrainer:
             metrics["val/entropy_vocab"] = float(val_entropy_sum / val_entropy_count)
         if use_horizon_acc and val_h_corr is not None and val_h_tot is not None:
             metrics.update(self._reward_wm_horizon_metrics("val", val_h_corr, val_h_tot))
+        if self._inverse_action_wm_enabled:
+            metrics.update(self._evaluate_inverse_validation(return_entropy=return_entropy))
         return metrics
+
+    def _evaluate_inverse_validation(self, return_entropy: bool = True) -> dict:
+        """Val loss/accuracy on inverse-action tensors from the same val batches."""
+        max_batches = self._val_max_batches()
+        inv_losses = []
+        inv_correct = 0.0
+        inv_total = 0.0
+        inv_entropy_sum = 0.0
+        inv_entropy_count = 0.0
+        for batch_idx, val_data in enumerate(self.val_dataloader):
+            if max_batches > 0 and batch_idx >= max_batches:
+                break
+            val_data = self._to_tensor_dict(val_data)
+            inv_batch = self._extract_inverse_batch(val_data)
+            if inv_batch is None:
+                continue
+            if return_entropy:
+                out = self.validation_metrics(inv_batch, return_entropy=True)
+                vloss, vcorr, vtot = out[0], out[1], out[2]
+                esum, ecnt = out[3], out[4]
+                if esum is not None and ecnt is not None:
+                    inv_entropy_sum += float(esum.item())
+                    inv_entropy_count += float(ecnt.item())
+            else:
+                out = self.validation_metrics(inv_batch, return_entropy=False)
+                vloss, vcorr, vtot = out[0], out[1], out[2]
+            inv_losses.append(vloss)
+            if vcorr is not None and vtot is not None:
+                inv_correct += float(vcorr.item())
+                inv_total += float(vtot.item())
+        metrics: dict = {}
+        if inv_losses:
+            metrics["val/inverse_action/loss"] = torch.mean(torch.stack(inv_losses)).detach().item()
+        if inv_total > 0:
+            acc = float(inv_correct / inv_total)
+            metrics["val/inverse_action/accuracy"] = acc
+            metrics["val/inverse_action/token_accuracy"] = acc
+            metrics["val/inverse_action/n_supervised_tokens"] = float(inv_total)
+        if return_entropy and inv_entropy_count > 0:
+            metrics["val/inverse_action/entropy_vocab"] = float(inv_entropy_sum / inv_entropy_count)
+        return metrics
+
+    def _sample_inverse_val_rows(self, n_rows: int, seed: int = 0):
+        """Sample valid inverse-action rows from val parquet."""
+        try:
+            import pandas as pd
+        except Exception:
+            return None
+
+        val_path = self.config.data.val_files
+        if isinstance(val_path, (list, tuple)):
+            val_path = val_path[0]
+        try:
+            df = pd.read_parquet(val_path)
+        except Exception:
+            return None
+
+        required = {"state", "state_after", "action_token"}
+        if not required.issubset(set(df.columns)):
+            return None
+
+        from agent_system.environments.prompts.world_model_inverse_action import (
+            format_inverse_action_prompt,
+            is_unchanged_transition,
+        )
+
+        def _valid_row(row) -> bool:
+            s0 = str(row.get("state", "") or "").strip()
+            s1 = str(row.get("state_after", "") or "").strip()
+            act = str(row.get("action_token", "") or "").strip().split()[0]
+            return bool(s0 and s1 and act and not is_unchanged_transition(s0, s1))
+
+        valid_df = df[df.apply(_valid_row, axis=1)].copy()
+        if valid_df.empty:
+            return None
+
+        rng = torch.Generator().manual_seed(int(seed))
+        idx = torch.randperm(len(valid_df), generator=rng)[: min(int(n_rows), len(valid_df))].tolist()
+        sub = valid_df.iloc[idx].copy()
+
+        prompts = []
+        gt_actions = []
+        for _, row in sub.iterrows():
+            prompts.append(
+                format_inverse_action_prompt(str(row["state"]), str(row["state_after"]))
+            )
+            gt_actions.append(str(row["action_token"]).strip().split()[0])
+        return sub, prompts, gt_actions
+
+    def _compute_inverse_greedy_val_accuracy(self, n_rows: int | None = None, seed: int = 0) -> dict:
+        """Greedy-decode accuracy on a val subset (logged as Comet time series)."""
+        inv_cfg = getattr(self.config.trainer, "inverse_action_wm", None)
+        if n_rows is None:
+            n_rows = int(getattr(inv_cfg, "val_table_n", 40) or 40) if inv_cfg is not None else 40
+        if seed == 0 and inv_cfg is not None:
+            seed = int(getattr(inv_cfg, "val_seed", getattr(inv_cfg, "seed", 0)) or 0)
+
+        sampled = self._sample_inverse_val_rows(n_rows=n_rows, seed=seed)
+        if sampled is None:
+            return {}
+        _, prompts, gt_actions = sampled
+
+        from agent_system.environments.env_package.caged_craftext.action_tokens import (
+            parse_single_token_action,
+        )
+
+        pred_tokens = [self._greedy_decode_action_response(p) for p in prompts]
+        matches = []
+        for gt, pred in zip(gt_actions, pred_tokens):
+            gt_id = parse_single_token_action(gt)
+            pred_id = parse_single_token_action(pred)
+            matches.append(gt_id >= 0 and pred_id >= 0 and gt_id == pred_id)
+        if not matches:
+            return {}
+        acc = float(sum(matches) / len(matches))
+        return {
+            "val/inverse_action/greedy_accuracy": acc,
+            "val/inverse_action/greedy_n": float(len(matches)),
+        }
 
     def _run_and_log_validation(self, tracking: Tracking, step: int, tag: str = "") -> None:
         """Run full val, log metrics/tables to Comet, print to console."""
@@ -959,15 +1240,26 @@ class FSDPSFTTrainer:
             cap_s = f"max {cap} batches" if cap > 0 else "full val set"
             print(f"[val] step={step}{label} metrics ({cap_s})...", flush=True)
         metric = self._evaluate_validation(return_entropy=True)
+        if self.device_mesh.get_rank() == 0 and self._inverse_action_wm_enabled:
+            metric.update(self._compute_inverse_greedy_val_accuracy())
         if self.device_mesh.get_rank() == 0:
             tracking.log(data=metric, step=step)
+            inv_parts = [
+                f"{k}={v:.4g}"
+                for k, v in sorted(metric.items())
+                if k.startswith("val/inverse_action/")
+            ]
             print(
                 f"[val] step={step}{label} "
                 + " ".join(f"{k}={v:.4g}" for k, v in sorted(metric.items())),
                 flush=True,
             )
+            if inv_parts:
+                print(f"[val] step={step}{label} inverse: " + " ".join(inv_parts), flush=True)
             print(f"[val] step={step}{label} tables/images...", flush=True)
             self._log_reward_wm_validation_examples(tracking=tracking, step=step)
+            if self._inverse_action_wm_enabled:
+                self._log_inverse_action_validation_examples(tracking=tracking, step=step)
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
 
@@ -1280,6 +1572,123 @@ class FSDPSFTTrainer:
         except Exception as e:
             print(f"[reward_wm_val] failed to save/log example panel: {e}", flush=True)
 
+    def _log_inverse_action_validation_examples(self, tracking: Tracking, step: int) -> None:
+        """
+        Inverse-action WM validation artifacts:
+        - table (PNG): prompt, ground-truth action, model prediction
+        - detailed panel (PNG) for one sample
+        """
+        inv_cfg = getattr(self.config.trainer, "inverse_action_wm", None)
+        enable = self._inverse_action_wm_enabled and (
+            bool(getattr(inv_cfg, "val_enable", True)) if inv_cfg is not None else False
+        )
+        if not enable:
+            return
+
+        n_rows = int(getattr(inv_cfg, "val_table_n", 40) or 40)
+        seed = int(getattr(inv_cfg, "val_seed", getattr(inv_cfg, "seed", 0)) or 0)
+        sampled = self._sample_inverse_val_rows(n_rows=n_rows, seed=seed)
+        if sampled is None:
+            print("[inverse_action_val] no valid inverse transitions in val parquet.", flush=True)
+            return
+        sub, prompts, gt_actions = sampled
+
+        try:
+            from agent_system.environments.env_package.caged_craftext.action_tokens import (
+                format_single_token_action_display,
+                parse_single_token_action,
+            )
+            from agent_system.environments.env_package.caged_craftext.projection import ACTION_TO_TEXT
+            from agent_system.environments.env_package.caged_craftext.utility import (
+                render_world_model_transition_panel,
+            )
+        except Exception as e:
+            print(f"[inverse_action_val] import error: {e}", flush=True)
+            return
+
+        gt_disp = []
+        for act_raw in gt_actions:
+            aid = parse_single_token_action(act_raw)
+            name = ACTION_TO_TEXT[aid] if 0 <= int(aid) < len(ACTION_TO_TEXT) else "?"
+            gt_disp.append(f"{name}({act_raw})")
+
+        pred_tokens = [self._greedy_decode_action_response(p) for p in prompts]
+        pred_disp = []
+        for tok in pred_tokens:
+            disp, _ = format_single_token_action_display(tok)
+            pred_disp.append(disp or tok)
+
+        def _truncate(text: str, max_len: int = 220) -> str:
+            text = str(text or "").replace("\n", " ")
+            if len(text) <= max_len:
+                return text
+            return text[: max_len - 3] + "..."
+
+        matches = []
+        for gt, pred in zip(gt_actions, pred_tokens):
+            gt_id = parse_single_token_action(gt)
+            pred_id = parse_single_token_action(pred)
+            matches.append(gt_id >= 0 and pred_id >= 0 and gt_id == pred_id)
+        acc = float(sum(matches) / len(matches)) if matches else 0.0
+
+        def _render_table(rows, title: str, out_path: str) -> None:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            fig_h = max(2.5, 0.32 * len(rows) + 2.2)
+            fig, ax = plt.subplots(figsize=(16, fig_h), dpi=140)
+            ax.axis("off")
+            col_labels = ["prompt", "action (true)", "action (pred)", "match"]
+            table = ax.table(
+                cellText=rows,
+                colLabels=col_labels,
+                loc="center",
+                cellLoc="left",
+            )
+            table.auto_set_font_size(False)
+            table.set_fontsize(7)
+            table.scale(1, 1.15)
+            ax.set_title(title, fontsize=10, pad=12)
+            fig.tight_layout()
+            fig.savefig(out_path, bbox_inches="tight")
+            plt.close(fig)
+
+        table_rows = []
+        for i in range(len(sub)):
+            table_rows.append([
+                _truncate(prompts[i]),
+                gt_disp[i],
+                pred_disp[i],
+                "✓" if matches[i] else "✗",
+            ])
+
+        title = (
+            f"Inverse-action WM validation (N={len(sub)}, acc={acc:.1%})\n"
+            f"(s_t, s_{{t+1}}) -> a_t — greedy decode"
+        )
+        p_table = os.path.join(
+            tempfile.gettempdir(), f"val_inverse_action_table{len(sub)}_step{step}.png"
+        )
+        _render_table(table_rows, title, p_table)
+        tracking.log_image(p_table, step=step, name=f"validation_inverse_action_table_{len(sub)}")
+
+        pick = min(len(prompts) // 2, len(prompts) - 1)
+        panel = render_world_model_transition_panel(
+            step=int(pick),
+            world_model_input=prompts[pick],
+            policy_action=gt_disp[pick],
+            world_model_output=pred_disp[pick] or pred_tokens[pick],
+        )
+        try:
+            from PIL import Image
+
+            p_ex = os.path.join(tempfile.gettempdir(), f"val_inverse_action_example_step{step}.png")
+            Image.fromarray(panel).save(p_ex)
+            tracking.log_image(p_ex, step=step, name="validation_inverse_action_example")
+        except Exception as e:
+            print(f"[inverse_action_val] failed to save/log example panel: {e}", flush=True)
+
     def save_checkpoint(self, step):
         # save checkpoint
         path = os.path.join(self.config.trainer.default_local_dir, f"global_step_{step}")
@@ -1413,7 +1822,14 @@ def main(config):
     train_dataset = create_sft_dataset(config.data.train_files, config.data, tokenizer)
     val_dataset = create_sft_dataset(config.data.val_files, config.data, tokenizer)
 
-    trainer = FSDPSFTTrainer(config=config, device_mesh=device_mesh, ulysses_device_mesh=ulysses_device_mesh, tokenizer=tokenizer, train_dataset=train_dataset, val_dataset=val_dataset)
+    trainer = FSDPSFTTrainer(
+        config=config,
+        device_mesh=device_mesh,
+        ulysses_device_mesh=ulysses_device_mesh,
+        tokenizer=tokenizer,
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
+    )
 
     trainer.fit()
 
