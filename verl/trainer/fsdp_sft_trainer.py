@@ -126,6 +126,11 @@ class FSDPSFTTrainer:
             inv_cfg is not None and self._config_bool(getattr(inv_cfg, "enable", False))
         )
         self._inverse_loss_coef = float(getattr(inv_cfg, "loss_coef", 1.0) or 1.0) if inv_cfg is not None else 1.0
+        plan_cfg = getattr(self.config.trainer, "planning_wm", None)
+        self._planning_wm_enabled = (
+            plan_cfg is not None and self._config_bool(getattr(plan_cfg, "enable", False))
+        )
+        self._planning_loss_coef = float(getattr(plan_cfg, "loss_coef", 1.0) or 1.0) if plan_cfg is not None else 1.0
         if self.config.data.chat_template is not None:
             raise ValueError("Apply Chat template from config is not supported yet.")
 
@@ -151,6 +156,18 @@ class FSDPSFTTrainer:
             print(
                 f"Inverse-action WM SFT enabled (same batch as reward): "
                 f"loss_coef={self._inverse_loss_coef}",
+                flush=True,
+            )
+        if self._planning_wm_enabled and not getattr(train_dataset, "has_planning_columns", False):
+            raise ValueError(
+                "trainer.planning_wm.enable=true but dataset lacks planning columns "
+                "(horizon, state, future_rewards, future_actions). Recollect with matching "
+                f"REWARD_HORIZON={self._reward_wm_max_horizon} and enable planning in data config."
+            )
+        if self._planning_wm_enabled and self.device_mesh.get_rank() == 0:
+            print(
+                f"Return-conditioned planning WM enabled (DT-style, H={self._reward_wm_max_horizon}): "
+                f"loss_coef={self._planning_loss_coef}",
                 flush=True,
             )
         # build model
@@ -331,6 +348,23 @@ class FSDPSFTTrainer:
         if not (loss_mask > 0).any():
             return None
         return inv
+
+    def _extract_planning_batch(self, batch: TensorDict) -> TensorDict | None:
+        if "planning_input_ids" not in batch:
+            return None
+        plan = TensorDict(
+            {
+                "input_ids": batch["planning_input_ids"].clone(),
+                "attention_mask": batch["planning_attention_mask"].clone(),
+                "position_ids": batch["planning_position_ids"].clone(),
+                "loss_mask": batch["planning_loss_mask"].clone(),
+            },
+            batch_size=batch.batch_size,
+        )
+        loss_mask = plan["loss_mask"][:, :-1]
+        if not (loss_mask > 0).any():
+            return None
+        return plan
 
     def _build_model_optimizer(self):
         # TODO (zhangchi.usc1992):
@@ -741,10 +775,16 @@ class FSDPSFTTrainer:
         return "inverse_action" in str(prefix or "")
 
     @staticmethod
+    def _is_planning_metric_prefix(prefix: str) -> bool:
+        return "planning" in str(prefix or "")
+
+    @staticmethod
     def _accuracy_metric_key(prefix: str) -> str:
         if prefix == "train":
             return "train/reward_token_accuracy"
-        if FSDPSFTTrainer._is_inverse_action_metric_prefix(prefix):
+        if FSDPSFTTrainer._is_inverse_action_metric_prefix(prefix) or FSDPSFTTrainer._is_planning_metric_prefix(
+            prefix
+        ):
             return f"{prefix}/accuracy"
         return f"{prefix}/token_accuracy"
 
@@ -778,7 +818,9 @@ class FSDPSFTTrainer:
                 metrics[self._accuracy_metric_key(prefix)] = acc
                 if self._is_inverse_action_metric_prefix(prefix):
                     metrics[f"{prefix}/token_accuracy"] = acc
-            if self._is_inverse_action_metric_prefix(prefix):
+                if self._is_planning_metric_prefix(prefix):
+                    metrics[f"{prefix}/token_accuracy"] = acc
+            if self._is_inverse_action_metric_prefix(prefix) or self._is_planning_metric_prefix(prefix):
                 metrics[f"{prefix}/n_supervised_tokens"] = float(tot_t.item())
         except Exception:
             pass
@@ -841,6 +883,9 @@ class FSDPSFTTrainer:
         inverse_batch = None
         if self._inverse_action_wm_enabled:
             inverse_batch = self._extract_inverse_batch(batch)
+        planning_batch = None
+        if self._planning_wm_enabled:
+            planning_batch = self._extract_planning_batch(batch)
         rm_accum = self._accumulate_batch_grads(
             batch, use_horizon_acc=use_horizon_acc, loss_coef=1.0
         )
@@ -850,6 +895,13 @@ class FSDPSFTTrainer:
                 inverse_batch,
                 use_horizon_acc=False,
                 loss_coef=self._inverse_loss_coef,
+            )
+        plan_accum = None
+        if planning_batch is not None:
+            plan_accum = self._accumulate_batch_grads(
+                planning_batch,
+                use_horizon_acc=False,
+                loss_coef=self._planning_loss_coef,
             )
 
         if self.config.model.strategy == 'fsdp':
@@ -885,6 +937,15 @@ class FSDPSFTTrainer:
                 )
             else:
                 metrics["train/inverse_action/n_supervised_tokens"] = 0.0
+        if self._planning_wm_enabled:
+            if plan_accum is not None:
+                metrics.update(
+                    self._metrics_from_accum(
+                        plan_accum, prefix="train/planning", use_horizon_acc=False
+                    )
+                )
+            else:
+                metrics["train/planning/n_supervised_tokens"] = 0.0
         return metrics
 
     def _greedy_decode_reward_response(self, prompt_text: str, max_reward_tokens: int) -> str:
@@ -976,6 +1037,56 @@ class FSDPSFTTrainer:
             if next_id in action_id_set:
                 return id_to_action_tok[next_id]
             return self.tokenizer.decode([next_id], skip_special_tokens=True).strip()
+
+    def _greedy_decode_planning_action_sequence(self, prompt_text: str, num_actions: int) -> str:
+        """Greedy decode H action tokens for return-conditioned planning."""
+        from agent_system.environments.env_package.caged_craftext.action_tokens import action_token_strings
+        from verl.utils.model import compute_position_id_with_mask
+
+        action_toks = list(action_token_strings())
+        action_tok_ids = []
+        id_to_action_tok: dict[int, str] = {}
+        for t in action_toks:
+            ids = self.tokenizer.encode(t, add_special_tokens=False)
+            if len(ids) == 1:
+                tid = int(ids[0])
+                action_tok_ids.append(tid)
+                id_to_action_tok[tid] = t
+        action_id_set = set(action_tok_ids)
+        eos_id = self.tokenizer.eos_token_id
+
+        chat = [{"role": "user", "content": str(prompt_text)}]
+        prompt_str = self.tokenizer.apply_chat_template(chat, add_generation_prompt=True, tokenize=False)
+        tok = self.tokenizer(prompt_str, return_tensors="pt", add_special_tokens=False)
+        input_ids = tok["input_ids"].to(self.device_name)
+        attention_mask = tok["attention_mask"].to(self.device_name)
+        position_ids = compute_position_id_with_mask(attention_mask).to(self.device_name)
+
+        decoded: list[str] = []
+        self.fsdp_model.eval()
+        with torch.no_grad(), torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
+            for _ in range(max(1, int(num_actions))):
+                out = self.fsdp_model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    use_cache=False,
+                )
+                seq_len = int(attention_mask.sum(dim=1).item()) - 1
+                next_id = int(out.logits[0, seq_len, :].argmax(dim=-1).item())
+                if eos_id is not None and next_id == int(eos_id):
+                    break
+                if next_id not in action_id_set:
+                    break
+                decoded.append(id_to_action_tok[next_id])
+                next_t = torch.tensor([[next_id]], device=self.device_name, dtype=input_ids.dtype)
+                input_ids = torch.cat([input_ids, next_t], dim=1)
+                attention_mask = torch.cat(
+                    [attention_mask, torch.ones((1, 1), device=self.device_name, dtype=attention_mask.dtype)],
+                    dim=1,
+                )
+                position_ids = compute_position_id_with_mask(attention_mask).to(self.device_name)
+        return "".join(decoded)
 
     def validation_step(self, batch: TensorDict):
         self.fsdp_model.eval()
@@ -1111,6 +1222,48 @@ class FSDPSFTTrainer:
             metrics.update(self._reward_wm_horizon_metrics("val", val_h_corr, val_h_tot))
         if self._inverse_action_wm_enabled:
             metrics.update(self._evaluate_inverse_validation(return_entropy=return_entropy))
+        if self._planning_wm_enabled:
+            metrics.update(self._evaluate_planning_validation(return_entropy=return_entropy))
+        return metrics
+
+    def _evaluate_planning_validation(self, return_entropy: bool = True) -> dict:
+        max_batches = self._val_max_batches()
+        plan_losses = []
+        plan_correct = 0.0
+        plan_total = 0.0
+        plan_entropy_sum = 0.0
+        plan_entropy_count = 0.0
+        for batch_idx, val_data in enumerate(self.val_dataloader):
+            if max_batches > 0 and batch_idx >= max_batches:
+                break
+            val_data = self._to_tensor_dict(val_data)
+            plan_batch = self._extract_planning_batch(val_data)
+            if plan_batch is None:
+                continue
+            if return_entropy:
+                out = self.validation_metrics(plan_batch, return_entropy=True)
+                vloss, vcorr, vtot = out[0], out[1], out[2]
+                esum, ecnt = out[3], out[4]
+                if esum is not None and ecnt is not None:
+                    plan_entropy_sum += float(esum.item())
+                    plan_entropy_count += float(ecnt.item())
+            else:
+                out = self.validation_metrics(plan_batch, return_entropy=False)
+                vloss, vcorr, vtot = out[0], out[1], out[2]
+            plan_losses.append(vloss)
+            if vcorr is not None and vtot is not None:
+                plan_correct += float(vcorr.item())
+                plan_total += float(vtot.item())
+        metrics: dict = {}
+        if plan_losses:
+            metrics["val/planning/loss"] = torch.mean(torch.stack(plan_losses)).detach().item()
+        if plan_total > 0:
+            acc = float(plan_correct / plan_total)
+            metrics["val/planning/accuracy"] = acc
+            metrics["val/planning/token_accuracy"] = acc
+            metrics["val/planning/n_supervised_tokens"] = float(plan_total)
+        if return_entropy and plan_entropy_count > 0:
+            metrics["val/planning/entropy_vocab"] = float(plan_entropy_sum / plan_entropy_count)
         return metrics
 
     def _evaluate_inverse_validation(self, return_entropy: bool = True) -> dict:
@@ -1232,6 +1385,118 @@ class FSDPSFTTrainer:
             "val/inverse_action/greedy_n": float(len(matches)),
         }
 
+    def _sample_planning_val_rows(self, n_rows: int, seed: int = 0):
+        """Sample val rows with full planning horizon H."""
+        try:
+            import pandas as pd
+        except Exception:
+            return None
+
+        val_path = self.config.data.val_files
+        if isinstance(val_path, (list, tuple)):
+            val_path = val_path[0]
+        try:
+            df = pd.read_parquet(val_path)
+        except Exception:
+            return None
+
+        required = {"state", "future_rewards", "future_actions", "horizon"}
+        if not required.issubset(set(df.columns)):
+            return None
+
+        h_plan = int(self._reward_wm_max_horizon)
+        from agent_system.environments.prompts.world_model_planning import (
+            cumulative_return_from_rewards,
+            format_planning_prompt,
+            format_planning_target,
+            parse_future_json_list,
+            planning_row_valid,
+        )
+
+        valid_idx = []
+        for idx, row in df.iterrows():
+            horizon = int(row.get("horizon", 0))
+            future_acts = parse_future_json_list(row.get("future_actions"))
+            future_rews = parse_future_json_list(row.get("future_rewards"))
+            if planning_row_valid(
+                horizon=horizon,
+                planning_horizon=h_plan,
+                future_actions=future_acts,
+                future_rewards=future_rews,
+            ):
+                valid_idx.append(idx)
+        if not valid_idx:
+            return None
+
+        valid_df = df.loc[valid_idx].copy()
+        rng = torch.Generator().manual_seed(int(seed))
+        pick = torch.randperm(len(valid_df), generator=rng)[: min(int(n_rows), len(valid_df))].tolist()
+        sub = valid_df.iloc[pick].copy()
+
+        prompts = []
+        gt_seqs = []
+        target_returns = []
+        for _, row in sub.iterrows():
+            future_acts = parse_future_json_list(row.get("future_actions"))
+            future_rews = parse_future_json_list(row.get("future_rewards"))
+            target_return = cumulative_return_from_rewards(future_rews)
+            task = str(row.get("instruction", "") or "").strip()
+            prompts.append(
+                format_planning_prompt(
+                    str(row["state"]),
+                    target_return=target_return,
+                    task=task,
+                    horizon=h_plan,
+                )
+            )
+            gt_seqs.append(format_planning_target(future_acts))
+            target_returns.append(int(target_return))
+        return sub, prompts, gt_seqs, target_returns
+
+    def _compute_planning_greedy_val_accuracy(self, n_rows: int | None = None, seed: int = 0) -> dict:
+        plan_cfg = getattr(self.config.trainer, "planning_wm", None)
+        h_plan = int(self._reward_wm_max_horizon)
+        if n_rows is None:
+            n_rows = int(getattr(plan_cfg, "val_table_n", 40) or 40) if plan_cfg is not None else 40
+        if seed == 0 and plan_cfg is not None:
+            seed = int(getattr(plan_cfg, "val_seed", getattr(plan_cfg, "seed", 0)) or 0)
+
+        sampled = self._sample_planning_val_rows(n_rows=n_rows, seed=seed)
+        if sampled is None:
+            return {}
+        _, prompts, gt_seqs, _ = sampled
+
+        from agent_system.environments.env_package.caged_craftext.action_tokens import (
+            parse_action_token_sequence,
+        )
+
+        correct_tokens = 0
+        total_tokens = 0
+        seq_matches = 0
+        for prompt, gt in zip(prompts, gt_seqs):
+            pred = self._greedy_decode_planning_action_sequence(prompt, num_actions=h_plan)
+            gt_toks = parse_action_token_sequence(gt)
+            pred_toks = parse_action_token_sequence(pred)
+            for j in range(h_plan):
+                total_tokens += 1
+                if j < len(gt_toks) and j < len(pred_toks) and gt_toks[j] == pred_toks[j]:
+                    correct_tokens += 1
+            if (
+                len(gt_toks) >= h_plan
+                and len(pred_toks) >= h_plan
+                and gt_toks[:h_plan] == pred_toks[:h_plan]
+            ):
+                seq_matches += 1
+        n = len(gt_seqs)
+        if n == 0:
+            return {}
+        tok_acc = float(correct_tokens / total_tokens) if total_tokens > 0 else 0.0
+        return {
+            "val/planning/greedy_token_accuracy": tok_acc,
+            "val/planning/greedy_sequence_accuracy": float(seq_matches / n),
+            "val/planning/greedy_n": float(n),
+        }
+
     def _run_and_log_validation(self, tracking: Tracking, step: int, tag: str = "") -> None:
         """Run full val, log metrics/tables to Comet, print to console."""
         label = f" ({tag})" if tag else ""
@@ -1242,12 +1507,19 @@ class FSDPSFTTrainer:
         metric = self._evaluate_validation(return_entropy=True)
         if self.device_mesh.get_rank() == 0 and self._inverse_action_wm_enabled:
             metric.update(self._compute_inverse_greedy_val_accuracy())
+        if self.device_mesh.get_rank() == 0 and self._planning_wm_enabled:
+            metric.update(self._compute_planning_greedy_val_accuracy())
         if self.device_mesh.get_rank() == 0:
             tracking.log(data=metric, step=step)
             inv_parts = [
                 f"{k}={v:.4g}"
                 for k, v in sorted(metric.items())
                 if k.startswith("val/inverse_action/")
+            ]
+            plan_parts = [
+                f"{k}={v:.4g}"
+                for k, v in sorted(metric.items())
+                if k.startswith("val/planning/")
             ]
             print(
                 f"[val] step={step}{label} "
@@ -1256,10 +1528,14 @@ class FSDPSFTTrainer:
             )
             if inv_parts:
                 print(f"[val] step={step}{label} inverse: " + " ".join(inv_parts), flush=True)
+            if plan_parts:
+                print(f"[val] step={step}{label} planning: " + " ".join(plan_parts), flush=True)
             print(f"[val] step={step}{label} tables/images...", flush=True)
             self._log_reward_wm_validation_examples(tracking=tracking, step=step)
             if self._inverse_action_wm_enabled:
                 self._log_inverse_action_validation_examples(tracking=tracking, step=step)
+            if self._planning_wm_enabled:
+                self._log_planning_validation_examples(tracking=tracking, step=step)
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
 
@@ -1688,6 +1964,129 @@ class FSDPSFTTrainer:
             tracking.log_image(p_ex, step=step, name="validation_inverse_action_example")
         except Exception as e:
             print(f"[inverse_action_val] failed to save/log example panel: {e}", flush=True)
+
+    def _log_planning_validation_examples(self, tracking: Tracking, step: int) -> None:
+        """Planning WM val table: prompt, target return, gt/pred action trajectories."""
+        plan_cfg = getattr(self.config.trainer, "planning_wm", None)
+        enable = self._planning_wm_enabled and (
+            bool(getattr(plan_cfg, "val_enable", True)) if plan_cfg is not None else False
+        )
+        if not enable:
+            return
+
+        n_rows = int(getattr(plan_cfg, "val_table_n", 40) or 40)
+        seed = int(getattr(plan_cfg, "val_seed", getattr(plan_cfg, "seed", 0)) or 0)
+        h_plan = int(self._reward_wm_max_horizon)
+        sampled = self._sample_planning_val_rows(n_rows=n_rows, seed=seed)
+        if sampled is None:
+            print("[planning_val] no full-horizon rows in val parquet.", flush=True)
+            return
+        sub, prompts, gt_seqs, target_returns = sampled
+
+        try:
+            from agent_system.environments.env_package.caged_craftext.action_tokens import (
+                parse_action_token_sequence,
+            )
+            from agent_system.environments.env_package.caged_craftext.projection import ACTION_TO_TEXT
+            from agent_system.environments.env_package.caged_craftext.action_tokens import (
+                parse_single_token_action,
+            )
+        except Exception as e:
+            print(f"[planning_val] import error: {e}", flush=True)
+            return
+
+        def _fmt_seq(seq: str) -> str:
+            toks = parse_action_token_sequence(seq)
+            parts = []
+            for t in toks:
+                aid = parse_single_token_action(t)
+                name = ACTION_TO_TEXT[aid] if 0 <= int(aid) < len(ACTION_TO_TEXT) else "?"
+                parts.append(f"{name}({t})")
+            return " → ".join(parts) if parts else seq
+
+        pred_seqs = [
+            self._greedy_decode_planning_action_sequence(p, num_actions=h_plan) for p in prompts
+        ]
+
+        def _truncate(text: str, max_len: int = 200) -> str:
+            text = str(text or "").replace("\n", " ")
+            return text if len(text) <= max_len else text[: max_len - 3] + "..."
+
+        seq_matches = []
+        for gt, pred in zip(gt_seqs, pred_seqs):
+            gt_t = parse_action_token_sequence(gt)
+            pr_t = parse_action_token_sequence(pred)
+            seq_matches.append(
+                len(gt_t) >= h_plan and len(pr_t) >= h_plan and gt_t[:h_plan] == pr_t[:h_plan]
+            )
+        seq_acc = float(sum(seq_matches) / len(seq_matches)) if seq_matches else 0.0
+
+        def _render_table(rows, title: str, out_path: str) -> None:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            fig_h = max(2.5, 0.32 * len(rows) + 2.2)
+            fig, ax = plt.subplots(figsize=(16, fig_h), dpi=140)
+            ax.axis("off")
+            col_labels = ["R̂", "actions (true)", "actions (pred)", "match", "prompt"]
+            table = ax.table(
+                cellText=rows,
+                colLabels=col_labels,
+                loc="center",
+                cellLoc="left",
+            )
+            table.auto_set_font_size(False)
+            table.set_fontsize(7)
+            table.scale(1, 1.15)
+            ax.set_title(title, fontsize=10, pad=12)
+            fig.tight_layout()
+            fig.savefig(out_path, bbox_inches="tight")
+            plt.close(fig)
+
+        table_rows = []
+        for i in range(len(sub)):
+            table_rows.append([
+                str(target_returns[i]),
+                _fmt_seq(gt_seqs[i]),
+                _fmt_seq(pred_seqs[i]),
+                "✓" if seq_matches[i] else "✗",
+                _truncate(prompts[i]),
+            ])
+        title = (
+            f"Planning WM validation (N={len(sub)}, H={h_plan}, seq_acc={seq_acc:.1%})\n"
+            f"return-conditioned action trajectory (DT-style)"
+        )
+        p_table = os.path.join(
+            tempfile.gettempdir(), f"val_planning_table{len(sub)}_step{step}.png"
+        )
+        _render_table(table_rows, title, p_table)
+        tracking.log_image(p_table, step=step, name=f"validation_planning_table_{len(sub)}")
+
+        try:
+            from agent_system.environments.env_package.caged_craftext.utility import (
+                render_world_model_planning_panel,
+            )
+            from agent_system.environments.prompts.world_model_planning import (
+                describe_planning_prompt_schema,
+            )
+            from PIL import Image
+
+            pick = min(len(prompts) // 2, len(prompts) - 1)
+            panel = render_world_model_planning_panel(
+                step=int(pick),
+                prompt_schema=describe_planning_prompt_schema(horizon=h_plan),
+                world_model_input=prompts[pick],
+                ground_truth_plan=_fmt_seq(gt_seqs[pick]),
+                world_model_output=_fmt_seq(pred_seqs[pick]) or pred_seqs[pick],
+                target_return=int(target_returns[pick]) if pick < len(target_returns) else None,
+                horizon=h_plan,
+            )
+            p_ex = os.path.join(tempfile.gettempdir(), f"val_planning_example_step{step}.png")
+            Image.fromarray(panel).save(p_ex)
+            tracking.log_image(p_ex, step=step, name="validation_planning_example")
+        except Exception as e:
+            print(f"[planning_val] failed to save/log example panel: {e}", flush=True)
 
     def save_checkpoint(self, step):
         # save checkpoint

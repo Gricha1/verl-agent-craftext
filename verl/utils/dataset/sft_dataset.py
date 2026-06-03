@@ -65,6 +65,7 @@ class SFTDataset(Dataset):
         self.response_dict_keys = response_dict_keys if response_dict_keys else []
 
         self.max_length = max_length
+        self.data_config = config
 
         self._download()
         self._read_files_and_tokenize()
@@ -146,6 +147,29 @@ class SFTDataset(Dataset):
             and any(str(s).strip() for s in self.states_after)
         )
 
+        self.future_rewards_raw = self._load_optional_column("future_rewards")
+        self.future_actions_raw = self._load_optional_column("future_actions")
+        self.instructions = self._load_optional_column("instruction")
+        self._planning_wm_enable = self._config_bool(
+            getattr(self.data_config, "planning_wm_enable", False)
+        )
+        self._planning_wm_horizon = max(
+            1, int(getattr(self.data_config, "planning_wm_horizon", 1) or 1)
+        )
+        self.has_planning_columns = (
+            self._planning_wm_enable
+            and self.states is not None
+            and self.future_rewards_raw is not None
+            and self.future_actions_raw is not None
+            and self.horizons is not None
+        )
+
+    @staticmethod
+    def _config_bool(value) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
+
     def _load_optional_column(self, name: str):
         if name not in self.dataframe.columns:
             return None
@@ -176,8 +200,28 @@ class SFTDataset(Dataset):
                 break
         return max(1, n)
 
-    def _tokenize_response(self, tokenizer, response: str):
-        """Tokenize SFT response; reward WM targets use per-letter ids."""
+    def _tokenize_response(self, tokenizer, response: str, *, planning_horizon: int | None = None):
+        """Tokenize SFT response; reward WM and planning use per-letter ids."""
+        if planning_horizon is not None:
+            try:
+                from agent_system.environments.env_package.caged_craftext.action_tokens import (
+                    is_action_token_sequence,
+                    tokenize_action_response_ids,
+                )
+
+                if is_action_token_sequence(response, horizon=int(planning_horizon)):
+                    ids = tokenize_action_response_ids(
+                        tokenizer,
+                        response,
+                        add_eos=True,
+                        expected_len=int(planning_horizon),
+                    )
+                    response_ids = torch.tensor(ids, dtype=torch.long)
+                    response_attention_mask = torch.ones_like(response_ids)
+                    return response_ids, response_attention_mask
+            except Exception:
+                pass
+
         try:
             from agent_system.environments.env_package.caged_craftext.reward_tokens import (
                 is_reward_token_response,
@@ -196,7 +240,7 @@ class SFTDataset(Dataset):
         response_ids_output = tokenizer(response_chat_str, return_tensors="pt", add_special_tokens=False)
         return response_ids_output["input_ids"][0], response_ids_output["attention_mask"][0]
 
-    def _build_sft_tensors(self, prompt: str, response: str):
+    def _build_sft_tensors(self, prompt: str, response: str, *, planning_horizon: int | None = None):
         """Tokenize one (prompt, response) pair with prompt masked in loss."""
         tokenizer = self.tokenizer
         prompt_chat = [{"role": "user", "content": prompt}]
@@ -206,7 +250,9 @@ class SFTDataset(Dataset):
         prompt_ids = prompt_ids_output["input_ids"][0]
         prompt_attention_mask = prompt_ids_output["attention_mask"][0]
 
-        response_ids, response_attention_mask = self._tokenize_response(tokenizer, response)
+        response_ids, response_attention_mask = self._tokenize_response(
+            tokenizer, response, planning_horizon=planning_horizon
+        )
 
         prompt_length = prompt_ids.shape[0]
         response_length = response_ids.shape[0]
@@ -271,6 +317,50 @@ class SFTDataset(Dataset):
             return None, None, False
         return format_inverse_action_prompt(state_before, state_after), action, True
 
+    def _planning_sample_for_index(self, item: int):
+        """Return-conditioned planning: (s_t, R̂) -> a_t..a_{t+H-1} for horizon=H rows only."""
+        if not self.has_planning_columns:
+            return None, None, False, 0
+        try:
+            from agent_system.environments.prompts.world_model_planning import (
+                cumulative_return_from_rewards,
+                format_planning_prompt,
+                format_planning_target,
+                parse_future_json_list,
+                planning_row_valid,
+            )
+        except Exception:
+            return None, None, False, 0
+
+        h_plan = int(self._planning_wm_horizon)
+        horizon = int(self.horizons[item])
+        state = str(self.states[item] or "").strip()
+        if not state:
+            return None, None, False, 0
+
+        future_acts = parse_future_json_list(self.future_actions_raw[item])
+        future_rews = parse_future_json_list(self.future_rewards_raw[item])
+        if not planning_row_valid(
+            horizon=horizon,
+            planning_horizon=h_plan,
+            future_actions=future_acts,
+            future_rewards=future_rews,
+        ):
+            return None, None, False, 0
+
+        target_return = cumulative_return_from_rewards(future_rews)
+        task = ""
+        if self.instructions is not None:
+            task = str(self.instructions[item] or "").strip()
+        prompt = format_planning_prompt(
+            state,
+            target_return=target_return,
+            task=task,
+            horizon=h_plan,
+        )
+        response = format_planning_target(future_acts)
+        return prompt, response, True, int(target_return)
+
     def __len__(self):
         return len(self.prompts)
 
@@ -302,4 +392,25 @@ class SFTDataset(Dataset):
         out["inverse_position_ids"] = inv["position_ids"]
         out["inverse_loss_mask"] = inv["loss_mask"]
         out["inverse_valid"] = torch.tensor(1 if inv_valid else 0, dtype=torch.long)
+
+        plan_prompt, plan_response, plan_valid, plan_return = self._planning_sample_for_index(item)
+        if plan_valid and plan_prompt is not None and plan_response is not None:
+            plan = self._build_sft_tensors(
+                plan_prompt,
+                plan_response,
+                planning_horizon=int(self._planning_wm_horizon),
+            )
+        else:
+            plan = {
+                "input_ids": out["input_ids"].clone(),
+                "attention_mask": out["attention_mask"].clone(),
+                "position_ids": out["position_ids"].clone(),
+                "loss_mask": torch.zeros_like(out["loss_mask"]),
+            }
+        out["planning_input_ids"] = plan["input_ids"]
+        out["planning_attention_mask"] = plan["attention_mask"]
+        out["planning_position_ids"] = plan["position_ids"]
+        out["planning_loss_mask"] = plan["loss_mask"]
+        out["planning_valid"] = torch.tensor(1 if plan_valid else 0, dtype=torch.long)
+        out["planning_target_return"] = torch.tensor(int(plan_return), dtype=torch.long)
         return out

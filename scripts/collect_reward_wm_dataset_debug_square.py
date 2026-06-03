@@ -343,7 +343,7 @@ def main() -> None:
                 response=r.response,
                 task_slug="",
                 instruction_idx=0,
-                instruction="",
+                instruction=str(r.instruction),
                 state=str(r.state),
                 action_token=str(r.action_token),
                 state_after=str(r.state_after),

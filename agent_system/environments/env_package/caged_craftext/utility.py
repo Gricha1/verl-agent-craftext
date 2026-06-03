@@ -829,6 +829,35 @@ def render_world_model_transition_panel(
     return _render_wm_validation_text_panel(sections, panel_width=panel_width, font_size=font_size)
 
 
+def render_world_model_planning_panel(
+    *,
+    step: int,
+    prompt_schema: str,
+    world_model_input: str,
+    ground_truth_plan: str,
+    world_model_output: str,
+    target_return: int | None = None,
+    horizon: int = 1,
+    panel_width: int = 1200,
+    font_size: int = 10,
+) -> np.ndarray:
+    """Validation PNG: planning WM — template, prompt, ground-truth plan, model plan."""
+    h = max(1, int(horizon))
+    r_hat = f"R̂={int(target_return)}" if target_return is not None else "R̂=?"
+    sections = [
+        (f"Validation — step {step} ({r_hat}, H={h})", "", (0, 0, 120)),
+        ("Prompt template (schema)", prompt_schema or "", (80, 80, 80)),
+        (
+            f"Planning model INPUT (filled prompt: task + s_t + target return + legend)",
+            world_model_input or "",
+            (0, 80, 160),
+        ),
+        (f"Ground truth plan (dataset trajectory, {h} actions)", ground_truth_plan or "", (100, 0, 100)),
+        (f"Planning model OUTPUT (predicted {h}-step plan)", world_model_output or "", (0, 120, 0)),
+    ]
+    return _render_wm_validation_text_panel(sections, panel_width=panel_width, font_size=font_size)
+
+
 def render_world_model_reward_panel(
     *,
     step: int,

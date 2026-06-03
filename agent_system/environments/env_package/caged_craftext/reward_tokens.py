@@ -33,6 +33,11 @@ def quantize_step_reward(reward: float) -> int:
     return 0
 
 
+def sum_quantized_rewards(rewards: Sequence[float]) -> int:
+    """Sum of per-step quantized rewards (Decision Transformer return target)."""
+    return int(sum(quantize_step_reward(float(r)) for r in rewards))
+
+
 def reward_to_token(reward: float) -> str:
     return REWARD_TO_TOKEN[quantize_step_reward(reward)]
 

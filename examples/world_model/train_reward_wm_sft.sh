@@ -12,8 +12,15 @@ set -e
 # Usage:
 #   REWARD_HORIZON=6 bash examples/world_model/train_reward_wm_sft.sh
 #
-# Joint inverse-action WM (s_t, s_{t+1}) -> a_t from the same reward batch (needs state_after column):
+# Joint inverse-action WM (s_t, s_{t+1}) -> a_t from same batch (needs state_after column):
 #   INVERSE_ACTION_WM=true REWARD_HORIZON=6 bash examples/world_model/train_reward_wm_sft.sh
+#
+# Return-conditioned planning (DT-style): (s_t, R̂=+4) -> 6 action tokens from dataset trajectory:
+#   PLANNING_WM=true REWARD_HORIZON=6 bash examples/world_model/train_reward_wm_sft.sh
+#
+# Reward + inverse + planning (recommended for H=6):
+#   CUDA_VISIBLE_DEVICES=1 INVERSE_ACTION_WM=true PLANNING_WM=true REWARD_HORIZON=6 \
+#     bash examples/world_model/train_reward_wm_sft.sh
 #
 # Common overrides:
 #   DATA_DIR=data/reward_wm_debug_square_8x8_h6 MODEL=Qwen/Qwen2.5-1.5B-Instruct bash ...
@@ -39,7 +46,7 @@ OUT_DIR="${OUT_DIR:-/tmp/reward_wm_sft_${RUN_TAG}}"
 # With REWARD_HORIZON=3, batch must divide by lcm(3, MICRO_BSZ); 128 -> effective 120.
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-20}"
 TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-2000}"
-TRAIN_BSZ="${TRAIN_BSZ:-480}"
+TRAIN_BSZ="${TRAIN_BSZ:-720}"
 MICRO_BSZ="${MICRO_BSZ:-4}"
 LR="${LR:-1e-4}"
 MAX_LEN="${MAX_LEN:-2048}"
@@ -63,6 +70,10 @@ REWARD_WM_BALANCE_BATCHES="${REWARD_WM_BALANCE_BATCHES:-true}"
 INVERSE_ACTION_WM="${INVERSE_ACTION_WM:-false}"
 INVERSE_ACTION_LOSS_COEF="${INVERSE_ACTION_LOSS_COEF:-1.0}"
 INVERSE_VAL_TABLE_N="${INVERSE_VAL_TABLE_N:-40}"
+# Decision Transformer-style planning: target cumulative return -> H action tokens.
+PLANNING_WM="${PLANNING_WM:-false}"
+PLANNING_LOSS_COEF="${PLANNING_LOSS_COEF:-1.0}"
+PLANNING_VAL_TABLE_N="${PLANNING_VAL_TABLE_N:-40}"
 # DataLoader workers: 0 avoids JAX+fork deadlock after caged_craftext import.
 DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-0}"
 
@@ -98,6 +109,23 @@ else
   INVERSE_HYDRA_ARGS=(+trainer.inverse_action_wm.enable=false)
 fi
 
+if [ "$PLANNING_WM" = "true" ] || [ "$PLANNING_WM" = "1" ]; then
+  echo "[INFO] PLANNING_WM=true  loss_coef=$PLANNING_LOSS_COEF  horizon=$REWARD_HORIZON"
+  PLANNING_HYDRA_ARGS=(
+    +trainer.planning_wm.enable=true
+    +trainer.planning_wm.loss_coef="$PLANNING_LOSS_COEF"
+    +trainer.planning_wm.val_enable="$LOG_VAL_TABLES"
+    +trainer.planning_wm.val_table_n="$PLANNING_VAL_TABLE_N"
+    +data.planning_wm_enable=true
+    +data.planning_wm_horizon="$REWARD_HORIZON"
+  )
+else
+  PLANNING_HYDRA_ARGS=(
+    +trainer.planning_wm.enable=false
+    +data.planning_wm_enable=false
+  )
+fi
+
 python3 -m verl.trainer.fsdp_sft_trainer \
   data.train_files="$TRAIN_PARQUET" \
   data.val_files="$VAL_PARQUET" \
@@ -124,6 +152,7 @@ python3 -m verl.trainer.fsdp_sft_trainer \
   +trainer.reward_horizon="$REWARD_HORIZON" \
   +trainer.reward_wm_balance_horizon_batches="$REWARD_WM_BALANCE_BATCHES" \
   "${INVERSE_HYDRA_ARGS[@]}" \
+  "${PLANNING_HYDRA_ARGS[@]}" \
   optim.lr="$LR" \
   optim.lr_scheduler=constant \
   optim.warmup_steps_ratio=0 \
