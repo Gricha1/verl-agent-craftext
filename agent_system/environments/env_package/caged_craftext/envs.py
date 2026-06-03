@@ -4,6 +4,9 @@ import sys
 
 os.environ.setdefault("CRAFTAX_RELOAD_TEXTURES", "True")
 
+# Verbose debug prints (jax state shapes) are extremely noisy; keep off by default.
+_CAGED_CRAFTEXT_DEBUG_SHAPES = os.environ.get("CAGED_CRAFTEXT_DEBUG_SHAPES", "0") == "1"
+
 
 def _prepend_local_craftax_on_path():
     """Prefer caged_craftext/Craftax over pip craftax (debug map + spawn fixes)."""
@@ -220,8 +223,8 @@ class CagedCraftextWorker:
 
         self.key, step_key = jax.random.split(self.key)
 
-        # --- DEBUG: лог форм для первых N шагов ---
-        if self._debug_step_count < 5:
+        # --- DEBUG: log shapes for first N steps (optional) ---
+        if _CAGED_CRAFTEXT_DEBUG_SHAPES and self._debug_step_count < 5:
             try:
                 shapes = jax.tree_util.tree_map(self._shape_or_type, self.state)
             except Exception:
@@ -307,8 +310,8 @@ class CagedCraftextWorker:
         # Также обновляем основной ключ для step()
         self.key, _ = jax.random.split(self.key)
 
-        # --- DEBUG: лог форм для первых N reset'ов ---
-        if self._debug_reset_count < 5:
+        # --- DEBUG: log reset calls for first N times (optional) ---
+        if _CAGED_CRAFTEXT_DEBUG_SHAPES and self._debug_reset_count < 5:
             print(f"[DEBUG CagedCraftext] Calling _jitted_reset. instruction_idx={scenario_idx}, reset_counter={self._reset_counter}")
             self._debug_reset_count += 1
         obs_jax, new_state_jax = self._jitted_reset(

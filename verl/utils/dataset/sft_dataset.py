@@ -130,6 +130,54 @@ class SFTDataset(Dataset):
             self.responses = self.responses.squeeze()
         self.responses = self.responses.tolist()
 
+        self.horizons = None
+        if "horizon" in self.dataframe.columns:
+            self.horizons = [int(x) for x in self.dataframe["horizon"].tolist()]
+        else:
+            self.horizons = [self._infer_horizon_from_response(r) for r in self.responses]
+
+    @staticmethod
+    def _infer_horizon_from_response(response: str) -> int:
+        """Reward targets are concatenated i/j/k/l chars without spaces."""
+        try:
+            from agent_system.environments.env_package.caged_craftext.reward_tokens import (
+                is_reward_token_response,
+            )
+
+            raw = str(response or "").strip()
+            if is_reward_token_response(raw):
+                return max(1, len(raw))
+        except Exception:
+            pass
+        reward_chars = frozenset("ijkl")
+        n = 0
+        for ch in str(response or "").strip():
+            if ch in reward_chars:
+                n += 1
+            else:
+                break
+        return max(1, n)
+
+    def _tokenize_response(self, tokenizer, response: str):
+        """Tokenize SFT response; reward WM targets use per-letter ids."""
+        try:
+            from agent_system.environments.env_package.caged_craftext.reward_tokens import (
+                is_reward_token_response,
+                tokenize_reward_response_ids,
+            )
+
+            if is_reward_token_response(response):
+                ids = tokenize_reward_response_ids(tokenizer, response, add_eos=True)
+                response_ids = torch.tensor(ids, dtype=torch.long)
+                response_attention_mask = torch.ones_like(response_ids)
+                return response_ids, response_attention_mask
+        except Exception:
+            pass
+
+        response_chat_str = str(response) + tokenizer.eos_token
+        response_ids_output = tokenizer(response_chat_str, return_tensors="pt", add_special_tokens=False)
+        return response_ids_output["input_ids"][0], response_ids_output["attention_mask"][0]
+
     def __len__(self):
         return len(self.prompts)
 
@@ -144,16 +192,13 @@ class SFTDataset(Dataset):
 
         # string
         prompt_chat_str = tokenizer.apply_chat_template(prompt_chat, add_generation_prompt=True, tokenize=False)
-        response_chat_str = response + tokenizer.eos_token
 
         # tokenize
         prompt_ids_output = tokenizer(prompt_chat_str, return_tensors="pt", add_special_tokens=False)
         prompt_ids = prompt_ids_output["input_ids"][0]
         prompt_attention_mask = prompt_ids_output["attention_mask"][0]
 
-        response_ids_output = tokenizer(response_chat_str, return_tensors="pt", add_special_tokens=False)
-        response_ids = response_ids_output["input_ids"][0]
-        response_attention_mask = response_ids_output["attention_mask"][0]
+        response_ids, response_attention_mask = self._tokenize_response(tokenizer, response)
 
         prompt_length = prompt_ids.shape[0]
         response_length = response_ids.shape[0]
@@ -191,9 +236,15 @@ class SFTDataset(Dataset):
         # mask out the last token in response
         loss_mask[min(prompt_length + response_length, loss_mask.size(0)) - 1] = 0
 
-        return {
+        out = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "position_ids": position_ids,
             "loss_mask": loss_mask,
         }
+        if self.horizons is not None:
+            horizon = int(self.horizons[item])
+        else:
+            horizon = self._infer_horizon_from_response(response)
+        out["horizon"] = torch.tensor(horizon, dtype=torch.long)
+        return out

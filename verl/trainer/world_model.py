@@ -761,8 +761,12 @@ class RewardWorldModelTrainer:
             )["input_ids"][0]
 
             target_text = self._format_reward_target(reward)
+            from agent_system.environments.env_package.caged_craftext.reward_tokens import (
+                tokenize_reward_response_ids,
+            )
+
             response_ids = torch.tensor(
-                self.tokenizer.encode(target_text, add_special_tokens=False)[:1],
+                tokenize_reward_response_ids(self.tokenizer, target_text, add_eos=False),
                 dtype=torch.long,
             )
             if response_ids.numel() == 0:

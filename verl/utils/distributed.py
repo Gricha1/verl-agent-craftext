@@ -14,6 +14,7 @@
 """Utilities for distributed training."""
 
 import os
+import tempfile
 from verl.utils.device import is_cuda_available, get_torch_device
 
 
@@ -22,8 +23,36 @@ def initialize_global_process_group(timeout_second=36000):
 
     import torch.distributed
 
-    torch.distributed.init_process_group("nccl" if is_cuda_available else "hccl", timeout=timedelta(seconds=timeout_second))
-    local_rank = int(os.environ["LOCAL_RANK"])
+    # Support single-process runs (no torchrun) for lightweight scripts.
+    if "RANK" not in os.environ or "WORLD_SIZE" not in os.environ:
+        # Some components (e.g. DeviceMesh) still require an initialized process group.
+        # Initialize a trivial 1-rank group with an explicit init_method (no env:// rendezvous).
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        backend = "nccl" if is_cuda_available else "gloo"
+        init_file = os.path.join(tempfile.gettempdir(), "verl_single_process_pg")
+        init_method = f"file://{init_file}"
+        if not torch.distributed.is_initialized():
+            torch.distributed.init_process_group(
+                backend=backend,
+                init_method=init_method,
+                rank=0,
+                world_size=1,
+                timeout=timedelta(seconds=timeout_second),
+            )
+        if torch.distributed.is_initialized():
+            get_torch_device().set_device(local_rank)
+        return local_rank, 0, 1
+
+    backend = "nccl" if is_cuda_available else "hccl"
+    # CPU-only fallback (no CUDA/NPU): use gloo.
+    if not is_cuda_available and backend == "hccl":
+        backend = "gloo"
+
+    torch.distributed.init_process_group(
+        backend,
+        timeout=timedelta(seconds=timeout_second),
+    )
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
 

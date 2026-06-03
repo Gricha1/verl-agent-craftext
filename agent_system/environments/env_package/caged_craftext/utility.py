@@ -839,13 +839,23 @@ def render_world_model_reward_panel(
     panel_width: int = 1200,
     font_size: int = 10,
 ) -> np.ndarray:
-    """Validation PNG: reward WM (s_t, a_t) -> r_t."""
+    """Validation PNG: reward WM (s_t, action sequence) -> reward token(s)."""
+    multi_action = "→" in str(policy_action or "") or "," in str(policy_action or "")
+    action_label = "Actions (policy a_t..)" if multi_action else "Action (policy a_t)"
+    gt_label = "Ground truth rewards" if multi_action else "Ground truth reward r_t"
+    pred_label = "Reward model OUTPUT (predicted rewards)" if multi_action else "Reward model OUTPUT (predicted r_t)"
     sections = [
         (f"Validation — step {step}", "", (0, 0, 120)),
-        ("Reward model INPUT (prompt + task + s_t + a_t)", world_model_input or "", (0, 80, 160)),
-        ("Action (policy a_t)", policy_action or "", (100, 0, 100)),
-        ("Ground truth reward r_t", ground_truth_reward or "", (120, 80, 0)),
-        ("Reward model OUTPUT (predicted r_t)", world_model_output or "", (0, 120, 0)),
+        (
+            "Reward model INPUT (prompt + task + s_t + actions)"
+            if multi_action
+            else "Reward model INPUT (prompt + task + s_t + a_t)",
+            world_model_input or "",
+            (0, 80, 160),
+        ),
+        (action_label, policy_action or "", (100, 0, 100)),
+        (gt_label, ground_truth_reward or "", (120, 80, 0)),
+        (pred_label, world_model_output or "", (0, 120, 0)),
     ]
     return _render_wm_validation_text_panel(sections, panel_width=panel_width, font_size=font_size)
 
