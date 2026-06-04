@@ -139,6 +139,14 @@ class FSDPSFTTrainer:
         self._planning_adv_sigmoid_T = float(
             getattr(plan_cfg, "advantage_sigmoid_T", 1.0) or 1.0
         ) if plan_cfg is not None else 1.0
+        adv_micro = int(getattr(plan_cfg, "advantage_micro_batch_size", 0) or 0) if plan_cfg is not None else 0
+        if adv_micro <= 0:
+            adv_micro = 1
+        self._planning_adv_micro_batch = adv_micro
+        self._planning_advantage_separate_step = (
+            plan_cfg is not None
+            and self._config_bool(getattr(plan_cfg, "advantage_separate_optimizer_step", True))
+        )
         self._planning_any_enabled = self._planning_ce_enabled or self._planning_advantage_enabled
         self._action_token_ids_tensor = None
         self._id_to_action_tok: dict[int, str] = {}
@@ -184,7 +192,9 @@ class FSDPSFTTrainer:
         if self._planning_advantage_enabled and self.device_mesh.get_rank() == 0:
             print(
                 f"Planning WM advantage loss: H={self._reward_wm_max_horizon} "
-                f"loss_coef={self._planning_loss_coef} sigmoid_T={self._planning_adv_sigmoid_T}",
+                f"loss_coef={self._planning_loss_coef} sigmoid_T={self._planning_adv_sigmoid_T} "
+                f"adv_micro_batch={self._planning_adv_micro_batch} "
+                f"separate_optimizer_step={self._planning_advantage_separate_step}",
                 flush=True,
             )
         # build model
@@ -355,7 +365,7 @@ class FSDPSFTTrainer:
 
     @staticmethod
     def _sft_collate_fn(batch):
-        from torch.utils.data.default_collate import default_collate
+        from torch.utils.data import default_collate
 
         text_keys = ("planning_state_text", "planning_task_text")
         tensor_batch = [{k: v for k, v in sample.items() if k not in text_keys} for sample in batch]
@@ -436,6 +446,61 @@ class FSDPSFTTrainer:
         return token_ids, logp_sum, ids
 
     @torch.no_grad()
+    def _sample_plan_actions_no_grad(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        position_ids: torch.Tensor,
+        num_actions: int,
+    ) -> torch.Tensor:
+        """Sample H action tokens without building a grad graph."""
+        token_ids, _, _ = self._sample_plan_with_logprob(
+            input_ids, attention_mask, position_ids, num_actions
+        )
+        return token_ids
+
+    def _plan_logprob_on_actions(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        position_ids: torch.Tensor,
+        action_token_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        """Single forward: sum log p(fixed action tokens | prompt prefix)."""
+        from verl.utils.model import compute_position_id_with_mask
+
+        self._init_action_token_ids_lazy()
+        assert self._action_token_ids_tensor is not None
+        action_vocab = self._action_token_ids_tensor
+
+        bsz, h = action_token_ids.shape
+        device = input_ids.device
+        ids = input_ids.clone()
+        attn = attention_mask.clone()
+        prompt_lens = attn.sum(dim=1).long()
+        rows = torch.arange(bsz, device=device)
+
+        for k in range(h):
+            write_pos = attn.sum(dim=1).long()
+            ids[rows, write_pos] = action_token_ids[:, k]
+            attn[rows, write_pos] = 1
+
+        pos = compute_position_id_with_mask(attn)
+        out = self.fsdp_model(input_ids=ids, attention_mask=attn, position_ids=pos, use_cache=False)
+        logits = out.logits
+
+        logp_sum = torch.zeros(bsz, device=device, dtype=torch.float32)
+        for k in range(h):
+            logit_idx = prompt_lens + k - 1
+            step_logits = logits[rows, logit_idx, :]
+            masked = torch.full_like(step_logits, float("-inf"))
+            masked[:, action_vocab] = step_logits[:, action_vocab]
+            log_probs = F.log_softmax(masked, dim=-1)
+            logp_sum = logp_sum + log_probs[rows, action_token_ids[:, k]]
+
+        return logp_sum
+
+    @torch.no_grad()
     def _predict_return_sum_from_plan(
         self,
         states: list[str],
@@ -498,7 +563,7 @@ class FSDPSFTTrainer:
         tasks = sidecar.get("planning_task_text", [""] * int(valid.shape[0]))
         g_data = batch["planning_g_data"].to(self.device_name).float()
 
-        micro_bs = int(self.config.data.micro_batch_size_per_gpu)
+        micro_bs = int(self._planning_adv_micro_batch)
         n_valid = 0
         loss_sum = 0.0
         adv_sum = 0.0
@@ -518,18 +583,24 @@ class FSDPSFTTrainer:
             attention_mask = batch["planning_adv_attention_mask"].index_select(0, idx_t)
             position_ids = batch["planning_adv_position_ids"].index_select(0, idx_t)
 
-            token_ids, logp_plan, _ = self._sample_plan_with_logprob(
-                input_ids, attention_mask, position_ids, int(self._reward_wm_max_horizon)
-            )
-            sub_states = [states[i] for i in chunk]
-            sub_tasks = [tasks[i] for i in chunk]
+            h_plan = int(self._reward_wm_max_horizon)
             with torch.no_grad():
+                token_ids = self._sample_plan_actions_no_grad(
+                    input_ids, attention_mask, position_ids, h_plan
+                )
+                sub_states = [states[i] for i in chunk]
+                sub_tasks = [tasks[i] for i in chunk]
                 g_hat = self._predict_return_sum_from_plan(sub_states, sub_tasks, token_ids)
             g_d = g_data.index_select(0, idx_t)
             advantage = g_hat - g_d
             weight = torch.sigmoid(advantage / float(self._planning_adv_sigmoid_T))
+            logp_plan = self._plan_logprob_on_actions(
+                input_ids, attention_mask, position_ids, token_ids
+            )
             loss = -(weight * logp_plan).mean() * float(loss_coef)
             loss.backward()
+            if is_cuda_available:
+                torch.cuda.empty_cache()
 
             n = len(chunk)
             n_valid += n
@@ -1095,21 +1166,42 @@ class FSDPSFTTrainer:
                 pass
         return metrics
 
+    def _optimizer_step(self) -> float | None:
+        """Clip accumulated grads and run optimizer.step(); return grad norm or None if skipped."""
+        if self.config.model.strategy == 'fsdp':
+            grad_norm = self.fsdp_model.clip_grad_norm_(max_norm=self.config.optim.clip_grad)
+        elif self.config.model.strategy == 'fsdp2':
+            grad_norm = fsdp2_clip_grad_norm_(self.fsdp_model.parameters(), max_norm=self.config.optim.clip_grad)
+        else:
+            raise NotImplementedError(f"not implement {self.config.model.strategy}")
+
+        if not torch.isfinite(grad_norm):
+            print(f"WARN: grad_norm is not finite: {grad_norm}")
+            self.optimizer.zero_grad()
+            return None
+        self.optimizer.step()
+        return float(grad_norm.item()) if hasattr(grad_norm, "item") else float(grad_norm)
+
     def training_step(self, batch: TensorDict, sidecar: dict | None = None):
         self.fsdp_model.train()
 
-        log_gpu_memory_usage("Before optimizer zero_grad", logger=logger)
-        self.optimizer.zero_grad()
-        log_gpu_memory_usage("After optimizer zero_grad", logger=logger)
-
         sidecar = sidecar or {}
         use_horizon_acc = self._reward_wm_max_horizon > 1
+        separate_plan_adv = (
+            self._planning_advantage_enabled and self._planning_advantage_separate_step
+        )
+
         inverse_batch = None
         if self._inverse_action_wm_enabled:
             inverse_batch = self._extract_inverse_batch(batch)
         planning_batch = None
         if self._planning_ce_enabled:
             planning_batch = self._extract_planning_batch(batch)
+
+        log_gpu_memory_usage("Before optimizer zero_grad", logger=logger)
+        self.optimizer.zero_grad()
+        log_gpu_memory_usage("After optimizer zero_grad", logger=logger)
+
         rm_accum = self._accumulate_batch_grads(
             batch, use_horizon_acc=use_horizon_acc, loss_coef=1.0
         )
@@ -1128,27 +1220,29 @@ class FSDPSFTTrainer:
                 loss_coef=self._planning_loss_coef,
             )
         plan_adv_accum = None
-        if self._planning_advantage_enabled:
+        if self._planning_advantage_enabled and not separate_plan_adv:
+            if is_cuda_available:
+                torch.cuda.empty_cache()
             plan_adv_accum = self._accumulate_planning_advantage_grads(
                 batch, sidecar, loss_coef=self._planning_loss_coef
             )
 
-        if self.config.model.strategy == 'fsdp':
-            grad_norm = self.fsdp_model.clip_grad_norm_(max_norm=self.config.optim.clip_grad)
-        elif self.config.model.strategy == 'fsdp2':
-            grad_norm = fsdp2_clip_grad_norm_(self.fsdp_model.parameters(), max_norm=self.config.optim.clip_grad)
-        else:
-            raise NotImplementedError(f"not implement {self.config.model.strategy}")
+        log_gpu_memory_usage("Before optimizer step (reward phase)", logger=logger)
+        self._optimizer_step()
+        log_gpu_memory_usage("After optimizer step (reward phase)", logger=logger)
 
-        log_gpu_memory_usage("Before optimizer step", logger=logger)
-
-        if not torch.isfinite(grad_norm):
-            print(f"WARN: grad_norm is not finite: {grad_norm}")
+        if separate_plan_adv:
+            if is_cuda_available:
+                torch.cuda.empty_cache()
+            log_gpu_memory_usage("Before planner advantage phase zero_grad", logger=logger)
             self.optimizer.zero_grad()
-        else:
-            self.optimizer.step()
+            plan_adv_accum = self._accumulate_planning_advantage_grads(
+                batch, sidecar, loss_coef=self._planning_loss_coef
+            )
+            log_gpu_memory_usage("Before optimizer step (planner phase)", logger=logger)
+            self._optimizer_step()
+            log_gpu_memory_usage("After optimizer step (planner phase)", logger=logger)
 
-        log_gpu_memory_usage("After optimizer step", logger=logger)
         self.lr_scheduler.step()
         lr = self.lr_scheduler.get_last_lr()[0]
         log_gpu_memory_usage("After offload weights", logger=logger)
@@ -1157,6 +1251,8 @@ class FSDPSFTTrainer:
             rm_accum, prefix="train", use_horizon_acc=use_horizon_acc, log_reward_fracs=True
         )
         metrics["train/lr(1e-3)"] = lr * 1e3
+        if separate_plan_adv:
+            metrics["train/planning_adv/separate_optimizer_step"] = 1.0
         if self._inverse_action_wm_enabled:
             if inv_accum is not None:
                 metrics.update(
@@ -1522,6 +1618,7 @@ class FSDPSFTTrainer:
 
         from agent_system.environments.prompts.world_model_planning import format_max_return_planning_prompt
 
+        was_training = self.fsdp_model.training
         self.fsdp_model.eval()
         self._init_action_token_ids_lazy()
         with torch.no_grad():
@@ -1564,6 +1661,11 @@ class FSDPSFTTrainer:
                         pos_adv += 1
                     else:
                         neg_adv += 1
+                    if is_cuda_available:
+                        torch.cuda.empty_cache()
+
+        if was_training:
+            self.fsdp_model.train()
 
         if n_rows <= 0:
             return {"val/planning_adv/n": 0.0}
@@ -2625,11 +2727,11 @@ class FSDPSFTTrainer:
                 g_hat_list.append(g_h)
                 adv_list.append(g_h - float(g_data_list[i]))
 
-        def _truncate(text: str, max_len: int = 200) -> str:
-            text = str(text or "").replace("\n", " ")
-            return text if len(text) <= max_len else text[: max_len - 3] + "..."
-
         frac_pos = float(sum(1 for a in adv_list if a > 0) / len(adv_list)) if adv_list else 0.0
+
+        def _task_for_row(i: int) -> str:
+            task = str(sub.iloc[i].get("instruction", "") or "").strip()
+            return task or "Unknown task"
 
         def _render_table(rows, title: str, out_path: str) -> None:
             import matplotlib
@@ -2637,18 +2739,25 @@ class FSDPSFTTrainer:
             import matplotlib.pyplot as plt
 
             fig_h = max(2.5, 0.32 * len(rows) + 2.2)
-            fig, ax = plt.subplots(figsize=(16, fig_h), dpi=140)
+            fig, ax = plt.subplots(figsize=(22, fig_h), dpi=140)
             ax.axis("off")
-            col_labels = ["G_data", "Ĝ", "A", "plan (pred)", "plan (data)", "prompt"]
+            col_labels = ["G_data", "Ĝ", "A", "plan (pred)", "plan (data)", "task"]
+            # Narrow metric cols; most width for plan columns.
+            col_widths = [0.05, 0.05, 0.05, 0.38, 0.38, 0.14]
             table = ax.table(
                 cellText=rows,
                 colLabels=col_labels,
                 loc="center",
                 cellLoc="left",
+                colWidths=col_widths,
             )
             table.auto_set_font_size(False)
             table.set_fontsize(7)
-            table.scale(1, 1.15)
+            table.scale(1, 1.12)
+            for col in (0, 1, 2):
+                for row in range(len(rows) + 1):
+                    cell = table[row, col]
+                    cell.set_width(col_widths[col])
             ax.set_title(title, fontsize=10, pad=12)
             fig.tight_layout()
             fig.savefig(out_path, bbox_inches="tight")
@@ -2662,7 +2771,7 @@ class FSDPSFTTrainer:
                 f"{adv_list[i]:+.0f}",
                 _fmt_seq(pred_seqs[i]),
                 _fmt_seq(gt_seqs[i]),
-                _truncate(prompts[i]),
+                _task_for_row(i),
             ])
         title = (
             f"Planning advantage WM (N={len(sub)}, H={h_plan}, frac(A>0)={frac_pos:.1%})\n"

@@ -75,7 +75,7 @@ def describe_max_return_planning_schema(*, horizon: int) -> str:
     return (
         f"Template: max-return planning (advantage loss), H={h}.\n"
         f"Fields: TASK, State (s_t), Action token legend.\n"
-        f"Goal: output {h} action tokens maximizing sum of step rewards (not a fixed R̂ target)."
+        f"Goal: output {h} action tokens maximizing sum of step rewards."
     )
 
 

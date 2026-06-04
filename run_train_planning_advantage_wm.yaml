@@ -6,6 +6,8 @@ container:
     REWARD_HORIZON: "6"
     PLANNING_ADVANTAGE_WM: "true"
     PLANNING_ADV_SIGMOID_T: "1.0"
+    PLANNING_ADV_MICRO_BSZ: "1"
+    PLANNING_ADV_SEPARATE_STEP: "true"
     EXP_NAME: planning_adv_wm_h6
     CUDA_VISIBLE_DEVICES: "0"
   work_dir: /home/jovyan/nsorokin/verl-agent-craftext-2
