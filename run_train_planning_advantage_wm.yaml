@@ -8,6 +8,12 @@ container:
     PLANNING_ADV_SIGMOID_T: "1.0"
     PLANNING_ADV_MICRO_BSZ: "1"
     PLANNING_ADV_SEPARATE_STEP: "true"
+    PLANNING_ENT_AENT: "true"
+    PLANNING_ENT_CLAMPED: "true"
+    PLANNING_ENT_TOP_M: "8"
+    PLANNING_ENT_COEF_INIT: "0.01"
+    PLANNING_ENT_LOW: "0.7"
+    PLANNING_ENT_HIGH: "1.4"
     EXP_NAME: planning_adv_wm_h6
     CUDA_VISIBLE_DEVICES: "0"
   work_dir: /home/jovyan/nsorokin/verl-agent-craftext-2

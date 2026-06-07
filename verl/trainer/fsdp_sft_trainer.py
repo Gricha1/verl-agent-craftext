@@ -136,6 +136,7 @@ class FSDPSFTTrainer:
             and not self._planning_advantage_enabled
         )
         self._planning_loss_coef = float(getattr(plan_cfg, "loss_coef", 1.0) or 1.0) if plan_cfg is not None else 1.0
+        # Legacy config key (unused): advantage was previously weighted by sigmoid(A/T).
         self._planning_adv_sigmoid_T = float(
             getattr(plan_cfg, "advantage_sigmoid_T", 1.0) or 1.0
         ) if plan_cfg is not None else 1.0
@@ -143,13 +144,77 @@ class FSDPSFTTrainer:
         if adv_micro <= 0:
             adv_micro = 1
         self._planning_adv_micro_batch = adv_micro
+        adv_batch = int(getattr(plan_cfg, "advantage_batch_size", 0) or 0) if plan_cfg is not None else 0
+        self._planning_adv_batch_size = max(0, adv_batch)
         self._planning_advantage_separate_step = (
             plan_cfg is not None
             and self._config_bool(getattr(plan_cfg, "advantage_separate_optimizer_step", True))
         )
-        self._planning_any_enabled = self._planning_ce_enabled or self._planning_advantage_enabled
+        self._planning_advantage_enabled_target = self._planning_advantage_enabled
+        ent_cfg = plan_cfg
+        self._planning_entropy_aent_enable = (
+            plan_cfg is not None
+            and self._planning_advantage_enabled_target
+            and self._config_bool(getattr(ent_cfg, "entropy_aent_enable", True))
+        )
+        self._planning_entropy_use_clamped = (
+            self._config_bool(getattr(ent_cfg, "entropy_use_clamped", True))
+            if ent_cfg is not None else True
+        )
+        self._planning_entropy_top_m = int(getattr(ent_cfg, "entropy_top_m", 8) or 8) if ent_cfg else 8
+        self._planning_adv_clip = float(getattr(ent_cfg, "advantage_clip", 10.0) or 10.0) if ent_cfg else 10.0
+        self._planning_adv_normalize_by_horizon = (
+            self._config_bool(getattr(ent_cfg, "advantage_normalize_by_horizon", True))
+            if ent_cfg is not None else True
+        )
+        self._planning_entropy_coef_init = float(
+            getattr(ent_cfg, "entropy_coef_init", 0.01) or 0.01
+        ) if ent_cfg else 0.01
+        self._planning_entropy_coef_low = float(
+            getattr(ent_cfg, "entropy_coef_low", 0.0) or 0.0
+        ) if ent_cfg else 0.0
+        self._planning_entropy_coef_high = float(
+            getattr(ent_cfg, "entropy_coef_high", 1.0) or 1.0
+        ) if ent_cfg else 1.0
+        self._planning_entropy_coef_lr = float(
+            getattr(ent_cfg, "entropy_coef_lr", 0.001) or 0.001
+        ) if ent_cfg else 0.001
+        self._planning_entropy_low = float(getattr(ent_cfg, "entropy_low", 0.7) or 0.7) if ent_cfg else 0.7
+        self._planning_entropy_high = float(getattr(ent_cfg, "entropy_high", 1.4) or 1.4) if ent_cfg else 1.4
+        self._planning_entropy_coef = self._planning_entropy_coef_init
+        cur_cfg = getattr(self.config.trainer, "curriculum", None)
+        self._curriculum_enabled = (
+            cur_cfg is not None and self._config_bool(getattr(cur_cfg, "enable", False))
+        )
+        self._curriculum_reward_only_steps = int(
+            getattr(cur_cfg, "reward_only_steps", 100) or 0
+        ) if cur_cfg is not None else 0
+        self._curriculum_reward_only_epochs = int(
+            getattr(cur_cfg, "reward_only_epochs", 0) or 0
+        ) if cur_cfg is not None else 0
+        self._curriculum_use_steps = self._curriculum_reward_only_steps > 0
+        if self._curriculum_enabled:
+            if not self._curriculum_use_steps and self._curriculum_reward_only_epochs <= 0:
+                raise ValueError(
+                    "Curriculum requires trainer.curriculum.reward_only_steps>0 "
+                    "or reward_only_epochs>0 when curriculum.enable=true"
+                )
+            if not self._planning_advantage_enabled_target:
+                raise ValueError(
+                    "Curriculum joint phase requires trainer.planning_wm.advantage_enable=true"
+                )
+            self._planning_advantage_enabled = False
+        self._planning_any_enabled = (
+            self._planning_ce_enabled
+            or self._planning_advantage_enabled
+            or (self._curriculum_enabled and self._planning_advantage_enabled_target)
+        )
         self._action_token_ids_tensor = None
         self._id_to_action_tok: dict[int, str] = {}
+        self.plan_adv_train_dataloader = None
+        self._plan_adv_train_sampler = None
+        self._plan_adv_dataloader_iter = None
+        self._plan_adv_effective_batch_size = 0
         if self.config.data.chat_template is not None:
             raise ValueError("Apply Chat template from config is not supported yet.")
 
@@ -189,14 +254,42 @@ class FSDPSFTTrainer:
                 f"loss_coef={self._planning_loss_coef}",
                 flush=True,
             )
-        if self._planning_advantage_enabled and self.device_mesh.get_rank() == 0:
+        if self._planning_advantage_enabled_target and self.device_mesh.get_rank() == 0:
             print(
                 f"Planning WM advantage loss: H={self._reward_wm_max_horizon} "
-                f"loss_coef={self._planning_loss_coef} sigmoid_T={self._planning_adv_sigmoid_T} "
+                f"loss_coef={self._planning_loss_coef} "
                 f"adv_micro_batch={self._planning_adv_micro_batch} "
-                f"separate_optimizer_step={self._planning_advantage_separate_step}",
+                f"adv_batch_size={self._planning_adv_batch_size or 'reward_batch'} "
+                f"separate_optimizer_step={self._planning_advantage_separate_step} "
+                f"normalize_by_horizon={self._planning_adv_normalize_by_horizon}",
                 flush=True,
             )
+            if self._planning_entropy_aent_enable and self.device_mesh.get_rank() == 0:
+                print(
+                    f"Planning AEnt entropy: clamped={self._planning_entropy_use_clamped} "
+                    f"top_m={self._planning_entropy_top_m} "
+                    f"entropy_band=[{self._planning_entropy_low}, {self._planning_entropy_high}] "
+                    f"entropy_coef_init={self._planning_entropy_coef_init}",
+                    flush=True,
+                )
+        if self._curriculum_enabled and self.device_mesh.get_rank() == 0:
+            if self._curriculum_use_steps:
+                print(
+                    f"Curriculum WM (step-based): phase1 reward-only for train steps "
+                    f"1..{self._curriculum_reward_only_steps}, then reward+planner",
+                    flush=True,
+                )
+            else:
+                joint_epochs = max(
+                    0, int(self.config.trainer.total_epochs) - self._curriculum_reward_only_epochs
+                )
+                print(
+                    f"Curriculum WM (epoch-based): phase1 reward-only epochs="
+                    f"{self._curriculum_reward_only_epochs}, "
+                    f"phase2 reward+planner joint_epochs={joint_epochs} "
+                    f"(total_epochs={self.config.trainer.total_epochs})",
+                    flush=True,
+                )
         # build model
         self._build_model_optimizer()
 
@@ -204,7 +297,7 @@ class FSDPSFTTrainer:
         if self.device_mesh.get_rank() == 0:
             print(self.config)
         self.device_name = get_device_name()
-        if self._planning_advantage_enabled:
+        if self._planning_advantage_enabled_target:
             self._init_action_token_ids()
 
     @staticmethod
@@ -335,7 +428,7 @@ class FSDPSFTTrainer:
                 batch_sampler=self.train_batch_sampler,
                 num_workers=dl_workers,
                 pin_memory=True,
-                collate_fn=self._sft_collate_fn if self._planning_advantage_enabled else None,
+                collate_fn=self._sft_collate_fn if self._planning_advantage_enabled_target else None,
             )
         else:
             self.train_batch_sampler = None
@@ -349,7 +442,7 @@ class FSDPSFTTrainer:
                 num_workers=dl_workers,
                 pin_memory=True,
                 drop_last=True,
-                collate_fn=self._sft_collate_fn if self._planning_advantage_enabled else None,
+                collate_fn=self._sft_collate_fn if self._planning_advantage_enabled_target else None,
             )
 
         self.val_sampler = DistributedSampler(self.val_dataset, shuffle=False, num_replicas=world_size, rank=rank, drop_last=True)
@@ -360,8 +453,93 @@ class FSDPSFTTrainer:
             num_workers=dl_workers,
             pin_memory=True,
             drop_last=True,
-            collate_fn=self._sft_collate_fn if self._planning_advantage_enabled else None,
+            collate_fn=self._sft_collate_fn if self._planning_advantage_enabled_target else None,
         )
+
+        self._build_planning_advantage_dataloader(
+            train_dataset=train_dataset,
+            rank=rank,
+            world_size=world_size,
+            num_workers=dl_workers,
+        )
+
+    def _build_planning_advantage_dataloader(
+        self,
+        *,
+        train_dataset,
+        rank: int,
+        world_size: int,
+        num_workers: int,
+    ) -> None:
+        """Optional dedicated loader for advantage planner (horizon=H rows only)."""
+        self.plan_adv_train_dataloader = None
+        self._plan_adv_train_sampler = None
+        self._plan_adv_dataloader_iter = None
+        self._plan_adv_effective_batch_size = 0
+        if not self._planning_advantage_enabled_target:
+            return
+        if int(self._planning_adv_batch_size) <= 0:
+            return
+
+        from verl.utils.dataset.horizon_batch_sampler import align_horizon_batch_size
+        from verl.utils.dataset.sft_dataset import (
+            PlanningAdvantageDataset,
+            collect_planning_advantage_indices,
+        )
+
+        indices = collect_planning_advantage_indices(train_dataset)
+        if not indices:
+            raise ValueError(
+                "trainer.planning_wm.advantage_batch_size>0 but no valid planning-advantage "
+                f"rows in train parquet (need horizon={self._reward_wm_max_horizon})."
+            )
+        plan_bs = align_horizon_batch_size(
+            int(self._planning_adv_batch_size),
+            1,
+            int(self._planning_adv_micro_batch),
+        )
+        self._plan_adv_effective_batch_size = int(plan_bs)
+        plan_dataset = PlanningAdvantageDataset(train_dataset, indices)
+        self._plan_adv_train_sampler = DistributedSampler(
+            plan_dataset,
+            shuffle=True,
+            num_replicas=world_size,
+            rank=rank,
+            drop_last=True,
+        )
+        self.plan_adv_train_dataloader = DataLoader(
+            dataset=plan_dataset,
+            batch_size=plan_bs,
+            sampler=self._plan_adv_train_sampler,
+            num_workers=num_workers,
+            pin_memory=True,
+            drop_last=True,
+            collate_fn=self._sft_collate_fn,
+        )
+        if self.device_mesh.get_rank() == 0:
+            print(
+                f"Planning advantage dataloader: batch_size={plan_bs} "
+                f"(requested={self._planning_adv_batch_size}), pool={len(indices)} rows",
+                flush=True,
+            )
+
+    def _next_planning_advantage_batch(self):
+        """Fetch the next batch from the dedicated planner dataloader."""
+        if self.plan_adv_train_dataloader is None:
+            return None, None
+        if self._plan_adv_dataloader_iter is None:
+            self._plan_adv_dataloader_iter = iter(self.plan_adv_train_dataloader)
+        try:
+            data = next(self._plan_adv_dataloader_iter)
+        except StopIteration:
+            self._plan_adv_dataloader_iter = iter(self.plan_adv_train_dataloader)
+            data = next(self._plan_adv_dataloader_iter)
+        return self._prepare_batch(data)
+
+    def _reset_plan_adv_dataloader_epoch(self, epoch: int) -> None:
+        if self._plan_adv_train_sampler is not None:
+            self._plan_adv_train_sampler.set_epoch(epoch)
+        self._plan_adv_dataloader_iter = None
 
     @staticmethod
     def _sft_collate_fn(batch):
@@ -395,6 +573,7 @@ class FSDPSFTTrainer:
                 id_map[tid] = tok
         self._action_token_ids_tensor = torch.tensor(ids, dtype=torch.long, device=self.device_name)
         self._id_to_action_tok = id_map
+        self._action_global_to_local = {int(tid): i for i, tid in enumerate(ids)}
 
     def _init_action_token_ids_lazy(self):
         if self._action_token_ids_tensor is None:
@@ -437,6 +616,12 @@ class FSDPSFTTrainer:
             chosen.append(token)
 
             write_pos = attn.sum(dim=1).long()
+            if (write_pos >= ids.shape[1]).any():
+                raise RuntimeError(
+                    f"Planning sample ran out of sequence space at step {len(chosen)} "
+                    f"(seq_len={ids.shape[1]}). Truncate planning prompts with "
+                    f"reserve_tokens=horizon in the dataset."
+                )
             rows = torch.arange(bsz, device=device)
             ids[rows, write_pos] = token
             attn[rows, write_pos] = 1
@@ -459,14 +644,46 @@ class FSDPSFTTrainer:
         )
         return token_ids
 
+    def _step_action_entropy(self, action_logits: torch.Tensor) -> torch.Tensor:
+        """Per-step entropy (nats) over masked action tokens; optional top-m renormalize."""
+        logits = action_logits
+        if self._planning_entropy_use_clamped:
+            top_m = min(int(self._planning_entropy_top_m), int(logits.shape[-1]))
+            top_m = max(1, top_m)
+            top_vals, _ = torch.topk(logits, k=top_m, dim=-1)
+            log_probs = F.log_softmax(top_vals, dim=-1)
+        else:
+            log_probs = F.log_softmax(logits, dim=-1)
+        probs = log_probs.exp()
+        return -(probs * (log_probs + 1e-8)).sum(dim=-1)
+
+    def _adapt_planning_entropy_coef(self, plan_entropy: float) -> None:
+        """Adaptive entropy coefficient (no grad), AEnt-style corridor control."""
+        if not self._planning_entropy_aent_enable:
+            return
+        h = float(plan_entropy)
+        coef = float(self._planning_entropy_coef)
+        if h < self._planning_entropy_low:
+            coef += self._planning_entropy_coef_lr * (self._planning_entropy_low - h)
+        elif h > self._planning_entropy_high:
+            coef -= self._planning_entropy_coef_lr * (h - self._planning_entropy_high)
+        coef = min(max(coef, self._planning_entropy_coef_low), self._planning_entropy_coef_high)
+        self._planning_entropy_coef = coef
+
     def _plan_logprob_on_actions(
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         position_ids: torch.Tensor,
         action_token_ids: torch.Tensor,
-    ) -> torch.Tensor:
-        """Single forward: sum log p(fixed action tokens | prompt prefix)."""
+        *,
+        return_masked_entropy: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        """Single forward: sum log p(fixed action tokens | prompt prefix).
+
+        If return_masked_entropy=True, also returns scalar plan_entropy: mean over batch
+        and H steps of per-step masked action entropy (nats per action token).
+        """
         from verl.utils.model import compute_position_id_with_mask
 
         self._init_action_token_ids_lazy()
@@ -480,6 +697,16 @@ class FSDPSFTTrainer:
         prompt_lens = attn.sum(dim=1).long()
         rows = torch.arange(bsz, device=device)
 
+        seq_cap = ids.shape[1]
+        if (prompt_lens + h > seq_cap).any():
+            bad = (prompt_lens + h > seq_cap).nonzero(as_tuple=False).view(-1)
+            raise RuntimeError(
+                "Planning prompt fills max_length; cannot append "
+                f"{h} action tokens (seq_cap={seq_cap}, "
+                f"bad_rows={bad[:8].tolist()}). "
+                "Dataset should reserve reserve_tokens=horizon in _build_prompt_only_tensors."
+            )
+
         for k in range(h):
             write_pos = attn.sum(dim=1).long()
             ids[rows, write_pos] = action_token_ids[:, k]
@@ -490,15 +717,78 @@ class FSDPSFTTrainer:
         logits = out.logits
 
         logp_sum = torch.zeros(bsz, device=device, dtype=torch.float32)
+        ent_steps: list[torch.Tensor] = []
         for k in range(h):
-            logit_idx = prompt_lens + k - 1
+            logit_idx = (prompt_lens + k - 1).clamp(0, logits.shape[1] - 1)
             step_logits = logits[rows, logit_idx, :]
-            masked = torch.full_like(step_logits, float("-inf"))
-            masked[:, action_vocab] = step_logits[:, action_vocab]
-            log_probs = F.log_softmax(masked, dim=-1)
-            logp_sum = logp_sum + log_probs[rows, action_token_ids[:, k]]
+            action_logits = step_logits[:, action_vocab]
+            log_probs_a = F.log_softmax(action_logits, dim=-1)
+            logp_sum = logp_sum + log_probs_a[
+                rows, self._action_token_local_index(action_token_ids[:, k])
+            ]
+            if return_masked_entropy:
+                ent_steps.append(self._step_action_entropy(action_logits))
 
+        if return_masked_entropy:
+            ent_stack = torch.stack(ent_steps, dim=1)
+            plan_entropy = ent_stack.mean()
+            return logp_sum, plan_entropy
         return logp_sum
+
+    def _action_token_local_index(self, global_token_ids: torch.Tensor) -> torch.Tensor:
+        """Map global token ids to indices in _action_token_ids_tensor (for gather)."""
+        self._init_action_token_ids_lazy()
+        assert self._action_token_ids_tensor is not None
+        vocab = self._action_token_ids_tensor
+        # (B,) global ids -> (B,) index in [0, len(vocab))
+        assert self._action_global_to_local is not None
+        try:
+            local = [self._action_global_to_local[int(tid)] for tid in global_token_ids.tolist()]
+        except KeyError as e:
+            raise KeyError(f"Token id {e.args[0]} is not a valid action token") from e
+        return torch.tensor(local, device=global_token_ids.device, dtype=torch.long)
+
+    def _planning_prompt_model_inputs(
+        self, prompt_text: str
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Tokenize planning prompt (B=1), pad to max_length, reserve H action slots."""
+        from verl.utils.model import compute_position_id_with_mask
+
+        max_len = int(self.config.data.max_length)
+        reserve = int(self._reward_wm_max_horizon)
+        token_budget = max_len - reserve
+        if token_budget <= 0:
+            raise ValueError(f"max_length={max_len} too small for planning horizon={reserve}")
+
+        chat = [{"role": "user", "content": str(prompt_text)}]
+        prompt_str = self.tokenizer.apply_chat_template(
+            chat, add_generation_prompt=True, tokenize=False
+        )
+        tok = self.tokenizer(prompt_str, return_tensors="pt", add_special_tokens=False)
+        input_ids = tok["input_ids"][0]
+        attention_mask = tok["attention_mask"][0]
+        if int(input_ids.shape[0]) > token_budget:
+            input_ids = input_ids[:token_budget]
+            attention_mask = attention_mask[:token_budget]
+        seq_len = int(input_ids.shape[0])
+        if seq_len < max_len:
+            pad_id = self.tokenizer.pad_token_id
+            if pad_id is None:
+                pad_id = 0
+            pad_n = max_len - seq_len
+            input_ids = torch.cat(
+                [
+                    input_ids,
+                    torch.full((pad_n,), int(pad_id), dtype=input_ids.dtype),
+                ]
+            )
+            attention_mask = torch.cat(
+                [attention_mask, torch.zeros(pad_n, dtype=attention_mask.dtype)]
+            )
+        input_ids = input_ids.unsqueeze(0).to(self.device_name)
+        attention_mask = attention_mask.unsqueeze(0).to(self.device_name)
+        position_ids = compute_position_id_with_mask(attention_mask).to(self.device_name)
+        return input_ids, attention_mask, position_ids
 
     @torch.no_grad()
     def _predict_return_sum_from_plan(
@@ -565,15 +855,21 @@ class FSDPSFTTrainer:
 
         micro_bs = int(self._planning_adv_micro_batch)
         n_valid = 0
-        loss_sum = 0.0
+        loss_total_sum = 0.0
+        loss_adv_sum = 0.0
+        loss_entropy_sum = 0.0
         adv_sum = 0.0
         g_hat_sum = 0.0
         g_data_sum = 0.0
-        weight_sum = 0.0
+        logp_sum_metric = 0.0
+        plan_entropy_sum = 0.0
         pos_adv = 0
         neg_adv = 0
+        unique_plans: set[tuple[int, ...]] = set()
 
         indices = valid.nonzero(as_tuple=False).view(-1).tolist()
+        adv_loss_coef = float(loss_coef)
+        entropy_coef = float(self._planning_entropy_coef)
         for start in range(0, len(indices), micro_bs):
             chunk = indices[start : start + micro_bs]
             if not chunk:
@@ -592,37 +888,65 @@ class FSDPSFTTrainer:
                 sub_tasks = [tasks[i] for i in chunk]
                 g_hat = self._predict_return_sum_from_plan(sub_states, sub_tasks, token_ids)
             g_d = g_data.index_select(0, idx_t)
-            advantage = g_hat - g_d
-            weight = torch.sigmoid(advantage / float(self._planning_adv_sigmoid_T))
-            logp_plan = self._plan_logprob_on_actions(
-                input_ids, attention_mask, position_ids, token_ids
+            adv = (g_hat - g_d).detach().clamp(
+                -self._planning_adv_clip, self._planning_adv_clip
             )
-            loss = -(weight * logp_plan).mean() * float(loss_coef)
+            logp_plan, plan_entropy = self._plan_logprob_on_actions(
+                input_ids,
+                attention_mask,
+                position_ids,
+                token_ids,
+                return_masked_entropy=True,
+            )
+            h_norm = max(int(h_plan), 1)
+            logp_used = logp_plan / float(h_norm) if self._planning_adv_normalize_by_horizon else logp_plan
+            loss_adv = -(adv * logp_used).mean()
+            if self._planning_entropy_aent_enable:
+                loss_entropy = -entropy_coef * plan_entropy
+                loss = adv_loss_coef * loss_adv + loss_entropy
+            else:
+                loss_entropy = torch.zeros((), device=self.device_name)
+                loss = adv_loss_coef * loss_adv
             loss.backward()
             if is_cuda_available:
                 torch.cuda.empty_cache()
 
+            for row in token_ids.detach().cpu().tolist():
+                unique_plans.add(tuple(int(x) for x in row))
+
             n = len(chunk)
             n_valid += n
-            loss_sum += float(loss.detach().item()) * n
-            adv_sum += float(advantage.sum().item())
+            loss_total_sum += float(loss.detach().item()) * n
+            loss_adv_sum += float(loss_adv.detach().item()) * n
+            loss_entropy_sum += float(loss_entropy.detach().item()) * n
+            adv_sum += float(adv.sum().item())
             g_hat_sum += float(g_hat.sum().item())
             g_data_sum += float(g_d.sum().item())
-            weight_sum += float(weight.sum().item())
-            pos_adv += int((advantage > 0).sum().item())
-            neg_adv += int((advantage <= 0).sum().item())
+            logp_sum_metric += float(logp_used.detach().sum().item())
+            plan_entropy_sum += float(plan_entropy.detach().item()) * n
+            pos_adv += int((adv > 0).sum().item())
+            neg_adv += int((adv <= 0).sum().item())
 
         if n_valid <= 0:
             return None
+        plan_ent_mean = plan_entropy_sum / n_valid
         return {
-            "loss": loss_sum / n_valid,
+            "loss": loss_total_sum / n_valid,
+            "loss_total": loss_total_sum / n_valid,
+            "loss_adv": loss_adv_sum / n_valid,
+            "loss_entropy": loss_entropy_sum / n_valid,
             "n": n_valid,
             "advantage_mean": adv_sum / n_valid,
             "g_hat_mean": g_hat_sum / n_valid,
             "g_data_mean": g_data_sum / n_valid,
-            "weight_mean": weight_sum / n_valid,
+            "logp_plan_mean": logp_sum_metric / n_valid,
+            "logp_mean": logp_sum_metric / n_valid,
+            "plan_entropy": plan_ent_mean,
+            "entropy_masked": plan_ent_mean,
+            "entropy_coef": entropy_coef,
             "frac_positive_adv": pos_adv / n_valid,
             "frac_negative_adv": neg_adv / n_valid,
+            "unique_plans": float(len(unique_plans)),
         }
 
     def _extract_inverse_batch(self, batch: TensorDict) -> TensorDict | None:
@@ -1182,10 +1506,21 @@ class FSDPSFTTrainer:
         self.optimizer.step()
         return float(grad_norm.item()) if hasattr(grad_norm, "item") else float(grad_norm)
 
-    def training_step(self, batch: TensorDict, sidecar: dict | None = None):
+    def training_step(
+        self,
+        batch: TensorDict,
+        sidecar: dict | None = None,
+        *,
+        plan_adv_batch: TensorDict | None = None,
+        plan_adv_sidecar: dict | None = None,
+    ):
         self.fsdp_model.train()
 
         sidecar = sidecar or {}
+        plan_adv_sidecar = plan_adv_sidecar or {}
+        use_plan_adv_loader = (
+            self._planning_adv_batch_size > 0 and plan_adv_batch is not None
+        )
         use_horizon_acc = self._reward_wm_max_horizon > 1
         separate_plan_adv = (
             self._planning_advantage_enabled and self._planning_advantage_separate_step
@@ -1220,15 +1555,23 @@ class FSDPSFTTrainer:
                 loss_coef=self._planning_loss_coef,
             )
         plan_adv_accum = None
+        plan_adv_source = plan_adv_batch if use_plan_adv_loader else batch
+        plan_adv_sidecar_source = plan_adv_sidecar if use_plan_adv_loader else sidecar
         if self._planning_advantage_enabled and not separate_plan_adv:
             if is_cuda_available:
                 torch.cuda.empty_cache()
             plan_adv_accum = self._accumulate_planning_advantage_grads(
-                batch, sidecar, loss_coef=self._planning_loss_coef
+                plan_adv_source, plan_adv_sidecar_source, loss_coef=self._planning_loss_coef
             )
 
         log_gpu_memory_usage("Before optimizer step (reward phase)", logger=logger)
         self._optimizer_step()
+        if (
+            plan_adv_accum is not None
+            and not separate_plan_adv
+            and self._planning_entropy_aent_enable
+        ):
+            self._adapt_planning_entropy_coef(plan_adv_accum["plan_entropy"])
         log_gpu_memory_usage("After optimizer step (reward phase)", logger=logger)
 
         if separate_plan_adv:
@@ -1237,10 +1580,12 @@ class FSDPSFTTrainer:
             log_gpu_memory_usage("Before planner advantage phase zero_grad", logger=logger)
             self.optimizer.zero_grad()
             plan_adv_accum = self._accumulate_planning_advantage_grads(
-                batch, sidecar, loss_coef=self._planning_loss_coef
+                plan_adv_source, plan_adv_sidecar_source, loss_coef=self._planning_loss_coef
             )
             log_gpu_memory_usage("Before optimizer step (planner phase)", logger=logger)
             self._optimizer_step()
+            if plan_adv_accum is not None and self._planning_entropy_aent_enable:
+                self._adapt_planning_entropy_coef(plan_adv_accum["plan_entropy"])
             log_gpu_memory_usage("After optimizer step (planner phase)", logger=logger)
 
         self.lr_scheduler.step()
@@ -1253,6 +1598,8 @@ class FSDPSFTTrainer:
         metrics["train/lr(1e-3)"] = lr * 1e3
         if separate_plan_adv:
             metrics["train/planning_adv/separate_optimizer_step"] = 1.0
+        if self._curriculum_enabled:
+            metrics["train/curriculum/joint_phase"] = float(self._planning_advantage_enabled)
         if self._inverse_action_wm_enabled:
             if inv_accum is not None:
                 metrics.update(
@@ -1273,17 +1620,36 @@ class FSDPSFTTrainer:
                 metrics["train/planning/n_supervised_tokens"] = 0.0
         if self._planning_advantage_enabled:
             if plan_adv_accum is not None:
-                metrics["train/planning_adv/loss"] = plan_adv_accum["loss"]
+                if self._plan_adv_effective_batch_size > 0:
+                    metrics["train/planning_adv/batch_size"] = float(
+                        self._plan_adv_effective_batch_size
+                    )
+                metrics["train/planning_adv/loss"] = plan_adv_accum["loss_total"]
+                metrics["train/planning_adv/loss_total"] = plan_adv_accum["loss_total"]
+                metrics["train/planning_adv/loss_adv"] = plan_adv_accum["loss_adv"]
+                metrics["train/planning_adv/loss_entropy"] = plan_adv_accum["loss_entropy"]
                 metrics["train/planning_adv/n"] = float(plan_adv_accum["n"])
                 metrics["train/planning_adv/advantage_mean"] = plan_adv_accum["advantage_mean"]
                 metrics["train/planning_adv/g_hat_mean"] = plan_adv_accum["g_hat_mean"]
                 metrics["train/planning_adv/g_data_mean"] = plan_adv_accum["g_data_mean"]
-                metrics["train/planning_adv/weight_mean"] = plan_adv_accum["weight_mean"]
+                metrics["train/planning_adv/logp_plan_mean"] = plan_adv_accum["logp_plan_mean"]
+                metrics["train/planning_adv/logp_mean"] = plan_adv_accum["logp_mean"]
+                metrics["train/planning_adv/plan_entropy"] = plan_adv_accum["plan_entropy"]
+                metrics["train/planning_adv/entropy_masked"] = plan_adv_accum["plan_entropy"]
+                metrics["train/planning_adv/entropy_coef"] = float(self._planning_entropy_coef)
+                metrics["train/planning_adv/unique_plans"] = plan_adv_accum["unique_plans"]
                 metrics["train/planning_adv/frac_positive_adv"] = plan_adv_accum["frac_positive_adv"]
                 metrics["train/planning_adv/frac_negative_adv"] = plan_adv_accum["frac_negative_adv"]
             else:
                 metrics["train/planning_adv/n"] = 0.0
         return metrics
+
+    @staticmethod
+    def _masked_greedy_token_id(step_logits: torch.Tensor, allowed_ids: torch.Tensor) -> int:
+        """Argmax restricted to allowed token ids (matches training-time masked sampling)."""
+        masked = torch.full_like(step_logits, float("-inf"))
+        masked[allowed_ids] = step_logits[allowed_ids]
+        return int(masked.argmax(dim=-1).item())
 
     def _greedy_decode_reward_response(self, prompt_text: str, max_reward_tokens: int) -> str:
         """Autoregressive decode reward token string (e.g. ``ijk``) after the user prompt."""
@@ -1296,7 +1662,7 @@ class FSDPSFTTrainer:
             ids = self.tokenizer.encode(t, add_special_tokens=False)
             if len(ids) == 1:
                 reward_tok_ids.append(int(ids[0]))
-        reward_id_set = set(reward_tok_ids)
+        reward_ids_tensor = torch.tensor(reward_tok_ids, dtype=torch.long, device=self.device_name)
         eos_id = self.tokenizer.eos_token_id
 
         chat = [{"role": "user", "content": str(prompt_text)}]
@@ -1319,10 +1685,9 @@ class FSDPSFTTrainer:
                     use_cache=False,
                 )
                 seq_len = int(attention_mask.sum(dim=1).item()) - 1
-                next_id = int(out.logits[0, seq_len, :].argmax(dim=-1).item())
+                step_logits = out.logits[0, seq_len, :]
+                next_id = self._masked_greedy_token_id(step_logits, reward_ids_tensor)
                 if eos_id is not None and next_id == int(eos_id):
-                    break
-                if next_id not in reward_id_set:
                     break
                 decoded_chars.append(id_to_reward_tok[next_id])
                 next_t = torch.tensor([[next_id]], device=self.device_name, dtype=input_ids.dtype)
@@ -1349,7 +1714,7 @@ class FSDPSFTTrainer:
                 tid = int(ids[0])
                 action_tok_ids.append(tid)
                 id_to_action_tok[tid] = t
-        action_id_set = set(action_tok_ids)
+        action_ids_tensor = torch.tensor(action_tok_ids, dtype=torch.long, device=self.device_name)
         eos_id = self.tokenizer.eos_token_id
 
         chat = [{"role": "user", "content": str(prompt_text)}]
@@ -1368,12 +1733,11 @@ class FSDPSFTTrainer:
                 use_cache=False,
             )
             seq_len = int(attention_mask.sum(dim=1).item()) - 1
-            next_id = int(out.logits[0, seq_len, :].argmax(dim=-1).item())
+            step_logits = out.logits[0, seq_len, :]
+            next_id = self._masked_greedy_token_id(step_logits, action_ids_tensor)
             if eos_id is not None and next_id == int(eos_id):
                 return ""
-            if next_id in action_id_set:
-                return id_to_action_tok[next_id]
-            return self.tokenizer.decode([next_id], skip_special_tokens=True).strip()
+            return id_to_action_tok[next_id]
 
     def _greedy_decode_planning_action_sequence(self, prompt_text: str, num_actions: int) -> str:
         """Greedy decode H action tokens for return-conditioned planning."""
@@ -1389,7 +1753,7 @@ class FSDPSFTTrainer:
                 tid = int(ids[0])
                 action_tok_ids.append(tid)
                 id_to_action_tok[tid] = t
-        action_id_set = set(action_tok_ids)
+        action_ids_tensor = torch.tensor(action_tok_ids, dtype=torch.long, device=self.device_name)
         eos_id = self.tokenizer.eos_token_id
 
         chat = [{"role": "user", "content": str(prompt_text)}]
@@ -1410,10 +1774,9 @@ class FSDPSFTTrainer:
                     use_cache=False,
                 )
                 seq_len = int(attention_mask.sum(dim=1).item()) - 1
-                next_id = int(out.logits[0, seq_len, :].argmax(dim=-1).item())
+                step_logits = out.logits[0, seq_len, :]
+                next_id = self._masked_greedy_token_id(step_logits, action_ids_tensor)
                 if eos_id is not None and next_id == int(eos_id):
-                    break
-                if next_id not in action_id_set:
                     break
                 decoded.append(id_to_action_tok[next_id])
                 next_t = torch.tensor([[next_id]], device=self.device_name, dtype=input_ids.dtype)
@@ -1606,17 +1969,17 @@ class FSDPSFTTrainer:
         return metrics
 
     def _evaluate_planning_advantage_validation(self) -> dict:
-        """Val stats for max-return planner: Ĝ vs G_data baseline (greedy decode, no grad)."""
+        """Val stats: sampled plan, Ĝ vs G_data, masked plan entropy (matches train)."""
         max_batches = self._val_max_batches()
         h_plan = int(self._reward_wm_max_horizon)
+        micro_bs = int(self._planning_adv_micro_batch)
         n_rows = 0
         adv_sum = 0.0
         g_hat_sum = 0.0
         g_data_sum = 0.0
+        plan_entropy_sum = 0.0
         pos_adv = 0
         neg_adv = 0
-
-        from agent_system.environments.prompts.world_model_planning import format_max_return_planning_prompt
 
         was_training = self.fsdp_model.training
         self.fsdp_model.eval()
@@ -1635,32 +1998,37 @@ class FSDPSFTTrainer:
                 tasks = sidecar.get("planning_task_text", [""] * int(valid.shape[0]))
                 g_data = val_data["planning_g_data"].to(self.device_name).float()
                 indices = valid.nonzero(as_tuple=False).view(-1).tolist()
-                for i in indices:
-                    prompt = format_max_return_planning_prompt(
-                        str(states[i] or ""),
-                        task=str(tasks[i] or ""),
-                        horizon=h_plan,
-                    )
-                    pred = self._greedy_decode_planning_action_sequence(prompt, num_actions=h_plan)
-                    token_ids = self._action_seq_str_to_ids(pred, device=self.device_name)
-                    if token_ids is None:
+                for start in range(0, len(indices), micro_bs):
+                    chunk = indices[start : start + micro_bs]
+                    if not chunk:
                         continue
-                    g_hat = self._predict_return_sum_from_plan(
-                        [str(states[i] or "")],
-                        [str(tasks[i] or "")],
-                        token_ids,
+                    idx_t = torch.tensor(chunk, device=self.device_name, dtype=torch.long)
+                    input_ids = val_data["planning_adv_input_ids"].index_select(0, idx_t)
+                    attention_mask = val_data["planning_adv_attention_mask"].index_select(0, idx_t)
+                    position_ids = val_data["planning_adv_position_ids"].index_select(0, idx_t)
+                    token_ids = self._sample_plan_actions_no_grad(
+                        input_ids, attention_mask, position_ids, h_plan
                     )
-                    g_d = float(g_data[i].item())
-                    g_h = float(g_hat[0].item())
-                    adv = g_h - g_d
-                    n_rows += 1
-                    adv_sum += adv
-                    g_hat_sum += g_h
-                    g_data_sum += g_d
-                    if adv > 0:
-                        pos_adv += 1
-                    else:
-                        neg_adv += 1
+                    sub_states = [states[i] for i in chunk]
+                    sub_tasks = [tasks[i] for i in chunk]
+                    g_hat = self._predict_return_sum_from_plan(sub_states, sub_tasks, token_ids)
+                    _, ent_masked = self._plan_logprob_on_actions(
+                        input_ids,
+                        attention_mask,
+                        position_ids,
+                        token_ids,
+                        return_masked_entropy=True,
+                    )
+                    g_d = g_data.index_select(0, idx_t)
+                    advantage = g_hat - g_d
+                    n = len(chunk)
+                    n_rows += n
+                    adv_sum += float(advantage.sum().item())
+                    g_hat_sum += float(g_hat.sum().item())
+                    g_data_sum += float(g_d.sum().item())
+                    plan_entropy_sum += float(ent_masked.item()) * n
+                    pos_adv += int((advantage > 0).sum().item())
+                    neg_adv += int((advantage <= 0).sum().item())
                     if is_cuda_available:
                         torch.cuda.empty_cache()
 
@@ -1669,11 +2037,14 @@ class FSDPSFTTrainer:
 
         if n_rows <= 0:
             return {"val/planning_adv/n": 0.0}
+        ent_mean = plan_entropy_sum / n_rows
         return {
             "val/planning_adv/n": float(n_rows),
             "val/planning_adv/advantage_mean": adv_sum / n_rows,
             "val/planning_adv/g_hat_mean": g_hat_sum / n_rows,
             "val/planning_adv/g_data_mean": g_data_sum / n_rows,
+            "val/planning_adv/plan_entropy": ent_mean,
+            "val/planning_adv/entropy_masked": ent_mean,
             "val/planning_adv/frac_positive_adv": pos_adv / n_rows,
             "val/planning_adv/frac_negative_adv": neg_adv / n_rows,
         }
@@ -2019,6 +2390,8 @@ class FSDPSFTTrainer:
         adv_sum = 0.0
         g_hat_sum = 0.0
         g_data_sum = 0.0
+        greedy_plan_entropy_sum = 0.0
+        greedy_plan_entropy_n = 0
         pos_adv = 0
         correct_tokens = 0
         total_tokens = 0
@@ -2030,6 +2403,13 @@ class FSDPSFTTrainer:
                 row = sub.iloc[i]
                 task = str(row.get("instruction", "") or "").strip()
                 token_ids = self._action_seq_str_to_ids(pred, device=self.device_name)
+                if token_ids is not None:
+                    inp, attn, pos = self._planning_prompt_model_inputs(prompt)
+                    _, ent_g = self._plan_logprob_on_actions(
+                        inp, attn, pos, token_ids, return_masked_entropy=True
+                    )
+                    greedy_plan_entropy_sum += float(ent_g.item())
+                    greedy_plan_entropy_n += 1
                 g_h = 0.0
                 if token_ids is not None:
                     g_hat = self._predict_return_sum_from_plan(
@@ -2062,7 +2442,7 @@ class FSDPSFTTrainer:
         if n == 0:
             return {}
         tok_acc = float(correct_tokens / total_tokens) if total_tokens > 0 else 0.0
-        return {
+        metrics = {
             "val/planning_adv/greedy_token_accuracy": tok_acc,
             "val/planning_adv/greedy_sequence_accuracy": float(seq_matches / n),
             "val/planning_adv/greedy_n": float(n),
@@ -2071,6 +2451,11 @@ class FSDPSFTTrainer:
             "val/planning_adv/g_data_mean": g_data_sum / n,
             "val/planning_adv/frac_positive_adv": pos_adv / n,
         }
+        if greedy_plan_entropy_n > 0:
+            ent_g = greedy_plan_entropy_sum / greedy_plan_entropy_n
+            metrics["val/planning_adv/greedy_plan_entropy"] = ent_g
+            metrics["val/planning_adv/greedy_entropy_masked"] = ent_g
+        return metrics
 
     def _run_and_log_validation(self, tracking: Tracking, step: int, tag: str = "") -> None:
         """Run full val, log metrics/tables to Comet, print to console."""
@@ -2079,12 +2464,13 @@ class FSDPSFTTrainer:
             cap = self._val_max_batches()
             cap_s = f"max {cap} batches" if cap > 0 else "full val set"
             print(f"[val] step={step}{label} metrics ({cap_s})...", flush=True)
+        # All ranks must run val forwards (FSDP collectives); rank 0 logs only.
         metric = self._evaluate_validation(return_entropy=True)
-        if self.device_mesh.get_rank() == 0 and self._inverse_action_wm_enabled:
+        if self._inverse_action_wm_enabled:
             metric.update(self._compute_inverse_greedy_val_accuracy())
-        if self.device_mesh.get_rank() == 0 and self._planning_ce_enabled:
+        if self._planning_ce_enabled:
             metric.update(self._compute_planning_greedy_val_accuracy())
-        if self.device_mesh.get_rank() == 0 and self._planning_advantage_enabled:
+        if self._planning_advantage_enabled:
             metric.update(self._compute_planning_advantage_greedy_val_accuracy())
         if self.device_mesh.get_rank() == 0:
             tracking.log(data=metric, step=step)
@@ -2809,9 +3195,15 @@ class FSDPSFTTrainer:
         except Exception as e:
             print(f"[planning_adv_val] failed to save/log example panel: {e}", flush=True)
 
-    def save_checkpoint(self, step):
-        # save checkpoint
-        path = os.path.join(self.config.trainer.default_local_dir, f"global_step_{step}")
+    def save_checkpoint(self, step, *, subdir: str = "latest"):
+        """Save HF checkpoint under ``default_local_dir/{subdir}`` (default: overwrite ``latest``)."""
+        import shutil
+
+        path = os.path.join(self.config.trainer.default_local_dir, subdir)
+        if self.device_mesh.get_rank() == 0 and os.path.isdir(path):
+            shutil.rmtree(path)
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
 
         fsdp_strategy = self.config.model.strategy
         if fsdp_strategy == "fsdp":
@@ -2827,6 +3219,8 @@ class FSDPSFTTrainer:
                 os.makedirs(path, exist_ok=True)
                 self.model.save_pretrained(path, state_dict=state_dict)
                 self.tokenizer.save_pretrained(path)
+                with open(os.path.join(path, "train_step.txt"), "w", encoding="utf-8") as f:
+                    f.write(f"{int(step)}\n")
         elif fsdp_strategy == "fsdp2":
             # FSDP2 checkpoint saving
             from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
@@ -2841,6 +3235,8 @@ class FSDPSFTTrainer:
                 self.model.save_pretrained(path, state_dict=state_dict)
                 self.model_config.save_pretrained(path)
                 self.tokenizer.save_pretrained(path)
+                with open(os.path.join(path, "train_step.txt"), "w", encoding="utf-8") as f:
+                    f.write(f"{int(step)}\n")
         else:
             raise NotImplementedError(f"not implement {fsdp_strategy}")
 
@@ -2852,42 +3248,150 @@ class FSDPSFTTrainer:
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
 
+    def _apply_curriculum_phase_switch(
+        self,
+        *,
+        joint_phase: bool,
+        tracking: Tracking | None,
+        global_step: int | None = None,
+        epoch: int | None = None,
+    ) -> bool:
+        """Enable/disable planner for curriculum; return True if phase changed."""
+        if joint_phase == self._planning_advantage_enabled:
+            return False
+        self._planning_advantage_enabled = joint_phase
+        self._planning_any_enabled = self._planning_ce_enabled or self._planning_advantage_enabled
+        if self.device_mesh.get_rank() == 0:
+            phase = "joint_reward_planner" if joint_phase else "reward_only"
+            if global_step is not None:
+                print(
+                    f"[curriculum] train step {global_step}: phase={phase}",
+                    flush=True,
+                )
+            elif epoch is not None:
+                print(
+                    f"[curriculum] epoch {epoch + 1}: phase={phase} "
+                    f"(reward_only_epochs={self._curriculum_reward_only_epochs})",
+                    flush=True,
+                )
+            if tracking is not None:
+                params: dict[str, int | str] = {"curriculum_phase": phase}
+                if global_step is not None:
+                    params["curriculum_train_step"] = int(global_step)
+                if epoch is not None:
+                    params["curriculum_epoch"] = int(epoch + 1)
+                tracking.log_parameters(params)
+        return True
+
+    def _set_curriculum_phase_for_epoch(self, epoch: int, tracking: Tracking | None) -> None:
+        """Toggle planner on after reward-only curriculum epochs (legacy)."""
+        if not self._curriculum_enabled or self._curriculum_use_steps:
+            return
+        self._apply_curriculum_phase_switch(
+            joint_phase=epoch >= self._curriculum_reward_only_epochs,
+            tracking=tracking,
+            epoch=epoch,
+        )
+
+    def _set_curriculum_phase_for_step(self, global_step: int, tracking: Tracking | None) -> bool:
+        """Toggle planner after reward-only curriculum steps. True if phase just changed."""
+        if not self._curriculum_enabled or not self._curriculum_use_steps:
+            return False
+        return self._apply_curriculum_phase_switch(
+            joint_phase=global_step > self._curriculum_reward_only_steps,
+            tracking=tracking,
+            global_step=global_step,
+        )
+
+    def _log_comet_checkpoint_paths(self, tracking: Tracking, step: int | None = None) -> None:
+        """Publish checkpoint directories to Comet (rank 0 only)."""
+        if self.device_mesh.get_rank() != 0:
+            return
+        out = os.path.abspath(str(self.config.trainer.default_local_dir))
+        latest = os.path.join(out, "latest")
+        params = {
+            "checkpoint_run_dir": out,
+            "checkpoint_latest_dir": latest,
+        }
+        if step is not None:
+            params["checkpoint_latest_train_step"] = int(step)
+        tracking.log_parameters(params)
+
+    def _save_checkpoint_after_validation(self, tracking: Tracking | None, step: int) -> None:
+        """Overwrite single run checkpoint (all ranks; call after val on rank 0)."""
+        out = self.config.trainer.default_local_dir
+        ckpt = os.path.join(out, "latest")
+        if self.device_mesh.get_rank() == 0:
+            print(f"[checkpoint] saving latest -> {ckpt} (train_step={step})", flush=True)
+        self.save_checkpoint(step=step, subdir="latest")
+        if tracking is not None:
+            self._log_comet_checkpoint_paths(tracking, step=step)
+
     def fit(self):
         rank = self.device_mesh.get_rank()
 
         # TODO: add a unified tracking
+        tracking = None
         if rank == 0:
             tracking = Tracking(
                 project_name=self.config.trainer.project_name,
                 experiment_name=self.config.trainer.experiment_name,
                 default_backend=self.config.trainer.logger,
             )
+            self._log_comet_checkpoint_paths(tracking, step=0)
 
         global_step = 0
         val_every_steps = int(getattr(self.config.trainer, "val_every_steps", 0) or 0)
-        # compute the total training steps.
-        # the total training steps in SFT is mainly for early exit
-        total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
-
-        if self.config.trainer.total_training_steps is not None:
-            total_training_steps = self.config.trainer.total_training_steps
+        # Epoch-driven training; optional step cap (disabled for curriculum by default in shell).
+        total_training_steps = len(self.train_dataloader) * int(self.config.trainer.total_epochs)
+        step_cap = getattr(self.config.trainer, "total_training_steps", None)
+        if step_cap is not None and int(step_cap) > 0:
+            total_training_steps = int(step_cap)
 
         self.total_training_steps = total_training_steps
         print(f"Total training steps: {self.total_training_steps}")
+        if self._curriculum_enabled:
+            if self._curriculum_use_steps:
+                joint_steps = max(0, self.total_training_steps - self._curriculum_reward_only_steps)
+                print(
+                    f"Curriculum active: reward-only steps 1..{self._curriculum_reward_only_steps}, "
+                    f"then joint for ~{joint_steps} steps (total_training_steps="
+                    f"{self.total_training_steps})",
+                    flush=True,
+                )
+                if self._curriculum_reward_only_steps >= self.total_training_steps:
+                    raise ValueError(
+                        "trainer.curriculum.reward_only_steps must be < trainer.total_training_steps "
+                        f"({self._curriculum_reward_only_steps} >= {self.total_training_steps})"
+                    )
+            else:
+                print(
+                    f"Curriculum active: train for {self.config.trainer.total_epochs} epochs "
+                    f"(reward-only first {self._curriculum_reward_only_epochs})",
+                    flush=True,
+                )
         if rank == 0 and val_every_steps > 0:
-            print(f"Validation every {val_every_steps} train steps (+ initial at step 0)", flush=True)
+            print(
+                f"Validation every {val_every_steps} train steps (+ initial at step 0); "
+                f"checkpoint overwrite: {self.config.trainer.default_local_dir}/latest",
+                flush=True,
+            )
 
         # TODO (zhangchi.usc1992) add back checkpoint manager.
         # Currently, it blocks when uploading to hdfs. So very slow.
 
-        if rank == 0 and val_every_steps > 0:
+        if val_every_steps > 0:
             self._run_and_log_validation(tracking=tracking, step=0, tag="initial")
+            self._save_checkpoint_after_validation(tracking, step=0)
 
         for epoch in range(self.config.trainer.total_epochs):
+            self._set_curriculum_phase_for_epoch(epoch, tracking)
+
             if self.train_batch_sampler is not None:
                 self.train_batch_sampler.set_epoch(epoch=epoch)
             elif self.train_sampler is not None:
                 self.train_sampler.set_epoch(epoch=epoch)
+            self._reset_plan_adv_dataloader_epoch(epoch)
             for data in tqdm(
                 self.train_dataloader,
                 total=self.steps_per_epoch,
@@ -2895,35 +3399,44 @@ class FSDPSFTTrainer:
                 disable=rank != 0
             ):
                 global_step += 1
+                curriculum_switched = self._set_curriculum_phase_for_step(global_step, tracking)
+                if curriculum_switched:
+                    if val_every_steps > 0:
+                        self._run_and_log_validation(
+                            tracking=tracking, step=global_step, tag="curriculum joint start"
+                        )
+                    self._save_checkpoint_after_validation(tracking, step=global_step)
                 batch, sidecar = self._prepare_batch(data)
-                metric = self.training_step(batch, sidecar=sidecar)
+                plan_adv_batch = None
+                plan_adv_sidecar = None
+                if self._planning_advantage_enabled and self._planning_adv_batch_size > 0:
+                    plan_adv_batch, plan_adv_sidecar = self._next_planning_advantage_batch()
+                metric = self.training_step(
+                    batch,
+                    sidecar=sidecar,
+                    plan_adv_batch=plan_adv_batch,
+                    plan_adv_sidecar=plan_adv_sidecar,
+                )
                 if rank == 0:
                     tracking.log(data=metric, step=global_step)
-
-                    # Periodic validation (optional).
-                    if val_every_steps > 0 and (global_step % val_every_steps == 0):
-                        self._run_and_log_validation(tracking=tracking, step=global_step)
+                if val_every_steps > 0 and (global_step % val_every_steps == 0):
+                    self._run_and_log_validation(tracking=tracking, step=global_step)
+                    self._save_checkpoint_after_validation(tracking, step=global_step)
 
                 # for early exit validation
                 if global_step >= self.total_training_steps:
-                    # Perform final validation
-                    if rank == 0:
+                    if val_every_steps > 0:
                         self._run_and_log_validation(
                             tracking=tracking, step=global_step, tag="final"
                         )
-
-                    # Save final checkpoint
-                    self.save_checkpoint(step=global_step)
+                    self._save_checkpoint_after_validation(tracking, step=global_step)
                     return
 
-            # validation at epoch end
-            if rank == 0:
-                self._run_and_log_validation(
-                    tracking=tracking, step=global_step, tag="epoch end"
-                )
-
-            # save checkpoint
-            self.save_checkpoint(step=global_step)
+            # validation at epoch end (all ranks; FSDP collectives)
+            self._run_and_log_validation(
+                tracking=tracking, step=global_step, tag="epoch end"
+            )
+            self._save_checkpoint_after_validation(tracking, step=global_step)
 
 
 @hydra.main(config_path="config", config_name="sft_trainer", version_base=None)

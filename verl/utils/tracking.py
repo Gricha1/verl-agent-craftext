@@ -142,6 +142,11 @@ class Tracking:
         if "comet" in self.logger and hasattr(self.logger["comet"], "log_image"):
             self.logger["comet"].log_image(image_path, step=step, name=name)
 
+    def log_parameters(self, params: Dict[str, Any]) -> None:
+        """Log string/scalar run metadata (e.g. checkpoint paths) to Comet parameters."""
+        if "comet" in self.logger:
+            self.logger["comet"].log_parameters(params)
+
     def __del__(self):
         if "wandb" in self.logger:
             self.logger["wandb"].finish(exit_code=0)
@@ -279,6 +284,11 @@ class CometMLLogger:
         import os
         if os.path.isfile(image_path):
             self.experiment.log_image(image_path, name=name, step=step)
+
+    def log_parameters(self, params: Dict[str, Any]) -> None:
+        """Log or update Comet experiment parameters (paths, flags, etc.)."""
+        for key, value in params.items():
+            self.experiment.log_parameter(key, value)
 
     def finish(self):
         """End the Comet ML experiment"""

@@ -18,7 +18,7 @@ SFT dataset
 Each parquet file contains
 """
 
-from typing import List, Union
+from typing import List, Sequence, Union
 
 import pandas as pd
 import torch
@@ -401,8 +401,38 @@ class SFTDataset(Dataset):
         prompt = format_max_return_planning_prompt(state, task=task, horizon=h_plan)
         return prompt, None, state, task, True, g_data
 
-    def _build_prompt_only_tensors(self, prompt: str):
-        """Tokenize user prompt only (for policy-gradient planning)."""
+    def is_planning_advantage_index(self, item: int) -> bool:
+        """True if row ``item`` is valid for max-return advantage planner training."""
+        _prompt, _resp, _state, _task, valid, _g = self._planning_advantage_sample_for_index(item)
+        return bool(valid)
+
+    def get_planning_advantage_item(self, item: int) -> dict:
+        """Planner-only sample (no reward/inverse/planning CE tensors)."""
+        adv_prompt, _, adv_state, adv_task, adv_valid, g_data = self._planning_advantage_sample_for_index(
+            item
+        )
+        if not adv_valid or adv_prompt is None:
+            raise IndexError(f"Dataset index {item} is not a valid planning-advantage row")
+        adv = self._build_prompt_only_tensors(
+            adv_prompt, reserve_tokens=int(self._planning_wm_horizon)
+        )
+        return {
+            "planning_adv_input_ids": adv["input_ids"],
+            "planning_adv_attention_mask": adv["attention_mask"],
+            "planning_adv_position_ids": adv["position_ids"],
+            "planning_adv_prompt_length": adv["prompt_length"],
+            "planning_adv_valid": torch.tensor(1, dtype=torch.long),
+            "planning_g_data": torch.tensor(float(g_data), dtype=torch.float32),
+            "planning_state_text": adv_state,
+            "planning_task_text": adv_task,
+        }
+
+    def _build_prompt_only_tensors(self, prompt: str, *, reserve_tokens: int = 0):
+        """Tokenize user prompt only (for policy-gradient planning).
+
+        ``reserve_tokens``: leave room at the end for H in-place action tokens
+        appended during planner forward (must be < max_length).
+        """
         tokenizer = self.tokenizer
         prompt_chat = [{"role": "user", "content": prompt}]
         prompt_chat_str = tokenizer.apply_chat_template(
@@ -412,6 +442,20 @@ class SFTDataset(Dataset):
         input_ids = prompt_ids_output["input_ids"][0]
         attention_mask = prompt_ids_output["attention_mask"][0]
         sequence_length = input_ids.shape[0]
+        token_budget = int(self.max_length) - int(reserve_tokens)
+        if token_budget <= 0:
+            raise ValueError(
+                f"max_length={self.max_length} too small for reserve_tokens={reserve_tokens}"
+            )
+        if sequence_length > token_budget:
+            if self.truncation == "error":
+                raise NotImplementedError(
+                    f"Planning prompt length {sequence_length} exceeds token budget "
+                    f"{token_budget} (max_length={self.max_length}, reserve={reserve_tokens})"
+                )
+            input_ids = input_ids[:token_budget]
+            attention_mask = attention_mask[:token_budget]
+            sequence_length = token_budget
         if sequence_length < self.max_length:
             padded_input_ids = torch.ones(
                 size=(self.max_length - sequence_length,), dtype=input_ids.dtype
@@ -498,7 +542,9 @@ class SFTDataset(Dataset):
 
         adv_prompt, _, adv_state, adv_task, adv_valid, g_data = self._planning_advantage_sample_for_index(item)
         if adv_valid and adv_prompt is not None and self._planning_advantage_wm_enable:
-            adv = self._build_prompt_only_tensors(adv_prompt)
+            adv = self._build_prompt_only_tensors(
+                adv_prompt, reserve_tokens=int(self._planning_wm_horizon)
+            )
         else:
             adv = {
                 "input_ids": out["input_ids"].clone(),
@@ -519,3 +565,30 @@ class SFTDataset(Dataset):
         out["planning_state_text"] = adv_state if adv_valid else ""
         out["planning_task_text"] = adv_task if adv_valid else ""
         return out
+
+
+def collect_planning_advantage_indices(dataset: SFTDataset) -> List[int]:
+    """Indices of rows valid for advantage planner (full planning horizon)."""
+    if not getattr(dataset, "has_planning_columns", False):
+        return []
+    if not getattr(dataset, "_planning_advantage_wm_enable", False):
+        return []
+    if not hasattr(dataset, "is_planning_advantage_index"):
+        return []
+    return [i for i in range(len(dataset)) if dataset.is_planning_advantage_index(i)]
+
+
+class PlanningAdvantageDataset(Dataset):
+    """View of ``SFTDataset`` containing only advantage-planner rows."""
+
+    def __init__(self, base: SFTDataset, indices: Sequence[int]):
+        self.base = base
+        self.indices = [int(i) for i in indices]
+        if not self.indices:
+            raise ValueError("PlanningAdvantageDataset requires at least one valid index")
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, item: int) -> dict:
+        return self.base.get_planning_advantage_item(self.indices[item])
