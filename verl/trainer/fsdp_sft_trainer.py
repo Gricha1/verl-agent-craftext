@@ -1029,16 +1029,34 @@ class FSDPSFTTrainer:
                 _apply_liger_kernel_to_instance(model=self.model)
 
             if self.config.model.get("lora_rank", 0) > 0:
+                from peft import PeftModel
+
                 self.model.enable_input_require_grads()
-                # Convert config to regular Python types before creating PEFT model
-                lora_config = {
-                    "task_type": TaskType.CAUSAL_LM,
-                    "r": self.config.model.lora_rank,
-                    "lora_alpha": self.config.model.lora_alpha,
-                    "target_modules": convert_to_regular_types(self.config.model.target_modules),
-                    "bias": "none",
-                }
-                self.model = get_peft_model(self.model, LoraConfig(**lora_config))
+                lora_init = self.config.model.get("lora_init_path", None)
+                if lora_init:
+                    local_adapter = copy_to_local(src=str(lora_init), verbose=True)
+                    has_adapter = os.path.isfile(
+                        os.path.join(local_adapter, "adapter_model.safetensors")
+                    ) or os.path.isfile(os.path.join(local_adapter, "adapter_model.bin"))
+                    if not has_adapter:
+                        raise FileNotFoundError(
+                            f"lora_init_path has no adapter weights: {local_adapter}"
+                        )
+                    self.model = PeftModel.from_pretrained(
+                        self.model, local_adapter, is_trainable=True
+                    )
+                    if self.device_mesh.get_rank() == 0:
+                        print(f"[SFT] Loaded LoRA adapter from {local_adapter}", flush=True)
+                else:
+                    # Convert config to regular Python types before creating PEFT model
+                    lora_config = {
+                        "task_type": TaskType.CAUSAL_LM,
+                        "r": self.config.model.lora_rank,
+                        "lora_alpha": self.config.model.lora_alpha,
+                        "target_modules": convert_to_regular_types(self.config.model.target_modules),
+                        "bias": "none",
+                    }
+                    self.model = get_peft_model(self.model, LoraConfig(**lora_config))
 
         if self.config.model.enable_gradient_checkpointing:
             self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})

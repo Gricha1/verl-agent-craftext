@@ -61,6 +61,7 @@ OBSERVATION_TYPE=${12:-ascii}
 shift 12 2>/dev/null || shift 11 2>/dev/null || shift 10 2>/dev/null || shift 9 2>/dev/null || shift 8 2>/dev/null || shift 7 2>/dev/null || shift 6 2>/dev/null || shift 5 2>/dev/null || shift 4 2>/dev/null || shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/dev/null || true
 
 # Если используется action head или single-token actions, max_response_length = 1
+# single_token_action: 1 token (action); critic uses separate value_prompt_template_type
 if [ "$USE_ACTION_HEAD" = "true" ] || [ "$PROMPT_TEMPLATE_TYPE" = "single_token_action" ]; then
     max_response_length=1
     echo "[INFO] max_response_length=1 (USE_ACTION_HEAD=$USE_ACTION_HEAD, PROMPT_TEMPLATE_TYPE=$PROMPT_TEMPLATE_TYPE)"
@@ -77,8 +78,10 @@ DEFAULT_CAGED_PATH="$PROJECT_ROOT/caged_craftext"
 
 # Используем переменную окружения, если установлена, иначе вычисленный путь
 export CAGED_CRAFTEXT_PATH="${CAGED_CRAFTEXT_PATH:-$DEFAULT_CAGED_PATH}"
-export PYTHONPATH="${CAGED_CRAFTEXT_PATH}:${PYTHONPATH}"
+export CRAFTAX_PATH="${CAGED_CRAFTEXT_PATH}/Craftax"
+export PYTHONPATH="${CRAFTAX_PATH}:${CAGED_CRAFTEXT_PATH}:${PYTHONPATH}"
 echo "[INFO] CAGED_CRAFTEXT_PATH установлен: $CAGED_CRAFTEXT_PATH"
+echo "[INFO] CRAFTAX_PATH (local, not pip): $CRAFTAX_PATH"
 echo "[INFO] Корень проекта: $PROJECT_ROOT"
 echo "[INFO] ENGINE: $ENGINE"
 echo "[INFO] LOG_PROB_ACTION_ONLY: $LOG_PROB_ACTION_ONLY"
@@ -160,6 +163,7 @@ python -m verl.trainer.main_ppo \
     +env.observation_type="$OBSERVATION_TYPE" \
     +env.prompt_template_type=$PROMPT_TEMPLATE_TYPE \
     actor_rollout_ref.actor.single_token_actions=$(if [ "$PROMPT_TEMPLATE_TYPE" = "single_token_action" ]; then echo "True"; else echo "False"; fi) \
+    actor_rollout_ref.actor.actor_value_token=False \
     +env.auto_reset=$(if [ "$AUTO_RESET" = "true" ]; then echo "True"; else echo "False"; fi) \
     ++env.use_jax_gpu=False \
     +actor_rollout_ref.model.use_action_head=$(if [ "$USE_ACTION_HEAD" = "true" ]; then echo "True"; else echo "False"; fi) \

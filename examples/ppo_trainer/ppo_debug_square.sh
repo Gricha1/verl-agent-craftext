@@ -33,7 +33,7 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   8000 \
   true \
   single_token_action \
-  10 \
+  0 \
   ascii \
   ++env.craftext_settings='debug_square_8x8' \
   +env.use_optimistic_parallel=True \

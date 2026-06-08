@@ -44,8 +44,8 @@ easy = {
     "GO_TO_WOOD": {
         "instruction": "Go to the wooden block.",
         "instruction_paraphrases": [
-            "Walk next to the wooden block.",
-            "Approach the wood block in the corner.",
+            "Walk next to the wooden block (w tile, not border trees).",
+            "Approach the wood block in the top-right corner.",
         ],
         "textual_constraint": "",
         "scenario_checker": 0,

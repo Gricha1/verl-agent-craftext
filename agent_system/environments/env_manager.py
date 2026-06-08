@@ -17,7 +17,7 @@ import os
 import re
 from collections import defaultdict
 from functools import partial
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -617,6 +617,7 @@ from agent_system.environments.env_package.caged_craftext.projection import (
     get_craftext_template_no_his,
     get_craftext_extended_template_no_his,
     get_single_token_action_template_no_his,
+    get_single_token_return_template_no_his,
     CRAFTEXT_EXTENDED_TEMPLATE_NO_HIS,
     ACTION_TO_TEXT as CAGED_ACTION_TO_TEXT,
 )
@@ -754,6 +755,9 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
                 'text': self.build_text_obs(text_renders, infos, init=True), 
                 'anchor': text_renders.copy()
             }
+            value_text = self.build_value_text_obs(text_renders, infos, init=True)
+            if value_text is not None:
+                observations['value_text'] = value_text
             # Добавляем constraint в observations, если есть
             if any(constraints):
                 observations['constraint'] = constraints
@@ -764,9 +768,9 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
                 'image': obs,
                 'anchor': text_renders.copy()
             }
-            # Добавляем constraint в observations, если есть
-            if any(constraints):
-                observations['constraint'] = constraints
+            value_text = self.build_value_text_obs(text_renders, infos, init=True)
+            if value_text is not None:
+                observations['value_text'] = value_text
 
         self.pre_text_obs = text_renders
         self.memory.reset(batch_size=len(infos))
@@ -776,6 +780,14 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
         action_ids, valids = self.projection_f(text_actions)
         next_obs, rewards, dones, infos = self.envs.step(action_ids)
         next_text_renders = [info.get('text_render', 'The world is empty.') for info in infos]
+
+        # Optimistic auto-reset can swap instruction_idx mid-rollout; keep prompts in sync.
+        if not hasattr(self, "tasks") or len(self.tasks) != len(infos):
+            self.tasks = ["No instruction found"] * len(infos)
+        for i, info in enumerate(infos):
+            instr = info.get("instruction")
+            if instr:
+                self.tasks[i] = instr
 
         self.memory.store({'text_obs': self.pre_text_obs, 'action': text_actions})
         self.pre_text_obs = next_text_renders
@@ -788,6 +800,9 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
                 'text': self.build_text_obs(next_text_renders, infos),
                 'anchor': next_text_renders.copy()
             }
+            value_text = self.build_value_text_obs(next_text_renders, infos)
+            if value_text is not None:
+                next_observations['value_text'] = value_text
             # Добавляем constraint в observations, если есть
             if any(constraints):
                 next_observations['constraint'] = constraints
@@ -798,9 +813,9 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
                 'image': next_obs,
                 'anchor': next_text_renders.copy()
             }
-            # Добавляем constraint в observations, если есть
-            if any(constraints):
-                next_observations['constraint'] = constraints
+            value_text = self.build_value_text_obs(next_text_renders, infos)
+            if value_text is not None:
+                next_observations['value_text'] = value_text
         
         for i, info in enumerate(infos):
             # Keep parity with CraftextEnvironmentManager: expose validity and discrete action ids.
@@ -826,6 +841,7 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
         Строит текстовые наблюдения из рендеров и инфо.
         Для Caged Craftext также может включать информацию о constraint.
         """
+        # Prefer live instruction from infos (survives optimistic auto-reset).
         # Получаем тип шаблона из config (по умолчанию default_template)
         prompt_template_type = getattr(self.config.env, 'prompt_template_type', 'default_template')
         
@@ -849,7 +865,9 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
         final_prompts = []
         
         for i, (text_render, info) in enumerate(zip(text_renders, infos)):
-            task = self.tasks[i] if hasattr(self, 'tasks') and i < len(self.tasks) else info.get('instruction', 'No instruction found')
+            task = info.get("instruction") or (
+                self.tasks[i] if hasattr(self, "tasks") and i < len(self.tasks) else "No instruction found"
+            )
             
             # Получаем constraint, если есть
             constraint = info.get('constraint', '')
@@ -901,6 +919,27 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
 
             final_prompts.append(prompt)
 
+        return final_prompts
+
+    def build_value_text_obs(self, text_renders: List[str], infos: List[Dict], init: bool = False) -> Optional[List[str]]:
+        """Build critic/value prompts (separate from actor prompt). Returns None if disabled."""
+        value_template_type = getattr(self.config.env, 'value_prompt_template_type', None)
+        if not value_template_type:
+            return None
+        if value_template_type != 'single_token_return':
+            raise ValueError(f"Unsupported value_prompt_template_type: {value_template_type!r}")
+
+        template_no_his = get_single_token_return_template_no_his()
+        final_prompts = []
+        for i, (text_render, info) in enumerate(zip(text_renders, infos)):
+            task = info.get("instruction") or (
+                self.tasks[i] if hasattr(self, "tasks") and i < len(self.tasks) else "No instruction found"
+            )
+            constraint = info.get('constraint', '')
+            prompt = template_no_his.format(task_description=task, current_observation=text_render)
+            if constraint:
+                prompt += f"\n\n**CONSTRAINT:** {constraint}"
+            final_prompts.append(prompt)
         return final_prompts
 
 
@@ -1214,8 +1253,11 @@ def make_envs(config):
             # Per Ray text-render actor; too small → tasks queue / serial IPC. Used only for train env.
             'text_render_ray_num_cpus': float(getattr(config.env, "text_render_ray_num_cpus", 0.25)),
         }
-        if str(config.env.craftext_settings) == "debug_square_8x8":
+        if str(config.env.craftext_settings) == "debug_square_8x8" or "debug_square" in str(
+            config.env.craftext_settings
+        ):
             env_kwargs['use_debug_square_map'] = True
+            env_kwargs['config_name'] = str(config.env.craftext_settings)
         
         # 3. Создаем train и val среды
         optimistic_reset_ratio = getattr(config.env, "optimistic_reset_ratio", None)

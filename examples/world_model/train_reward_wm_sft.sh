@@ -120,6 +120,8 @@ PLANNING_ADV_CLIP="${PLANNING_ADV_CLIP:-10.0}"
 PLANNING_ADV_NORMALIZE_BY_HORIZON="${PLANNING_ADV_NORMALIZE_BY_HORIZON:-true}"
 # DataLoader workers: 0 avoids JAX+fork deadlock after caged_craftext import.
 DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-0}"
+# Optional: init LoRA from HF adapter (e.g. PPO extract or prior WM SFT latest).
+LORA_INIT_PATH="${LORA_INIT_PATH:-}"
 
 # Ensure Comet uses the same run name.
 export RUN_NAME="${RUN_NAME:-$EXP_NAME}"
@@ -167,6 +169,12 @@ if [ "$INVERSE_ACTION_WM" = "true" ] || [ "$INVERSE_ACTION_WM" = "1" ]; then
   )
 else
   INVERSE_HYDRA_ARGS=(+trainer.inverse_action_wm.enable=false)
+fi
+
+LORA_INIT_HYDRA_ARGS=()
+if [ -n "$LORA_INIT_PATH" ]; then
+  echo "[INFO] LORA_INIT_PATH=$LORA_INIT_PATH"
+  LORA_INIT_HYDRA_ARGS=(+model.lora_init_path="$LORA_INIT_PATH")
 fi
 
 if [ "$PLANNING_ADVANTAGE_WM" = "true" ] || [ "$PLANNING_ADVANTAGE_WM" = "1" ]; then
@@ -246,6 +254,7 @@ TRAINER_ARGS=(
   "+trainer.reward_wm_balance_horizon_batches=$REWARD_WM_BALANCE_BATCHES"
   "${INVERSE_HYDRA_ARGS[@]}"
   "${PLANNING_HYDRA_ARGS[@]}"
+  "${LORA_INIT_HYDRA_ARGS[@]}"
   "optim.lr=$LR"
   "optim.lr_scheduler=constant"
   "optim.warmup_steps_ratio=0"

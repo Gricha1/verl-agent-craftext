@@ -14,6 +14,8 @@ def _prepend_local_craftax_on_path():
     project_root = os.path.abspath(os.path.join(current_file_dir, "../../../.."))
     caged_root = os.environ.get("CAGED_CRAFTEXT_PATH", os.path.join(project_root, "caged_craftext"))
     craftax_root = os.path.join(caged_root, "Craftax")
+    if os.path.isdir(caged_root) and caged_root not in sys.path:
+        sys.path.insert(0, caged_root)
     if os.path.isdir(craftax_root) and craftax_root not in sys.path:
         sys.path.insert(0, craftax_root)
 
@@ -88,6 +90,80 @@ def _strip_all_mobs_state(state, static_params):
     )
 
 
+def _is_debug_square_craftax_state(state) -> bool:
+    m = getattr(state, "map", None)
+    if m is None:
+        return False
+    return tuple(np.asarray(m).shape) == (8, 8)
+
+
+def _strip_all_mobs_for_state(state):
+    """Remove mobs from an EnvState when on the fixed 8x8 debug map (JAX or numpy)."""
+    if not _is_debug_square_craftax_state(state):
+        return state
+    map_shape = tuple(np.asarray(state.map).shape)
+
+    def _clear(mobs):
+        return mobs.replace(
+            mask=jnp.zeros_like(mobs.mask),
+            position=jnp.full_like(mobs.position, -1),
+        )
+
+    return state.replace(
+        zombies=_clear(state.zombies),
+        cows=_clear(state.cows),
+        skeletons=_clear(state.skeletons),
+        arrows=_clear(state.arrows),
+        mob_map=jnp.zeros(map_shape, dtype=bool),
+    )
+
+
+def _render_craftax_frame(state) -> np.ndarray:
+    """Pixel render for GIF/video; strip ghost mobs on debug_square before draw."""
+    state = _strip_all_mobs_for_state(state)
+    return np.asarray(render_classic(state, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN))
+
+
+def _render_craftax_text(state, observation_type: str) -> str:
+    """ASCII/text observation; strip mobs on debug_square so C/Z do not appear in obs."""
+    return _pick_text_render_fn(observation_type)(_strip_all_mobs_for_state(state))
+
+
+def _attach_debug_square_fields(
+    info: dict,
+    craftax_state,
+    instruction_idx: int,
+    config_name: str,
+    target_state=None,
+) -> None:
+    """Populate debug_player_pos / debug_goal_* for validation overlays."""
+    if config_name != "debug_square_8x8" and "debug_square" not in str(config_name):
+        return
+    try:
+        from craftext.environment.debug_square_rewards import (
+            chebyshev_distance,
+            debug_square_resolve_target_cell,
+        )
+
+        player_pos = np.asarray(craftax_state.player_position, dtype=np.int32)
+        ach_mask = None
+        if target_state is not None:
+            ach_mask = getattr(getattr(target_state, "achievements", None), "achievement_mask", None)
+        target = np.asarray(
+            jax.device_get(
+                debug_square_resolve_target_cell(ach_mask, instruction_idx=int(instruction_idx))
+            ),
+            dtype=np.int32,
+        )
+        info["debug_player_pos"] = tuple(int(x) for x in player_pos.tolist())
+        info["debug_goal_cell"] = tuple(int(x) for x in target.tolist())
+        info["debug_goal_chebyshev"] = int(
+            np.asarray(jax.device_get(chebyshev_distance(player_pos, target)), dtype=np.int32)
+        )
+    except Exception:
+        pass
+
+
 def _make_craftax_classic_pixels_env(env_kwargs: dict):
     """Classic Craftax env; optional fixed 8x8 debug square map."""
     if env_kwargs.get("use_debug_square_map", False):
@@ -125,8 +201,11 @@ def _make_craftax_classic_pixels_env(env_kwargs: dict):
 
         def _craftax_step_debug_safe(rng, state, action, params, static_params):
             state, reward = _orig_craftax_step(rng, state, action, params, static_params)
-            if tuple(static_params.map_size) == (8, 8):
-                state = _strip_all_mobs_state(state, static_params)
+            if tuple(static_params.map_size) == (8, 8) or _is_debug_square_craftax_state(state):
+                sp = static_params
+                if tuple(static_params.map_size) != (8, 8):
+                    sp = StaticEnvParams(map_size=(8, 8))
+                state = _strip_all_mobs_state(state, sp)
             return state, reward
 
         _craftax_gl.craftax_step = _craftax_step_debug_safe
@@ -144,10 +223,11 @@ class CagedCraftextTextRenderActor:
     """
 
     def __init__(self, observation_type: str):
+        self._observation_type = observation_type
         self._render = _pick_text_render_fn(observation_type)
 
     def render_craftax_state(self, state_numpy_tree):
-        return self._render(state_numpy_tree)
+        return _render_craftax_text(state_numpy_tree, self._observation_type)
 
 
 class CagedCraftextWorker:
@@ -163,6 +243,9 @@ class CagedCraftextWorker:
         )
         if caged_craftext_path not in sys.path:
             sys.path.insert(0, caged_craftext_path)
+        craftax_root = os.path.join(caged_craftext_path, "Craftax")
+        if os.path.isdir(craftax_root) and craftax_root not in sys.path:
+            sys.path.insert(0, craftax_root)
 
         # Используем caged_craftext версию wrapper с CMDP поддержкой
         from craftext.environment.craftext_wrapper_cmdp import CMDPInstructionWrapper
@@ -248,8 +331,8 @@ class CagedCraftextWorker:
         # - or when recording a validation video (return_render=True)
         obs = None
         if return_render or self.use_pixel_obs:
-            obs_jax_rendered = render_classic(new_state_jax.env_state, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
-            obs = np.asarray(obs_jax_rendered)
+            obs_jax_rendered = _render_craftax_frame(new_state_jax.env_state)
+            obs = obs_jax_rendered
 
         reward = float(reward_jax)
         done = bool(done_jax)
@@ -257,7 +340,7 @@ class CagedCraftextWorker:
         info = {}  # Создаем пустой info, так как info_jax может быть None
         info['won'] = done and reward > 0
         env_state_cpu = jax.device_get(new_state_jax.env_state)
-        text_render = self.render_func(env_state_cpu)
+        text_render = _render_craftax_text(env_state_cpu, self.observation_type)
         instruction_idx = new_state_jax.idx
         instruction_text = self.wrapper.scenario_handler.scenario_data.instructions_list[instruction_idx]
         
@@ -278,6 +361,13 @@ class CagedCraftextWorker:
         info['instruction'] = instruction_text
         info['instruction_done'] = bool(getattr(new_state_jax, 'instruction_done', False))
         info['done'] = done
+        _attach_debug_square_fields(
+            info,
+            env_state_cpu,
+            int(instruction_idx),
+            getattr(self.wrapper, "config_name", ""),
+            getattr(new_state_jax, "target_state", None),
+        )
         self._episode_return_cum += reward
         info['episode_return_cum'] = float(self._episode_return_cum)
 
@@ -285,7 +375,13 @@ class CagedCraftextWorker:
         if return_render and obs is not None:
             ep_cost = float(info.get('episode_cost', 0.0))
             info['render_frame'] = overlay_episode_cumulative_stats(
-                obs, self._episode_return_cum, ep_cost, step=self._episode_step
+                obs,
+                self._episode_return_cum,
+                ep_cost,
+                step=self._episode_step,
+                instruction_done=info.get("instruction_done"),
+                goal_chebyshev=info.get("debug_goal_chebyshev"),
+                player_pos=info.get("debug_player_pos"),
             )
             info['env_step'] = self._episode_step
 
@@ -325,11 +421,11 @@ class CagedCraftextWorker:
         # Render pixel observations only when needed (see step()).
         obs = None
         if return_render or self.use_pixel_obs:
-            obs_jax_rendered = render_classic(new_state_jax.env_state, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
-            obs = np.asarray(obs_jax_rendered)
+            obs_jax_rendered = _render_craftax_frame(new_state_jax.env_state)
+            obs = obs_jax_rendered
         info = {'won': False}
         env_state_cpu = jax.device_get(new_state_jax.env_state)
-        text_render = self.render_func(env_state_cpu)
+        text_render = _render_craftax_text(env_state_cpu, self.observation_type)
         instruction_text = self.wrapper.scenario_handler.scenario_data.instructions_list[scenario_idx]
         
         # Добавляем информацию о constraint (если есть)
@@ -341,6 +437,13 @@ class CagedCraftextWorker:
         info['text_render'] = text_render
         info['instruction'] = instruction_text
         info['instruction_done'] = False
+        _attach_debug_square_fields(
+            info,
+            env_state_cpu,
+            int(scenario_idx),
+            getattr(self.wrapper, "config_name", ""),
+            getattr(new_state_jax, "target_state", None),
+        )
         self._episode_return_cum = 0.0
         self._episode_step = 0
         info['episode_return_cum'] = 0.0
@@ -348,7 +451,13 @@ class CagedCraftextWorker:
         if return_render and obs is not None:
             ep_cost = float(info.get('episode_cost', 0.0))
             info['render_frame'] = overlay_episode_cumulative_stats(
-                obs, 0.0, ep_cost, step=self._episode_step
+                obs,
+                0.0,
+                ep_cost,
+                step=self._episode_step,
+                instruction_done=False,
+                goal_chebyshev=info.get("debug_goal_chebyshev"),
+                player_pos=info.get("debug_player_pos"),
             )
             info['env_step'] = self._episode_step
 
@@ -407,6 +516,7 @@ class CagedCraftextMultiProcessEnv(gym.Env):
         # Используем переменную окружения или вычисленный путь
         caged_craftext_path = os.environ.get('CAGED_CRAFTEXT_PATH', default_caged_path)
         caged_craftext_path = os.path.abspath(caged_craftext_path)
+        craftax_path = os.path.join(caged_craftext_path, "Craftax")
         
         # Собираем все необходимые переменные окружения для Ray workers
         # НЕ устанавливаем CUDA_VISIBLE_DEVICES="" здесь, так как это может мешать Ray
@@ -414,7 +524,7 @@ class CagedCraftextMultiProcessEnv(gym.Env):
         jax_platforms = os.environ.get("JAX_PLATFORMS")
         env_vars = {
             "CAGED_CRAFTEXT_PATH": caged_craftext_path,
-            "PYTHONPATH": f"{caged_craftext_path}:{os.environ.get('PYTHONPATH', '')}",
+            "PYTHONPATH": f"{craftax_path}:{caged_craftext_path}:{os.environ.get('PYTHONPATH', '')}",
             "CRAFTAX_RELOAD_TEXTURES": os.environ.get("CRAFTAX_RELOAD_TEXTURES", "True"),
         }
         if jax_platforms:
@@ -566,6 +676,7 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
         super().__init__()
 
         # Make sure caged_craftext is importable
+        _prepend_local_craftax_on_path()
         caged_craftext_path = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "../../../..", "caged_craftext")
         )
@@ -589,9 +700,10 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
         self._rng = np.random.RandomState(seed)
 
         env = _make_craftax_classic_pixels_env(self._env_kwargs)
+        config_name = str(self._env_kwargs.get("config_name", "achievements_safe_caged"))
         self.wrapper = CMDPInstructionWrapper(
             env=env,
-            config_name=self._env_kwargs.get("config_name", "achievements_safe_caged"),
+            config_name=config_name,
             scenario_handler_class=ScenariosNoLambdaCMDP,
             encode_model_class=DistilBertEncode,
             encode_form=self._env_kwargs.get("encode_form", EncodeForm.EMBEDDING),
@@ -680,7 +792,7 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
             try:
                 if craftax_state_batched is not None:
                     craftax_state_i = jax.tree_util.tree_map(lambda x: x[i], craftax_state_batched)
-                    text_renders.append(self.render_func(craftax_state_i))
+                    text_renders.append(_render_craftax_text(craftax_state_i, self.observation_type))
                 else:
                     text_renders.append("The world is empty.")
             except Exception:
@@ -757,13 +869,33 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
             except Exception:
                 pass
 
+            if craftax_state_batched is not None:
+                try:
+                    craftax_state_i = jax.tree_util.tree_map(lambda x: x[i], craftax_state_batched)
+                    idx_i = int(idxs[i]) if i < len(idxs) else 0
+                    target_state_i = None
+                    if hasattr(state_cpu, "target_state") and state_cpu.target_state is not None:
+                        target_state_i = jax.tree_util.tree_map(lambda x: x[i], state_cpu.target_state)
+                    _attach_debug_square_fields(
+                        info,
+                        craftax_state_i,
+                        idx_i,
+                        str(self._env_kwargs.get("config_name", "")),
+                        target_state_i,
+                    )
+                except Exception:
+                    pass
+
             if i in render_frames:
                 ep_cost = float(info.get("episode_cost", 0.0))
                 info["render_frame"] = overlay_episode_cumulative_stats(
                     render_frames[i],
                     self._episode_return_cum[i],
                     ep_cost,
-                    step=int(self._rollout_steps[i]),
+                    step=int(self._episode_steps[i]),
+                    instruction_done=info.get("instruction_done"),
+                    goal_chebyshev=info.get("debug_goal_chebyshev"),
+                    player_pos=info.get("debug_player_pos"),
                 )
 
             infos.append(info)
@@ -788,8 +920,7 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
                     continue
                 try:
                     craftax_state_i = jax.tree_util.tree_map(lambda x: x[i], env_state_cpu)
-                    obs_jax_rendered = render_classic(craftax_state_i, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
-                    render_frames[i] = np.asarray(obs_jax_rendered).copy()
+                    render_frames[i] = _render_craftax_frame(craftax_state_i)
                 except Exception:
                     pass
 
@@ -802,8 +933,7 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
             for i in range(self.env_num):
                 try:
                     craftax_state_i = jax.tree_util.tree_map(lambda x: x[i], env_state_cpu)
-                    obs_jax_rendered = render_classic(craftax_state_i, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
-                    obs_list[i] = np.asarray(obs_jax_rendered)
+                    obs_list[i] = _render_craftax_frame(craftax_state_i)
                 except Exception:
                     obs_list[i] = None
 
@@ -817,7 +947,9 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
             raise ValueError(f"Expected {self.env_num} actions, got {len(actions)}")
 
         self.key, step_key = jax.random.split(self.key)
-        action_arr = jnp.asarray(actions, dtype=jnp.int32)
+        # Invalid LLM tokens map to -1; treat as NOOP (0) for Craftax.
+        safe_actions = [0 if int(a) < 0 else int(a) for a in actions]
+        action_arr = jnp.asarray(safe_actions, dtype=jnp.int32)
         obs, new_state, reward, done, info, state_pre_reset = self._vec_env.step(
             step_key, self.state, action_arr, self.env_params
         )
@@ -839,8 +971,7 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
                     if env_state_cpu is None:
                         continue
                     craftax_state_i = jax.tree_util.tree_map(lambda x: x[i], env_state_cpu)
-                    obs_jax_rendered = render_classic(craftax_state_i, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
-                    render_frames[i] = np.asarray(obs_jax_rendered).copy()
+                    render_frames[i] = _render_craftax_frame(craftax_state_i)
                 except Exception:
                     pass
 
@@ -851,8 +982,7 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
             for i in range(self.env_num):
                 try:
                     craftax_state_i = jax.tree_util.tree_map(lambda x: x[i], env_state_cpu)
-                    obs_jax_rendered = render_classic(craftax_state_i, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN)
-                    obs_list[i] = np.asarray(obs_jax_rendered)
+                    obs_list[i] = _render_craftax_frame(craftax_state_i)
                 except Exception:
                     obs_list[i] = None
 

@@ -777,6 +777,49 @@ class ActorRolloutRefWorker(Worker):
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     @torch.no_grad()
+    def generate_value_tokens(self, prompts: DataProto):
+        """Constrained 1-token return bin from critic prompt (m..u)."""
+        from verl.utils.actor_value_token import constrained_generate_return_token
+
+        assert self.config.actor.get("actor_value_token", False), "actor_value_token must be enabled"
+
+        temperature = prompts.meta_info.get("temperature", self.config.rollout.temperature)
+        do_sample = prompts.meta_info.get("do_sample", False)
+
+        with self.rollout_sharding_manager:
+            prompts_sharded = self.rollout_sharding_manager.preprocess_data(prompts)
+            value_ids = prompts_sharded.batch["value_input_ids"]
+            value_mask = prompts_sharded.batch.get("value_attention_mask", None)
+            value_pos = prompts_sharded.batch.get("value_position_ids", None)
+            if value_mask is None:
+                value_mask = torch.ones_like(value_ids, dtype=torch.long)
+            if value_pos is None:
+                from verl.utils.model import compute_position_id_with_mask
+
+                value_pos = compute_position_id_with_mask(value_mask)
+
+            token_ids, _log_probs = constrained_generate_return_token(
+                self.actor_module_fsdp,
+                value_ids,
+                value_mask,
+                value_pos,
+                self.tokenizer,
+                temperature=temperature,
+                do_sample=do_sample,
+            )
+            responses = token_ids.unsqueeze(-1)
+            output = DataProto.from_dict(
+                tensors={"responses": responses},
+                meta_info=prompts.meta_info if hasattr(prompts, "meta_info") else {},
+            )
+            output = self.rollout_sharding_manager.postprocess_data(output)
+
+        output = output.to("cpu")
+        get_torch_device().empty_cache()
+        return output
+
+    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
+    @torch.no_grad()
     def generate_actions(self, prompts: DataProto):
         """
         Генерирует действия используя action head вместо text generation.
@@ -1043,6 +1086,29 @@ class ActorRolloutRefWorker(Worker):
         get_torch_device().empty_cache()
         return output
 
+    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
+    def compute_actor_token_values(self, data: DataProto):
+        assert self._is_actor
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.actor_module_fsdp)
+
+        data = data.to(get_torch_device().current_device())
+        data.meta_info["micro_batch_size"] = int(
+            self.config.get(
+                "actor_value_micro_batch_size_per_gpu",
+                self.config.rollout.log_prob_micro_batch_size_per_gpu,
+            )
+        )
+        with self.ulysses_sharding_manager:
+            data = self.ulysses_sharding_manager.preprocess_data(data)
+            values = self.actor.compute_actor_token_values(data)
+            output = DataProto.from_dict(tensors={"values": values})
+            output = self.ulysses_sharding_manager.postprocess_data(output)
+            output = output.to("cpu")
+
+        if self._is_offload_param:
+            offload_fsdp_model_to_cpu(self.actor_module_fsdp)
+        return output
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def compute_log_prob(self, data: DataProto):

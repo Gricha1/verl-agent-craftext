@@ -13,6 +13,11 @@ import jax
 import jax.numpy as jnp
 
 from craftext.environment.craftext_constants import Achievement, AchievementState
+from craftext.environment.debug_square_rewards import (
+    debug_square_adjacent_to_goal,
+    debug_square_at_goal_from_map,
+    debug_square_target_cell,
+)
 from craftext.environment.craftext_wrapper_cmdp import CMDPInstructionWrapper
 from craftext.environment.encoders.craftext_distilbert_model_encoder import DistilBertEncode
 from craftext.environment.encoders.craftext_base_model_encoder import EncodeForm
@@ -53,6 +58,36 @@ def main():
     params = _craftax_env_params(wrapper.env)
     n_instr = len(wrapper.scenario_handler.scenario_data.instructions_list)
     print(f"instructions: {n_instr}")
+
+    # 0) goal cells + collision sanity
+    print("\n=== goal targets + cannot step into TREE/WOOD ===")
+    from craftax.craftax_classic.constants import BlockType
+
+    for idx in range(min(n_instr, 3)):
+        key, sub = jax.random.split(key)
+        _, state = wrapper.reset(sub, params, instruction_idx=idx)
+        ts = wrapper.batched_ts.select(state.idx)
+        target = debug_square_target_cell(ts.achievements.achievement_mask)
+        pos = tuple(map(int, state.env_state.player_position))
+        print(f"  idx={idx} spawn={pos} target={tuple(map(int, target))}")
+
+        # Walk toward top border; stepping into TREE must not change position onto TREE.
+        s = state
+        for action in (3, 3, 3):  # UP
+            key, sub = jax.random.split(key)
+            _, s, _, _, _ = step_fn(sub, s, jnp.int32(action), env_params=params)
+        p = tuple(map(int, s.env_state.player_position))
+        block = int(s.env_state.map[p[0], p[1]])
+        assert block != BlockType.TREE.value, f"idx={idx}: player ended on TREE at {p}"
+        map_done = bool(debug_square_at_goal_from_map(s.env_state, ts.achievements.achievement_mask))
+        coord_done = bool(
+            debug_square_adjacent_to_goal(
+                s.env_state.player_position,
+                ts.achievements.achievement_mask,
+                env_state=s.env_state,
+            )
+        )
+        print(f"    after 3xUP pos={p} tile={block} map_done={map_done} coord_done={coord_done}")
 
     key = jax.random.PRNGKey(0)
     step_fn = jax.jit(wrapper.step, static_argnames=["env_params"])

@@ -6,7 +6,8 @@ import chex
 from craftax.environment_base.environment_bases import EnvironmentNoAutoReset
 from craftax.craftax_classic.envs.common import compute_score
 from craftax.craftax_classic.constants import *
-from craftax.craftax_classic.game_logic import craftax_step, is_game_over, _strip_all_mobs
+import craftax.craftax_classic.game_logic as _craftax_game_logic
+from craftax.craftax_classic.game_logic import is_game_over, _strip_all_mobs
 from craftax.craftax_classic.envs.craftax_state import (
     EnvState,
     EnvParams,
@@ -54,7 +55,9 @@ class CraftaxClassicPixelsEnvNoAutoReset(EnvironmentNoAutoReset):
         self, key: chex.PRNGKey, state: EnvState, action: int, params: EnvParams
     ) -> Tuple[chex.Array, EnvState, float, bool, dict]:
 
-        state, reward = craftax_step(key, state, action, params, self.static_env_params)
+        state, reward = _craftax_game_logic.craftax_step(
+            key, state, action, params, self.static_env_params
+        )
 
         done = self.is_terminal(state, params)
         info = compute_score(state, done)
@@ -133,7 +136,9 @@ class CraftaxClassicPixelsEnv(environment.Environment):
         self, key: chex.PRNGKey, state: EnvState, action: int, params: EnvParams
     ) -> Tuple[chex.Array, EnvState, float, bool, dict]:
 
-        state, reward = craftax_step(key, state, action, params, self.static_env_params)
+        state, reward = _craftax_game_logic.craftax_step(
+            key, state, action, params, self.static_env_params
+        )
 
         done = self.is_terminal(state, params)
         info = compute_score(state, done)

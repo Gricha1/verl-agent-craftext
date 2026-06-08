@@ -130,14 +130,28 @@ def main() -> None:
     parser.add_argument(
         "--policy",
         default="semi",
-        choices=("random", "semi"),
-        help="Action source for data collection: random or semi-greedy-to-goal to balance rewards.",
+        choices=("random", "semi", "llm"),
+        help="Action source: random, semi-greedy, or llm (HF LoRA / PPO checkpoint).",
     )
     parser.add_argument(
         "--epsilon",
         default=0.15,
         type=float,
         help="Exploration probability for semi policy (pick random action).",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        type=str,
+        help="HF LoRA dir for --policy llm (e.g. PPO extract or .../latest).",
+    )
+    parser.add_argument("--base-model", default=None, type=str)
+    parser.add_argument("--device", default="cuda:0", type=str)
+    parser.add_argument(
+        "--temperature",
+        default=1.0,
+        type=float,
+        help="LLM policy sampling temperature (0 = greedy).",
     )
     args = parser.parse_args()
 
@@ -148,9 +162,16 @@ def main() -> None:
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
     _setup_paths()
 
-    from agent_system.environments.env_package.caged_craftext.action_tokens import action_token_strings
+    from agent_system.environments.env_package.caged_craftext.action_tokens import (
+        action_token_strings,
+        parse_single_token_action,
+    )
     from agent_system.environments.env_package.caged_craftext.envs import CagedCraftextWorker
-    from agent_system.environments.env_package.caged_craftext.projection import craftext_projection, ACTION_TO_TEXT
+    from agent_system.environments.env_package.caged_craftext.projection import (
+        ACTION_TO_TEXT,
+        craftext_projection,
+        get_single_token_action_template_no_his,
+    )
     from agent_system.environments.env_package.caged_craftext.reward_tokens import (
         format_reward_token_sequence,
         quantize_step_reward,
@@ -158,10 +179,34 @@ def main() -> None:
     )
     from agent_system.environments.prompts.world_model_reward import format_reward_prompt
 
+    if str(args.policy) == "llm" and not args.checkpoint:
+        raise SystemExit("[ERROR] --policy llm requires --checkpoint (HF LoRA dir)")
+
     rng = np.random.RandomState(int(args.seed))
     action_tokens = list(action_token_strings())
     if not action_tokens:
         raise RuntimeError("No action tokens found (action_token_strings() returned empty).")
+
+    llm_policy = None
+    action_prompt_template = None
+    if str(args.policy) == "llm":
+        scripts_dir = os.path.join(_repo_root(), "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from hf_single_token_policy import HfSingleTokenPolicy
+
+        llm_policy = HfSingleTokenPolicy(
+            checkpoint=os.path.abspath(str(args.checkpoint)),
+            base_model=args.base_model,
+            device=str(args.device),
+            temperature=float(args.temperature),
+        )
+        action_prompt_template = get_single_token_action_template_no_his()
+        print(
+            f"[INFO] LLM policy: checkpoint={args.checkpoint} "
+            f"temperature={args.temperature}",
+            flush=True,
+        )
 
     _ACTION_ID = {name: i for i, name in enumerate(ACTION_TO_TEXT)}
     MOVE_IDS = {
@@ -252,7 +297,18 @@ def main() -> None:
                 state_ascii = str(info.get("text_render", "") or "")
                 instruction = str(info.get("instruction", "") or "")
 
-                if str(args.policy) == "semi":
+                if str(args.policy) == "llm":
+                    assert llm_policy is not None and action_prompt_template is not None
+                    ppo_prompt = action_prompt_template.format(
+                        task_description=instruction,
+                        current_observation=state_ascii,
+                    )
+                    token = llm_policy.action_token(ppo_prompt)
+                    if parse_single_token_action(token) < 0:
+                        token = "5"  # NOOP fallback
+                    action_ids, _valids = craftext_projection([token])
+                    action_id = int(action_ids[0])
+                elif str(args.policy) == "semi":
                     action_id = choose_action_id_semi(
                         rng_=rng,
                         instruction_idx=instruction_idx,

@@ -238,6 +238,11 @@ def render_craftax_ascii(state) -> str:
                 except:
                     char_to_draw = "@"
                 current_player_char = char_to_draw
+                # If standing on a resource tile, show the block (player overlaps in pixels too).
+                tile_val = int(map_view[x, y])
+                tile_char, tile_name = get_block_info(tile_val)
+                if tile_name not in ("grass", "path", "out_of_bounds", "unknown"):
+                    char_to_draw = tile_char
             
             # --- МОБЫ ---
             elif mob_map[x, y] != -1:
@@ -491,7 +496,10 @@ def overlay_episode_cumulative_stats(
     episode_cost: float,
     *,
     step: int | None = None,
-    banner_height: int = 32,
+    instruction_done: bool | None = None,
+    goal_chebyshev: int | None = None,
+    player_pos: tuple[int, int] | None = None,
+    banner_height: int | None = None,
 ) -> np.ndarray:
     """Draw step index and cumulative episode reward/cost on top of a pixel render frame."""
     arr = np.asarray(frame_arr)
@@ -503,6 +511,14 @@ def overlay_episode_cumulative_stats(
         arr = (arr * 255).astype(np.uint8)
     else:
         arr = arr.astype(np.uint8)
+
+    has_debug = (
+        instruction_done is not None
+        or goal_chebyshev is not None
+        or player_pos is not None
+    )
+    if banner_height is None:
+        banner_height = 48 if has_debug else 32
 
     img = Image.fromarray(arr)
     draw = ImageDraw.Draw(img)
@@ -521,7 +537,18 @@ def overlay_episode_cumulative_stats(
     parts.append(f"Episode reward: {float(episode_reward):.3f}")
     parts.append(f"Episode cost: {float(episode_cost):.3f}")
     label = "   |   ".join(parts)
-    draw.text((8, 6), label, fill=(255, 255, 255), font=font)
+    draw.text((8, 4), label, fill=(255, 255, 255), font=font)
+
+    if has_debug:
+        debug_parts = []
+        if instruction_done is not None:
+            debug_parts.append(f"goal_done: {'Y' if instruction_done else 'N'}")
+        if goal_chebyshev is not None:
+            debug_parts.append(f"goal_cheb: {int(goal_chebyshev)}")
+        if player_pos is not None:
+            debug_parts.append(f"pos: {int(player_pos[0])},{int(player_pos[1])}")
+        draw.text((8, 22), "   |   ".join(debug_parts), fill=(200, 220, 255), font=font)
+
     return np.array(img)
 
 

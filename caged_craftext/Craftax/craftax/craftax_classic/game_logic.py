@@ -91,6 +91,10 @@ def update_plants_with_eat(state, plant_position, static_params):
 
 
 def do_action(rng, state, action, static_params):
+    # Fixed 8x8 arena: navigation-only tasks; DO must not mine trees or alter tiles.
+    if _is_debug_square_map(static_params):
+        return state
+
     old_state = state
 
     block_position = state.player_position + DIRECTIONS[state.player_direction]
@@ -610,6 +614,9 @@ def calculate_light_level(timestep, params):
 
 
 def place_block(state, action, static_params):
+    if _is_debug_square_map(static_params):
+        return state
+
     placing_block_position = state.player_position + DIRECTIONS[state.player_direction]
 
     # Crafting table
@@ -1397,7 +1404,8 @@ def update_plants(state, static_params):
     return state
 
 
-def move_player(state, action):
+def move_player(state, action, static_params=None):
+    old_position = state.player_position
     proposed_position = state.player_position + DIRECTIONS[action]
 
     valid_move = is_position_in_bounds_not_in_wall_not_in_mob_not_in_lava(
@@ -1407,6 +1415,14 @@ def move_player(state, action):
         valid_move,
         state.map[proposed_position[0], proposed_position[1]] == BlockType.LAVA.value,
     )
+    # debug_square: never step into solid tiles (pip craftax may differ from repo Craftax).
+    if static_params is not None:
+        is_debug_square = _is_debug_square_map(static_params)
+        proposed_solid = is_in_wall(state, proposed_position)
+        valid_move = jnp.logical_and(
+            valid_move,
+            jnp.logical_or(jnp.logical_not(is_debug_square), jnp.logical_not(proposed_solid)),
+        )
 
     position = state.player_position + valid_move.astype(jnp.int32) * DIRECTIONS[action]
 
@@ -1419,6 +1435,18 @@ def move_player(state, action):
         player_position=position,
         player_direction=new_direction,
     )
+
+    # Belt-and-suspenders: never leave the player standing inside a solid tile.
+    if static_params is not None:
+        is_debug_square = _is_debug_square_map(static_params)
+        on_solid = is_in_wall(state, state.player_position)
+        state = state.replace(
+            player_position=jax.lax.select(
+                jnp.logical_and(is_debug_square, on_solid),
+                old_position,
+                state.player_position,
+            )
+        )
 
     return state
 
@@ -1681,7 +1709,7 @@ def craftax_step(rng, state, action, params, static_params):
     state = place_block(state, action, static_params)
 
     # Movement
-    state = move_player(state, action)
+    state = move_player(state, action, static_params)
 
     # Mobs — disabled on fixed 8x8 debug arena (no cows/zombies in obs or render).
     is_debug_square = _is_debug_square_map(static_params)

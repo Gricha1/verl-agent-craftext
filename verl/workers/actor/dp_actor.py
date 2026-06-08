@@ -387,6 +387,12 @@ class DataParallelPPOActor(BasePPOActor):
 
                     logits.div_(temperature)
                     logits = logits[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size)
+                    if self.config.get("actor_value_token", False):
+                        from verl.utils.actor_value_token import action_token_id_tensor, mask_logits_to_allowed
+
+                        tokenizer = self._get_tokenizer()
+                        action_ids = action_token_id_tensor(tokenizer, device=logits.device)
+                        logits[:, 0, :] = mask_logits_to_allowed(logits[:, 0, :], action_ids)
                     log_probs = logprobs_from_logits(logits, micro_batch["responses"])
                     if calculate_entropy:
                         entropy = verl_F.entropy_from_logits(logits)  # (bsz, response_length)
@@ -513,6 +519,128 @@ class DataParallelPPOActor(BasePPOActor):
 
         return log_probs, entropys
 
+    def _get_tokenizer(self):
+        if hasattr(self, "tokenizer") and self.tokenizer is not None:
+            return self.tokenizer
+        tokenizer_path = self.config.get("tokenizer_path")
+        if not tokenizer_path:
+            raise ValueError("actor_value_token requires actor.tokenizer_path")
+        from verl.utils import hf_tokenizer
+
+        self.tokenizer = hf_tokenizer(
+            tokenizer_path, trust_remote_code=self.config.get("trust_remote_code", False)
+        )
+        return self.tokenizer
+
+    @GPUMemoryLogger(role="dp actor", logger=logger)
+    def compute_actor_token_values(self, data: DataProto) -> torch.Tensor:
+        """Constrained greedy V(s) from critic prompt (separate from actor rollout)."""
+        from verl.utils.actor_value_token import (
+            build_actor_token_values,
+            constrained_decode_return_values,
+        )
+
+        self.actor_module.eval()
+        batch = data.select(
+            batch_keys=[
+                "value_input_ids",
+                "value_attention_mask",
+                "value_position_ids",
+                "responses",
+            ]
+        ).batch
+        tokenizer = self._get_tokenizer()
+        response_length = batch["responses"].size(1)
+        micro_batch_size = int(
+            data.meta_info.get(
+                "micro_batch_size",
+                self.config.get(
+                    "actor_value_micro_batch_size_per_gpu",
+                    self.config.get(
+                        "ppo_micro_batch_size_per_gpu",
+                        16,
+                    ),
+                ),
+            )
+        )
+        micro_batch_size = max(micro_batch_size, 1)
+        n = batch["value_input_ids"].size(0)
+        value_chunks: list[torch.Tensor] = []
+        with torch.no_grad():
+            for start in range(0, n, micro_batch_size):
+                end = min(start + micro_batch_size, n)
+                value_scalars = constrained_decode_return_values(
+                    self.actor_module,
+                    batch["value_input_ids"][start:end],
+                    batch["value_attention_mask"][start:end],
+                    batch["value_position_ids"][start:end],
+                    tokenizer,
+                )
+                value_chunks.append(value_scalars)
+            value_scalars = torch.cat(value_chunks, dim=0)
+            values = build_actor_token_values(value_scalars, response_length)
+        return values
+
+    def _forward_value_bin_logits(
+        self,
+        micro_batch: dict,
+        temperature: float,
+    ) -> torch.Tensor:
+        from verl.utils.actor_value_token import mask_logits_to_allowed, return_bin_id_tensor
+
+        value_input_ids = micro_batch["value_input_ids"]
+        value_attention_mask = micro_batch["value_attention_mask"]
+        value_position_ids = micro_batch["value_position_ids"]
+
+        multi_modal_inputs = {}
+        if "multi_modal_inputs" in micro_batch:
+            for key in micro_batch["multi_modal_inputs"][0].keys():
+                multi_modal_inputs[key] = torch.cat(
+                    [inputs[key] for inputs in micro_batch["multi_modal_inputs"]], dim=0
+                )
+
+        with torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
+            pos = value_position_ids
+            if value_position_ids.dim() == 3:
+                pos = pos.unsqueeze(0).expand(3, -1, -1)
+            output = self.actor_module(
+                input_ids=value_input_ids,
+                attention_mask=value_attention_mask,
+                position_ids=pos,
+                **multi_modal_inputs,
+                use_cache=False,
+            )
+            ret_logits = output.logits[:, -1, :] / max(float(temperature), 1e-8)
+
+        tokenizer = self._get_tokenizer()
+        bin_ids = return_bin_id_tensor(tokenizer, device=ret_logits.device)
+        ret_logits = mask_logits_to_allowed(ret_logits, bin_ids)
+        return ret_logits[:, bin_ids]
+
+    def _compute_return_token_ce_loss(
+        self,
+        micro_batch: dict,
+        temperature: float,
+        target_returns: torch.Tensor,
+    ) -> tuple[torch.Tensor, float, float]:
+        from verl.utils.actor_value_token import (
+            return_bin_distribution_entropy,
+            return_token_value_loss,
+        )
+
+        bin_logits = self._forward_value_bin_logits(micro_batch, temperature)
+        target_encoding = str(self.config.get("actor_value_target_encoding", "one_hot"))
+        loss, hard_bins = return_token_value_loss(
+            bin_logits,
+            target_returns,
+            target_encoding=target_encoding,
+        )
+        with torch.no_grad():
+            pred_bins = bin_logits.argmax(dim=-1)
+            acc = (pred_bins == hard_bins).float().mean().item()
+            entropy = return_bin_distribution_entropy(bin_logits).mean().item()
+        return loss, acc, entropy
+
     @GPUMemoryLogger(role="dp actor", logger=logger)
     def update_world_model(self, data: DataProto):
         """SFT-style world model update on the full rollout batch (after PPO). One optimizer.step()."""
@@ -582,12 +710,29 @@ class DataParallelPPOActor(BasePPOActor):
 
         temperature = data.meta_info["temperature"]  # temperature must be in the data.meta_info to avoid silent error
         multi_turn = data.meta_info.get("multi_turn", False)
+        actor_value_token = bool(self.config.get("actor_value_token", False))
+        actor_value_loss_coef = float(self.config.get("actor_value_loss_coef", 1.0))
+        actor_value_separate_steps = bool(
+            actor_value_token and self.config.get("actor_value_separate_optimizer_steps", False)
+        )
+        value_warmup = bool(data.meta_info.get("actor_value_warmup", False))
         effective_entropy_coeff = float(
             data.meta_info.get("entropy_coeff", self.config.entropy_coeff)
         )
         metrics = {"actor/entropy_coeff": effective_entropy_coeff}
+        if actor_value_separate_steps:
+            metrics["actor/value_separate_optimizer_steps"] = 1.0
 
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids", "old_log_probs", "advantages"]
+        if actor_value_token:
+            select_keys.extend(
+                [
+                    "actor_value_target_returns",
+                    "value_input_ids",
+                    "value_attention_mask",
+                    "value_position_ids",
+                ]
+            )
         if multi_turn:
             select_keys.append("loss_mask")
         if self.config.use_kl_loss:
@@ -620,123 +765,163 @@ class DataParallelPPOActor(BasePPOActor):
                     # split batch into micro_batches
                     micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
 
-                self.actor_optimizer.zero_grad()
+                if actor_value_separate_steps:
+                    update_phases = []
+                    if not value_warmup:
+                        update_phases.append("actor")
+                    update_phases.append("value")
+                else:
+                    update_phases = ["combined"]
 
-                for data in micro_batches:
-                    # Support all hardwares
-                    if isinstance(data, DataProto):
-                        data = {**data.batch.to(get_torch_device().current_device()), **data.non_tensor_batch}
-                    else:
-                        data = data.to(get_torch_device().current_device())  # actor device is cpu when using offload
-                    responses = data["responses"]
-                    response_length = responses.size(1)
-                    attention_mask = data["attention_mask"]
-                    if multi_turn:
-                        response_mask = data["loss_mask"][:, -response_length:]
-                    else:
-                        response_mask = attention_mask[:, -response_length:]
+                if value_warmup:
+                    metrics["actor/value_warmup"] = 1.0
+                    append_to_dict(metrics, {"actor/pg_loss": 0.0})
 
-                    old_log_prob = data["old_log_probs"]
-                    advantages = data["advantages"]
+                for phase in update_phases:
+                    self.actor_optimizer.zero_grad()
 
-                    clip_ratio = self.config.clip_ratio
-                    clip_ratio_low = self.config.clip_ratio_low if self.config.clip_ratio_low is not None else clip_ratio
-                    clip_ratio_high = self.config.clip_ratio_high if self.config.clip_ratio_high is not None else clip_ratio
-                    clip_ratio_c = self.config.get("clip_ratio_c", 3.0)
-                    entropy_coeff = effective_entropy_coeff
-                    loss_agg_mode = self.config.loss_agg_mode
+                    for data in micro_batches:
+                        # Support all hardwares
+                        if isinstance(data, DataProto):
+                            data = {**data.batch.to(get_torch_device().current_device()), **data.non_tensor_batch}
+                        else:
+                            data = data.to(get_torch_device().current_device())  # actor device is cpu when using offload
+                        responses = data["responses"]
+                        response_length = responses.size(1)
+                        attention_mask = data["attention_mask"]
+                        if multi_turn:
+                            response_mask = data["loss_mask"][:, -response_length:]
+                        else:
+                            response_mask = attention_mask[:, -response_length:]
 
-                    entropy_over_valid_actions = bool(
-                        self.config.get("entropy_over_valid_actions", False)
-                    )
-                    if self.config.use_dynamic_bsz:
-                        loss_scale = len(data) / self.config.ppo_mini_batch_size
-                    else:
-                        loss_scale = 1.0 / self.gradient_accumulation
+                        old_log_prob = data["old_log_probs"]
+                        advantages = data["advantages"]
 
-                    # Action-set entropy: separate backward so 17 candidate forwards are not
-                    # on the same autograd graph as PPO (avoids OOM during backward / vLLM wake_up).
-                    if entropy_coeff != 0 and entropy_over_valid_actions:
-                        from verl.utils.action_set_entropy import entropy_loss_over_action_scores
+                        clip_ratio = self.config.clip_ratio
+                        clip_ratio_low = self.config.clip_ratio_low if self.config.clip_ratio_low is not None else clip_ratio
+                        clip_ratio_high = self.config.clip_ratio_high if self.config.clip_ratio_high is not None else clip_ratio
+                        clip_ratio_c = self.config.get("clip_ratio_c", 3.0)
+                        entropy_coeff = effective_entropy_coeff
+                        loss_agg_mode = self.config.loss_agg_mode
 
-                        log_scores = self._compute_action_set_log_scores(data, temperature)
-                        sample_mask = None
-                        if self.config.get("entropy_action_only_valid_rollouts", False):
-                            if "is_action_valid" in data:
-                                sample_mask = torch.tensor(
-                                    data["is_action_valid"],
-                                    device=log_scores.device,
-                                    dtype=torch.bool,
+                        entropy_over_valid_actions = bool(
+                            self.config.get("entropy_over_valid_actions", False)
+                        )
+                        if self.config.use_dynamic_bsz:
+                            loss_scale = len(data) / self.config.ppo_mini_batch_size
+                        else:
+                            loss_scale = 1.0 / self.gradient_accumulation
+
+                        run_actor = phase in ("actor", "combined") and not value_warmup
+                        run_value = (
+                            phase in ("value", "combined")
+                            and actor_value_token
+                            and "actor_value_target_returns" in data
+                        )
+
+                        if run_actor:
+                            # Action-set entropy: separate backward so 17 candidate forwards are not
+                            # on the same autograd graph as PPO (avoids OOM during backward / vLLM wake_up).
+                            if entropy_coeff != 0 and entropy_over_valid_actions:
+                                from verl.utils.action_set_entropy import entropy_loss_over_action_scores
+
+                                log_scores = self._compute_action_set_log_scores(data, temperature)
+                                sample_mask = None
+                                if self.config.get("entropy_action_only_valid_rollouts", False):
+                                    if "is_action_valid" in data:
+                                        sample_mask = torch.tensor(
+                                            data["is_action_valid"],
+                                            device=log_scores.device,
+                                            dtype=torch.bool,
+                                        )
+                                entropy_loss, entropy_per_sample = entropy_loss_over_action_scores(
+                                    log_scores,
+                                    temperature=temperature,
+                                    sample_mask=sample_mask,
                                 )
-                        entropy_loss, entropy_per_sample = entropy_loss_over_action_scores(
-                            log_scores,
-                            temperature=temperature,
-                            sample_mask=sample_mask,
-                        )
-                        metrics["actor/entropy_loss"] = entropy_loss.detach().item()
-                        metrics["actor/action_set_entropy"] = entropy_per_sample.detach().mean().item()
-                        (-entropy_coeff * entropy_loss * loss_scale).backward()
-                        del log_scores, entropy_loss, entropy_per_sample
-                        get_torch_device().empty_cache()
+                                metrics["actor/entropy_loss"] = entropy_loss.detach().item()
+                                metrics["actor/action_set_entropy"] = entropy_per_sample.detach().mean().item()
+                                (-entropy_coeff * entropy_loss * loss_scale).backward()
+                                del log_scores, entropy_loss, entropy_per_sample
+                                get_torch_device().empty_cache()
 
-                    calculate_entropy = entropy_coeff != 0 and not entropy_over_valid_actions
-                    entropy, log_prob = self._forward_micro_batch(
-                        micro_batch=data, temperature=temperature, calculate_entropy=calculate_entropy
-                    )
+                            calculate_entropy = entropy_coeff != 0 and not entropy_over_valid_actions
+                            entropy, log_prob = self._forward_micro_batch(
+                                micro_batch=data, temperature=temperature, calculate_entropy=calculate_entropy
+                            )
 
-                    loss_mode = self.config.policy_loss.get("loss_mode", "vanilla")
-                    if loss_mode == "vanilla":
-                        policy_loss_fn = compute_policy_loss
-                    elif loss_mode == "gspo":
-                        policy_loss_fn = compute_policy_loss_gspo
-                    else:
-                        raise ValueError(f"Unsupported loss_mode: {loss_mode}")
+                            loss_mode = self.config.policy_loss.get("loss_mode", "vanilla")
+                            if loss_mode == "vanilla":
+                                policy_loss_fn = compute_policy_loss
+                            elif loss_mode == "gspo":
+                                policy_loss_fn = compute_policy_loss_gspo
+                            else:
+                                raise ValueError(f"Unsupported loss_mode: {loss_mode}")
 
-                    pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = policy_loss_fn(
-                        old_log_prob=old_log_prob,
-                        log_prob=log_prob,
-                        advantages=advantages,
-                        response_mask=response_mask,
-                        cliprange=clip_ratio,
-                        cliprange_low=clip_ratio_low,
-                        cliprange_high=clip_ratio_high,
-                        clip_ratio_c=clip_ratio_c,
-                        loss_agg_mode=loss_agg_mode,
-                    )
+                            pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = policy_loss_fn(
+                                old_log_prob=old_log_prob,
+                                log_prob=log_prob,
+                                advantages=advantages,
+                                response_mask=response_mask,
+                                cliprange=clip_ratio,
+                                cliprange_low=clip_ratio_low,
+                                cliprange_high=clip_ratio_high,
+                                clip_ratio_c=clip_ratio_c,
+                                loss_agg_mode=loss_agg_mode,
+                            )
 
-                    policy_loss = pg_loss
-                    if entropy_coeff != 0 and not entropy_over_valid_actions:
-                        entropy_loss = agg_loss(
-                            loss_mat=entropy,
-                            loss_mask=response_mask,
-                            loss_agg_mode=loss_agg_mode,
-                        )
-                        policy_loss = pg_loss - entropy_loss * entropy_coeff
-                        metrics["actor/entropy_loss"] = entropy_loss.detach().item()
+                            policy_loss = pg_loss
+                            if entropy_coeff != 0 and not entropy_over_valid_actions:
+                                entropy_loss = agg_loss(
+                                    loss_mat=entropy,
+                                    loss_mask=response_mask,
+                                    loss_agg_mode=loss_agg_mode,
+                                )
+                                policy_loss = pg_loss - entropy_loss * entropy_coeff
+                                metrics["actor/entropy_loss"] = entropy_loss.detach().item()
 
-                    if self.config.use_kl_loss:
-                        ref_log_prob = data["ref_log_prob"]
-                        kld = kl_penalty(logprob=log_prob, ref_logprob=ref_log_prob, kl_penalty=self.config.kl_loss_type)
-                        kl_loss = agg_loss(loss_mat=kld, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+                            if self.config.use_kl_loss:
+                                ref_log_prob = data["ref_log_prob"]
+                                kld = kl_penalty(
+                                    logprob=log_prob,
+                                    ref_logprob=ref_log_prob,
+                                    kl_penalty=self.config.kl_loss_type,
+                                )
+                                kl_loss = agg_loss(
+                                    loss_mat=kld, loss_mask=response_mask, loss_agg_mode=loss_agg_mode
+                                )
 
-                        policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
-                        metrics["actor/kl_loss"] = kl_loss.detach().item()
-                        metrics["actor/kl_coef"] = self.config.kl_loss_coef
+                                policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
+                                metrics["actor/kl_loss"] = kl_loss.detach().item()
+                                metrics["actor/kl_coef"] = self.config.kl_loss_coef
 
-                    (policy_loss * loss_scale).backward()
-                    get_torch_device().empty_cache()
+                            append_to_dict(
+                                metrics,
+                                {
+                                    "actor/pg_loss": pg_loss.detach().item(),
+                                    "actor/pg_clipfrac": pg_clipfrac.detach().item(),
+                                    "actor/ppo_kl": ppo_kl.detach().item(),
+                                    "actor/pg_clipfrac_lower": pg_clipfrac_lower.detach().item(),
+                                },
+                            )
+                            (policy_loss * loss_scale).backward()
+                            get_torch_device().empty_cache()
 
-                    data = {
-                        "actor/pg_loss": pg_loss.detach().item(),
-                        "actor/pg_clipfrac": pg_clipfrac.detach().item(),
-                        "actor/ppo_kl": ppo_kl.detach().item(),
-                        "actor/pg_clipfrac_lower": pg_clipfrac_lower.detach().item(),
-                    }
-                    append_to_dict(metrics, data)
+                        if run_value:
+                            value_loss, value_acc, value_entropy = self._compute_return_token_ce_loss(
+                                micro_batch=data,
+                                temperature=temperature,
+                                target_returns=data["actor_value_target_returns"],
+                            )
+                            metrics["actor/value_token_loss"] = value_loss.detach().item()
+                            metrics["actor/value_token_accuracy"] = value_acc
+                            metrics["actor/value_token_entropy"] = value_entropy
+                            (value_loss * actor_value_loss_coef * loss_scale).backward()
+                            get_torch_device().empty_cache()
 
-                grad_norm = self._optimizer_step()
-                data = {"actor/grad_norm": grad_norm.detach().item()}
-                append_to_dict(metrics, data)
+                    grad_norm = self._optimizer_step()
+                    grad_norm_key = "actor/value_grad_norm" if phase == "value" else "actor/grad_norm"
+                    append_to_dict(metrics, {grad_norm_key: grad_norm.detach().item()})
         get_torch_device().empty_cache()
         self.actor_optimizer.zero_grad()
         return metrics

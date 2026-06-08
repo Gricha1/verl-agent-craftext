@@ -42,6 +42,32 @@ class TrajectoryCollector:
         self.tokenizer = tokenizer
         self.processor = processor
 
+    def _encode_user_prompt(self, prompt_text: str) -> dict:
+        """Tokenize a user-role prompt string (chat template + left pad)."""
+        chat = np.array([{"content": prompt_text, "role": "user"}])
+        if getattr(self.tokenizer, "chat_template", None):
+            prompt_with_chat_template = self.tokenizer.apply_chat_template(
+                chat, add_generation_prompt=True, tokenize=False
+            )
+        else:
+            prompt_with_chat_template = f"user: {prompt_text}"
+
+        input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(
+            prompt=prompt_with_chat_template,
+            tokenizer=self.tokenizer,
+            max_length=self.config.data.max_prompt_length,
+            pad_token_id=self.tokenizer.pad_token_id,
+            left_pad=True,
+            truncation=self.config.data.truncation,
+        )
+        position_ids = compute_position_id_with_mask(attention_mask)
+        return {
+            "input_ids": input_ids[0],
+            "attention_mask": attention_mask[0],
+            "position_ids": position_ids[0],
+            "prompt_text": prompt_text,
+        }
+
     def preprocess_single_sample(
         self,
         item: int,
@@ -193,6 +219,14 @@ class TrajectoryCollector:
 
         if self.config.data.get('return_raw_chat', False):
             row_dict['raw_prompt'] = chat.tolist()
+
+        value_texts = obs.get('value_text', None)
+        if value_texts is not None and item < len(value_texts) and value_texts[item]:
+            value_enc = self._encode_user_prompt(value_texts[item])
+            row_dict['value_input_ids'] = value_enc['input_ids']
+            row_dict['value_attention_mask'] = value_enc['attention_mask']
+            row_dict['value_position_ids'] = value_enc['position_ids']
+            row_dict['value_prompt_text'] = value_enc['prompt_text']
         
         return row_dict
 
@@ -337,6 +371,13 @@ class TrajectoryCollector:
         validation_video_true_rewards = [] if record_video_env_idx is not None else None
         validation_video_pred_rewards = [] if record_video_env_idx is not None else None
         validation_video_task_instructions = [] if record_video_env_idx is not None else None
+        validation_video_value_prompts = [] if record_video_env_idx is not None else None
+        validation_video_value_tokens = [] if record_video_env_idx is not None else None
+        from omegaconf import OmegaConf
+
+        use_actor_value_token = bool(
+            OmegaConf.select(self.config, "algorithm.use_actor_value_token", default=False)
+        )
 
         wm_cfg = self.config.trainer.get("world_model", {}) if hasattr(self.config, "trainer") else {}
         wm_inverse_val_enabled = (
@@ -394,7 +435,14 @@ class TrajectoryCollector:
                     validation_video_true_rewards.append("")
                     validation_video_pred_rewards.append("")
                 if validation_video_task_instructions is not None:
-                    validation_video_task_instructions.append("")
+                    validation_video_task_instructions.append(
+                        str(infos[record_video_env_idx].get("instruction", "") or "")
+                    )
+                if validation_video_value_prompts is not None:
+                    vtexts = obs.get("value_text", None)
+                    vp = vtexts[record_video_env_idx] if vtexts is not None else ""
+                    validation_video_value_prompts.append(vp or "")
+                    validation_video_value_tokens.append("")
 
         lenght_obs = len(obs['text']) if obs['text'] is not None else len(obs['image'])
         assert len(gen_batch.batch) == lenght_obs, f"gen_batch size {len(gen_batch.batch)} does not match obs size {lenght_obs}"
@@ -547,6 +595,28 @@ class TrajectoryCollector:
             batch.non_tensor_batch['traj_uid'] = traj_uid
 
             batch = batch.union(batch_output)
+
+            recorded_value_token = ""
+            if (
+                validation_video_value_tokens is not None
+                and use_actor_value_token
+                and record_video_env_idx is not None
+                and "value_input_ids" in batch.batch.keys()
+            ):
+                try:
+                    value_batch = batch.select(
+                        batch_keys=["value_input_ids", "value_attention_mask", "value_position_ids"]
+                    )
+                    value_batch.meta_info = dict(batch_input.meta_info)
+                    value_padded, value_pad = pad_dataproto_to_divisor(
+                        value_batch, actor_rollout_wg.world_size
+                    )
+                    value_out_padded = actor_rollout_wg.generate_value_tokens(value_padded)
+                    value_out = unpad_dataproto(value_out_padded, pad_size=value_pad)
+                    tok_id = int(value_out.batch["responses"][record_video_env_idx, 0].item())
+                    recorded_value_token = self.tokenizer.decode([tok_id], skip_special_tokens=True).strip()
+                except Exception as exc:
+                    print(f"[rollout] critic value token for validation video failed: {exc}", flush=True)
             
             text_actions = self.tokenizer.batch_decode(batch.batch['responses'], skip_special_tokens=True)
             
@@ -702,11 +772,25 @@ class TrajectoryCollector:
                 frame = infos[record_video_env_idx].get('render_frame')
                 if frame is not None:
                     validation_video_frames.append(frame)
-                    prompt_text = obs.get('text', [None])[record_video_env_idx] if isinstance(obs.get('text'), list) else None
+                    # Align text panel with pixel frame: both are post-step (next_obs + infos).
+                    post_step_obs = next_obs
+                    prompt_text = (
+                        post_step_obs.get('text', [None])[record_video_env_idx]
+                        if isinstance(post_step_obs, dict) and isinstance(post_step_obs.get('text'), list)
+                        else None
+                    )
                     # Ensure constraint is visible in validation text panel.
                     try:
-                        if isinstance(obs, dict) and "constraint" in obs and isinstance(obs["constraint"], list):
-                            c = obs["constraint"][record_video_env_idx] if record_video_env_idx < len(obs["constraint"]) else ""
+                        if (
+                            isinstance(post_step_obs, dict)
+                            and "constraint" in post_step_obs
+                            and isinstance(post_step_obs["constraint"], list)
+                        ):
+                            c = (
+                                post_step_obs["constraint"][record_video_env_idx]
+                                if record_video_env_idx < len(post_step_obs["constraint"])
+                                else ""
+                            )
                             if c and (prompt_text is not None) and ("**CONSTRAINT:**" not in prompt_text):
                                 prompt_text = (prompt_text or "") + f"\n\n**CONSTRAINT:** {c}"
                     except Exception:
@@ -719,6 +803,11 @@ class TrajectoryCollector:
                         action_text = raw_action_text
                     validation_video_prompts.append(prompt_text or "")
                     validation_video_actions.append(action_text or "")
+                    if validation_video_value_prompts is not None:
+                        vtexts = post_step_obs.get("value_text", None) if isinstance(post_step_obs, dict) else None
+                        vp = vtexts[record_video_env_idx] if vtexts is not None else ""
+                        validation_video_value_prompts.append(vp or "")
+                        validation_video_value_tokens.append(recorded_value_token or "")
                     try:
                         validation_video_action_ids.append(int(infos[record_video_env_idx].get("action_id", -1)))
                     except Exception:
@@ -761,6 +850,11 @@ class TrajectoryCollector:
                         )
                         validation_video_curr_ascii.append(curr_ascii)
                         validation_video_next_ascii.append(next_ascii)
+
+                    if validation_video_task_instructions is not None:
+                        validation_video_task_instructions.append(
+                            str(infos[record_video_env_idx].get("instruction", "") or "")
+                        )
 
                     if wm_reward_val_enabled and isinstance(obs, dict) and obs.get("anchor") is not None:
                         try:
@@ -892,6 +986,8 @@ class TrajectoryCollector:
             validation_video_true_rewards,
             validation_video_pred_rewards,
             validation_video_task_instructions,
+            validation_video_value_prompts,
+            validation_video_value_tokens,
             completed_episode_returns,
             completed_episode_lengths,
             completed_episode_costs,
@@ -1041,6 +1137,8 @@ class TrajectoryCollector:
             validation_video_inverse_action_ids = None
             validation_video_curr_ascii = None
             validation_video_next_ascii = None
+            validation_video_value_prompts = None
+            validation_video_value_tokens = None
         else:
             # Vanilla Sampling   
             (
@@ -1062,6 +1160,8 @@ class TrajectoryCollector:
                 validation_video_true_rewards,
                 validation_video_pred_rewards,
                 validation_video_task_instructions,
+                validation_video_value_prompts,
+                validation_video_value_tokens,
                 completed_episode_returns,
                 completed_episode_lengths,
                 completed_episode_costs,
@@ -1114,6 +1214,10 @@ class TrajectoryCollector:
             gen_batch_output.meta_info['validation_video_pred_rewards'] = validation_video_pred_rewards
         if validation_video_task_instructions is not None:
             gen_batch_output.meta_info['validation_video_task_instructions'] = validation_video_task_instructions
+        if validation_video_value_prompts is not None:
+            gen_batch_output.meta_info['validation_video_value_prompts'] = validation_video_value_prompts
+        if validation_video_value_tokens is not None:
+            gen_batch_output.meta_info['validation_video_value_tokens'] = validation_video_value_tokens
         # Метрики по завершённым эпизодам (среднее по эпизодам, как в caged_craftext baselines)
         if completed_episode_returns is not None and len(completed_episode_returns) > 0:
             gen_batch_output.meta_info['completed_episode_returns'] = np.array(completed_episode_returns, dtype=np.float32)

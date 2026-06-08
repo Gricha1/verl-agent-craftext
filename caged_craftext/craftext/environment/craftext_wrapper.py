@@ -26,6 +26,7 @@ from craftext.environment.scenarious.checkers.target_state     import TargetStat
 from craftext.environment.debug_square_rewards import (
     debug_square_adjacent_to_goal,
     debug_square_step_reward,
+    is_debug_square_config,
 )
 from typing import Union
 
@@ -93,6 +94,11 @@ class InstructionWrapper(Wrapper):
         self.StateStructure = GameData if self.environment_key == 1 else GameDataClassic
 
         print("Initialized Instruction Wrapper with environment key:", self.environment_key)
+        if is_debug_square_config(self.config_name):
+            print(
+                f"[InstructionWrapper] debug_square proximity goal mode "
+                f"(config_name={self.config_name!r})"
+            )
         # print(self.StateStructure)
         self.n_instructions = len(self.scenario_handler.scenario_data.instructions_list)
 
@@ -113,7 +119,7 @@ class InstructionWrapper(Wrapper):
 
         checker_id = self.scenario_handler.scenario_data_jax.scenario_checker[idx]
         # 8x8 debug map uses achievement checkers only; avoid BUILD_LINE (idx 3) on tiny maps.
-        if self.config_name == "debug_square_8x8":
+        if is_debug_square_config(self.config_name):
             checker_id = jnp.int32(0)
 
         # Initialize the state with the selected instruction embedding/token and set success rates to zero
@@ -141,15 +147,22 @@ class InstructionWrapper(Wrapper):
         game_data_vector = self.StateStructure.from_state(env_state.env_state, state, action)
                     
         ts = self.batched_ts.select(env_state.idx)
-        # debug_square_8x8: success = player orthogonally adjacent to goal cell (no DO / achievements).
-        if self.config_name == "debug_square_8x8":
+        # debug_square_8x8: success = adjacent to goal resource (not achievement mining).
+        if is_debug_square_config(self.config_name):
+            # Prefer per-episode target_state (CMDP); batched_ts.select can break tuple masks.
+            ach_mask = ts.achievements.achievement_mask
+            if hasattr(env_state, "target_state") and env_state.target_state is not None:
+                ach_mask = env_state.target_state.achievements.achievement_mask
             instruction_done = debug_square_adjacent_to_goal(
-                state.player_position, ts.achievements.achievement_mask
+                state.player_position,
+                ach_mask,
+                env_state=state,
+                instruction_idx=env_state.idx,
             )
         else:
             instruction_done = generic_check(game_data_vector, ts, env_state.checker_id)
         
-        if self.config_name == "debug_square_8x8":
+        if is_debug_square_config(self.config_name):
             # No Craftax achievement reward; task completion + Manhattan navigation shaping.
             prev_pos = env_state.env_state.player_position
             new_pos = state.player_position
@@ -157,8 +170,9 @@ class InstructionWrapper(Wrapper):
                 reward,
                 prev_pos,
                 new_pos,
-                ts.achievements.achievement_mask,
+                ach_mask,
                 instruction_done,
+                instruction_idx=env_state.idx,
             )
         else:
             # Craftax achievement reward (scaled unless EXPLORE mode).

@@ -445,7 +445,10 @@ class RayPPOTrainer:
         if config.algorithm.use_kl_in_reward:
             self.kl_ctrl_in_reward = core_algos.get_kl_controller(config.algorithm.kl_ctrl)
 
-        if self.config.algorithm.adv_estimator == AdvantageEstimator.GAE:
+        self.use_actor_value_token = bool(config.algorithm.get("use_actor_value_token", False))
+        if self.use_actor_value_token:
+            self.use_critic = False
+        elif self.config.algorithm.adv_estimator == AdvantageEstimator.GAE:
             self.use_critic = True
         elif self.config.algorithm.adv_estimator in [
             AdvantageEstimator.GRPO,
@@ -669,6 +672,64 @@ class RayPPOTrainer:
 
         print(f"Dumped generations to {filename}")
 
+    def _append_wm_rollout_buffer(self, batch: DataProto) -> None:
+        """Append env transitions from this PPO rollout batch (same data PPO trains on)."""
+        buf_dir = self.config.trainer.get("wm_rollout_buffer_dir", None)
+        if not buf_dir:
+            return
+        required = ("curr_obs_ascii", "wm_action_token", "traj_uid")
+        for key in required:
+            if key not in batch.non_tensor_batch:
+                return
+
+        os.makedirs(buf_dir, exist_ok=True)
+        path = os.path.join(buf_dir, "transitions.jsonl")
+        n = len(batch)
+        curr_obs = batch.non_tensor_batch["curr_obs_ascii"].reshape(-1)
+        actions = batch.non_tensor_batch["wm_action_token"].reshape(-1)
+        traj_uids = batch.non_tensor_batch["traj_uid"].reshape(-1)
+        tasks = batch.non_tensor_batch.get("wm_task_instruction")
+        if tasks is not None:
+            tasks = np.asarray(tasks, dtype=object).reshape(-1)
+        else:
+            tasks = np.array([""] * n, dtype=object)
+        rewards_raw = batch.non_tensor_batch.get("wm_step_reward")
+        if rewards_raw is None:
+            rewards_raw = batch.non_tensor_batch.get("rewards")
+        if rewards_raw is None:
+            return
+        rewards = np.asarray(rewards_raw, dtype=np.float64).reshape(-1)
+        dones = batch.non_tensor_batch.get("dones")
+        if dones is not None:
+            dones = np.asarray(dones).reshape(-1)
+        else:
+            dones = np.zeros(n, dtype=np.int32)
+
+        seq_path = os.path.join(buf_dir, "_seq_counter.txt")
+        seq_base = 0
+        if os.path.isfile(seq_path):
+            try:
+                seq_base = int(open(seq_path, encoding="utf-8").read().strip())
+            except Exception:
+                seq_base = 0
+
+        with open(path, "a", encoding="utf-8") as f:
+            for i in range(n):
+                entry = {
+                    "seq": seq_base + i,
+                    "ppo_global_step": int(self.global_steps),
+                    "total_env_steps": int(self.total_env_steps),
+                    "traj_uid": str(traj_uids[i]),
+                    "curr_obs_ascii": str(curr_obs[i] or ""),
+                    "wm_action_token": str(actions[i] or ""),
+                    "wm_task_instruction": str(tasks[i] or ""),
+                    "wm_step_reward": float(rewards[i]),
+                    "done": int(bool(dones[i])),
+                }
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        with open(seq_path, "w", encoding="utf-8") as f:
+            f.write(str(seq_base + n))
+
     def _maybe_log_val_generations(self, inputs, outputs, scores):
         """Log a table of validation samples to the configured logger (wandb or swanlab)"""
 
@@ -779,6 +840,8 @@ class RayPPOTrainer:
                     "record_video_env_idx=0 matches the env with record_video enabled."
                 )
                 prompts = test_output_gen_batch.meta_info.get('validation_video_prompts')
+                value_prompts = test_output_gen_batch.meta_info.get('validation_video_value_prompts')
+                value_tokens = test_output_gen_batch.meta_info.get('validation_video_value_tokens')
                 actions = test_output_gen_batch.meta_info.get('validation_video_actions')
                 action_ids = test_output_gen_batch.meta_info.get('validation_video_action_ids')
                 inverse_actions = test_output_gen_batch.meta_info.get('validation_video_inverse_actions')
@@ -833,6 +896,46 @@ class RayPPOTrainer:
                     gif_path = gif_path_gif
                     logger.log_validation_video(gif_path, step=self.total_env_steps, name=f"validation_trajectory_step{self.total_env_steps}")
                     print(f"[INFO] Validation video saved and logged to Comet ML: {gif_path} (also in {gif_path_tmp})")
+
+                    # Critic prompt GIF (dual-prompt actor-value mode)
+                    if value_prompts is not None and len(value_prompts) > 0:
+                        from agent_system.environments.env_package.caged_craftext.return_tokens import (
+                            format_return_display,
+                        )
+
+                        critic_gif_name = f"val_critic_trajectory_step{self.total_env_steps}.gif"
+                        critic_gif_path_tmp = os.path.join(tempfile.gettempdir(), critic_gif_name)
+                        critic_gif_path_gif = os.path.join(gif_dir, critic_gif_name)
+                        critic_frames = []
+                        for i, f in enumerate(frames):
+                            arr = _frame_to_uint8_arr(f)
+                            vp = value_prompts[i] if i < len(value_prompts) else ""
+                            vt = value_tokens[i] if value_tokens is not None and i < len(value_tokens) else ""
+                            if vt:
+                                display, _ = format_return_display(vt)
+                                action_line = f"V={display} | raw: {vt}"
+                            else:
+                                action_line = ""
+                            if vp:
+                                arr = composite_frame_with_prompt_text(arr, vp, action_line)
+                            critic_frames.append(arr)
+
+                        def _write_critic_gif(path):
+                            with imageio.get_writer(path, mode='I', duration=0.15, loop=0) as writer:
+                                for arr in critic_frames:
+                                    writer.append_data(arr)
+
+                        _write_critic_gif(critic_gif_path_tmp)
+                        _write_critic_gif(critic_gif_path_gif)
+                        logger.log_validation_video(
+                            critic_gif_path_gif,
+                            step=self.total_env_steps,
+                            name=f"validation_critic_trajectory_step{self.total_env_steps}",
+                        )
+                        print(
+                            f"[INFO] Validation critic video saved: {critic_gif_path_gif} "
+                            f"(also in {critic_gif_path_tmp})"
+                        )
 
                     # Log action histogram for the recorded validation episode (same env as the GIF).
                     try:
@@ -1785,6 +1888,31 @@ class RayPPOTrainer:
                             reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
                         batch.batch["token_level_scores"] = reward_tensor
 
+                        if self.use_actor_value_token:
+                            from verl.utils.actor_value_token import (
+                                build_step_reward_tensor,
+                                compute_remaining_return_scalars,
+                            )
+
+                            step_rewards_raw = batch.non_tensor_batch.get("rewards")
+                            if step_rewards_raw is None:
+                                raise ValueError(
+                                    "use_actor_value_token requires non_tensor_batch['rewards'] from rollout"
+                                )
+                            step_rewards = np.asarray(step_rewards_raw, dtype=np.float64).reshape(-1).tolist()
+                            batch.batch["token_level_scores"] = build_step_reward_tensor(
+                                batch.batch["responses"], step_rewards
+                            )
+                            target_returns = compute_remaining_return_scalars(
+                                batch.non_tensor_batch["traj_uid"], step_rewards
+                            )
+                            batch.batch["actor_value_target_returns"] = torch.tensor(
+                                target_returns, dtype=torch.float32, device=batch.batch["responses"].device
+                            )
+                            with _timer("values", timing_raw):
+                                values = self.actor_rollout_wg.compute_actor_token_values(batch)
+                            batch = batch.union(values)
+
                         print(f"{list(reward_extra_infos_dict.keys())=}")
                         if reward_extra_infos_dict:
                             batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
@@ -1823,8 +1951,10 @@ class RayPPOTrainer:
                             gigpo_enable_similarity= self.config.algorithm.gigpo.enable_similarity,
                             gigpo_similarity_thresh=self.config.algorithm.gigpo.similarity_thresh,
                         )
-                    if _verbose_phases:
-                        self._ppo_phase_log(f"■ POST-ROLLOUT done in {time.monotonic() - _t_post:.1f}s")
+                        if _verbose_phases:
+                            self._ppo_phase_log(f"■ POST-ROLLOUT done in {time.monotonic() - _t_post:.1f}s")
+
+                    self._append_wm_rollout_buffer(batch)
 
                     # update critic
                     if self.use_critic:
@@ -1838,14 +1968,18 @@ class RayPPOTrainer:
                         if _verbose_phases:
                             self._ppo_phase_log(f"■ UPDATE critic done in {time.monotonic() - _t_cr:.1f}s")
 
-                    # implement critic warmup
-                    if self.config.trainer.critic_warmup <= self.global_steps:
+                    # implement critic warmup (for actor-value token: still update actor during warmup, value CE only)
+                    if self.config.trainer.critic_warmup <= self.global_steps or self.use_actor_value_token:
                         # update actor (PPO update — minibatches with optimizer.step() each)
                         if _verbose_phases:
                             self._ppo_phase_log("▶ UPDATE: actor (PPO) …")
                         _t_ac = time.monotonic()
                         with _timer("update_actor", timing_raw):
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
+                            batch.meta_info["actor_value_warmup"] = (
+                                self.use_actor_value_token
+                                and self.global_steps < self.config.trainer.critic_warmup
+                            )
                             from verl.utils.entropy_coeff_schedule import scheduled_entropy_coeff
 
                             _sched = self.config.actor_rollout_ref.actor.get("entropy_coeff_schedule")
@@ -1947,7 +2081,12 @@ class RayPPOTrainer:
                     }
                 )
                 # collect metrics
-                metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                metrics.update(
+                    compute_data_metrics(
+                        batch=batch,
+                        use_critic=self.use_critic or self.use_actor_value_token,
+                    )
+                )
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
                 # TODO: implement actual tflpo and theoretical tflpo
                 n_gpus = self.resource_pool_manager.get_n_gpus()
