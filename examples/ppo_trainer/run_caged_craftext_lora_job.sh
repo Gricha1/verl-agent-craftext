@@ -97,7 +97,7 @@ echo "[INFO] CRITIC_WARMUP: $CRITIC_WARMUP"
 echo "[INFO] OBSERVATION_TYPE: $OBSERVATION_TYPE"
 
 num_cpus_per_env_worker=0.03
-val_data_size=16
+val_data_size=${VAL_DATA_SIZE:-16}
 
 # export RUN_NAME="run_ppo_qwen2.5_1.5b_caged_craftext_budgetary_water_$(date +%Y%m%d-%H%M%S)"
 export RUN_NAME="${RUN_NAME:-run_ppo_qwen2.5_1.5b_caged_craftext_energy_collect_wood_$(date +%Y%m%d-%H%M%S)}"

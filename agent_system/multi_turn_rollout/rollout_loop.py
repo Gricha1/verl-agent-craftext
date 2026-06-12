@@ -892,7 +892,11 @@ class TrajectoryCollector:
             
             # Update done states (для текущего эпизода)
             is_done = np.logical_or(is_done, dones)
-            
+
+            # Without auto_reset: stop once every env slot is done (avoid 49 extra vLLM steps).
+            if not auto_reset_enabled and np.all(is_done):
+                break
+
             # Auto reset: перезапускаем среды, которые завершились, но еще не собрали достаточно шагов
             if auto_reset_enabled:
                 need_reset = np.logical_and(dones, steps_per_env < max_steps_per_env)

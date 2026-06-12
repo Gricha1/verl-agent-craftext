@@ -559,6 +559,83 @@ def _load_mono_font(font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageF
         return ImageFont.load_default()
 
 
+def append_value_bar_column(
+    frame_arr: np.ndarray,
+    value: float | int | None,
+    *,
+    max_value: int = 8,
+    bar_width: int = 72,
+) -> np.ndarray:
+    """
+    Append a vertical value bar (0..max_value) on the right of a game frame.
+    Used in actor-value validation GIFs next to the pixel view.
+    """
+    from agent_system.environments.env_package.caged_craftext.return_tokens import MAX_RETURN_BIN
+
+    arr = np.asarray(frame_arr)
+    if arr.ndim == 2:
+        arr = np.stack([arr] * 3, axis=-1)
+    elif arr.ndim == 3 and arr.shape[0] == 3:
+        arr = np.transpose(arr, (1, 2, 0))
+    if arr.max() <= 1.0:
+        arr = (arr * 255).astype(np.uint8)
+    else:
+        arr = arr.astype(np.uint8)
+
+    fh, fw = arr.shape[0], arr.shape[1]
+    max_v = int(max_value if max_value is not None else MAX_RETURN_BIN)
+    max_v = max(1, max_v)
+
+    bar_img = Image.new("RGB", (bar_width, fh), (248, 248, 252))
+    draw = ImageDraw.Draw(bar_img)
+    font = _load_mono_font(10)
+    margin = 8
+    track_top = margin + 14
+    track_bottom = fh - margin
+    track_h = max(20, track_bottom - track_top)
+    track_left = 28
+    track_right = bar_width - 10
+
+    draw.text((4, 2), "V", fill=(40, 40, 40), font=font)
+    for tick in range(max_v + 1):
+        y = int(track_bottom - (tick / max_v) * track_h)
+        draw.line([(track_left - 6, y), (track_left - 2, y)], fill=(120, 120, 120), width=1)
+        draw.text((2, y - 5), str(tick), fill=(80, 80, 80), font=font)
+
+    draw.rectangle(
+        [track_left, track_top, track_right, track_bottom],
+        outline=(90, 90, 110),
+        width=1,
+        fill=(235, 235, 245),
+    )
+
+    if value is not None:
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            v = None
+    else:
+        v = None
+
+    if v is not None and v >= 0:
+        v = min(max_v, max(0.0, v))
+        fill_top = int(track_bottom - (v / max_v) * track_h)
+        draw.rectangle(
+            [track_left + 1, fill_top, track_right - 1, track_bottom - 1],
+            fill=(76, 120, 200),
+        )
+        label = f"{v:g}"
+        draw.text((track_left, track_top - 14), label, fill=(20, 60, 140), font=font)
+    else:
+        draw.text((track_left, track_top - 14), "?", fill=(140, 40, 40), font=font)
+
+    game = Image.fromarray(arr)
+    out = Image.new("RGB", (fw + bar_width, fh), (255, 255, 255))
+    out.paste(game, (0, 0))
+    out.paste(bar_img, (fw, 0))
+    return np.asarray(out)
+
+
 def composite_frame_with_prompt_text(
     frame_arr: np.ndarray,
     prompt_text: str,

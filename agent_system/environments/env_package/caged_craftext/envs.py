@@ -593,10 +593,15 @@ class CagedCraftextMultiProcessEnv(gym.Env):
         return list(obs_list), list(reward_list), list(done_list), list(info_list)
 
     def reset(self):
-        # Выбираем случайные индексы сценариев для каждого env в группе
-        idxs = self._rng.choice(self.scenario_idxs, size=self.env_num, replace=True)
-        # Повторяем индексы для каждой среды внутри группы (требование group-based RL)
-        idxs = np.repeat(idxs, self.group_n).tolist()
+        fixed = self._env_kwargs.get("fixed_scenario_idx")
+        if fixed is not None:
+            scenario = int(fixed)
+            idxs = np.repeat(scenario, self.env_num).tolist()
+        else:
+            # Выбираем случайные индексы сценариев для каждого env в группе
+            idxs = self._rng.choice(self.scenario_idxs, size=self.env_num, replace=True)
+            # Повторяем индексы для каждой среды внутри группы (требование group-based RL)
+            idxs = np.repeat(idxs, self.group_n).tolist()
 
         return_render_flags = [i in self._record_video_worker_idxs for i in range(len(self._workers))]
         futures = [

@@ -902,6 +902,9 @@ class RayPPOTrainer:
                         from agent_system.environments.env_package.caged_craftext.return_tokens import (
                             format_return_display,
                         )
+                        from agent_system.environments.env_package.caged_craftext.utility import (
+                            append_value_bar_column,
+                        )
 
                         critic_gif_name = f"val_critic_trajectory_step{self.total_env_steps}.gif"
                         critic_gif_path_tmp = os.path.join(tempfile.gettempdir(), critic_gif_name)
@@ -911,11 +914,15 @@ class RayPPOTrainer:
                             arr = _frame_to_uint8_arr(f)
                             vp = value_prompts[i] if i < len(value_prompts) else ""
                             vt = value_tokens[i] if value_tokens is not None and i < len(value_tokens) else ""
+                            value_scalar = None
                             if vt:
-                                display, _ = format_return_display(vt)
+                                display, parsed_v = format_return_display(vt)
+                                value_scalar = parsed_v if parsed_v >= 0 else None
                                 action_line = f"V={display} | raw: {vt}"
                             else:
                                 action_line = ""
+                                value_scalar = None
+                            arr = append_value_bar_column(arr, value_scalar)
                             if vp:
                                 arr = composite_frame_with_prompt_text(arr, vp, action_line)
                             critic_frames.append(arr)

@@ -72,10 +72,15 @@ class EpisodeRewardManager:
             episode_rewards = data_item.non_tensor_batch['episode_rewards']
             episode_lengths = data_item.non_tensor_batch['episode_lengths']
 
-            if self.normalize_by_length:
-                score = episode_rewards / episode_lengths
+            # Multi-step env rollouts attach per-step env reward in `rewards`; use it for GAE/PPO.
+            # `episode_rewards` is cumulative within the episode — only for outcome-style fallbacks.
+            step_reward = data_item.non_tensor_batch.get('rewards')
+            if step_reward is not None:
+                score = float(np.asarray(step_reward, dtype=np.float64).reshape(()))
+            elif self.normalize_by_length:
+                score = float(episode_rewards) / float(max(episode_lengths, 1))
             else:
-                score = episode_rewards
+                score = float(episode_rewards)
             reward_tensor[i, valid_response_length - 1] = torch.tensor(score, dtype=torch.float32, device=prompt_ids.device)
 
             if data_source not in already_print_data_sources:

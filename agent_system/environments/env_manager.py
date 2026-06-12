@@ -1258,6 +1258,8 @@ def make_envs(config):
         ):
             env_kwargs['use_debug_square_map'] = True
             env_kwargs['config_name'] = str(config.env.craftext_settings)
+        if getattr(config.env, "fixed_scenario_idx", None) is not None:
+            env_kwargs["fixed_scenario_idx"] = int(config.env.fixed_scenario_idx)
         
         # 3. Создаем train и val среды
         optimistic_reset_ratio = getattr(config.env, "optimistic_reset_ratio", None)
