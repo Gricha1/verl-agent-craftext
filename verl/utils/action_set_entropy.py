@@ -141,6 +141,40 @@ def build_prompt_action_batch_for_one_action(
     return input_ids, attention_mask, position_ids
 
 
+def action_vocab_ids_from_canonical(
+    canonical_padded: torch.Tensor,
+    canonical_lengths: torch.Tensor,
+) -> torch.Tensor:
+    """Vocab ids for each action (single-token actions only). Shape (num_actions,)."""
+    if int(canonical_lengths.max().item()) != 1:
+        raise ValueError("action_vocab_ids_from_canonical requires single-token actions")
+    rows = []
+    for j in range(canonical_lengths.shape[0]):
+        rows.append(int(canonical_padded[j, 0].item()))
+    return torch.tensor(rows, dtype=torch.long, device=canonical_padded.device)
+
+
+def action_log_scores_from_next_token_logits(
+    next_token_logits: torch.Tensor,
+    action_vocab_ids: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Fast path for single-token actions: one forward, logits at last prompt position.
+
+    log_score[b, a] = log p(action_token_a | prompt) under the full-vocab distribution.
+    Same values as teacher-forced log-score when each action is one token.
+
+    Args:
+        next_token_logits: (B, vocab_size)
+        action_vocab_ids: (num_actions,) token ids aligned with canonical action order
+
+    Returns:
+        log_scores: (B, num_actions)
+    """
+    log_probs = F.log_softmax(next_token_logits, dim=-1)
+    return log_probs.index_select(dim=-1, index=action_vocab_ids.to(log_probs.device))
+
+
 def action_log_scores_one_action_batch(
     logits: torch.Tensor,
     input_ids: torch.Tensor,

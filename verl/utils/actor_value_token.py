@@ -101,17 +101,36 @@ def _forward_last_logits(
     input_ids: torch.Tensor,
     attention_mask: torch.Tensor,
     position_ids: torch.Tensor,
+    **kwargs,
 ) -> torch.Tensor:
-    pos = position_ids
-    if position_ids.dim() == 3:
+    """Next-token logits at the last input position only (logits_to_keep=1 when supported)."""
+    mrope = position_ids.dim() == 3
+    pos = (attention_mask.cumsum(dim=-1) - 1).clamp(min=0) * attention_mask
+    if mrope:
         pos = pos.unsqueeze(0).expand(3, -1, -1)
-    output = actor_module(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        position_ids=pos,
-        use_cache=False,
-    )
-    return output.logits[:, -1, :]
+    try:
+        output = actor_module(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=pos,
+            use_cache=False,
+            logits_to_keep=1,
+            **kwargs,
+        )
+    except TypeError:
+        output = actor_module(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=pos,
+            use_cache=False,
+            **kwargs,
+        )
+    if getattr(output, "logits", None) is None:
+        raise RuntimeError("actor_value forward returned no logits")
+    logits = output.logits
+    if logits.dim() == 3:
+        return logits[:, -1, :]
+    return logits
 
 
 @torch.no_grad()

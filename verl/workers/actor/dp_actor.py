@@ -73,6 +73,8 @@ class DataParallelPPOActor(BasePPOActor):
         self._canonical_action_cache_key = None
         self._canonical_action_padded = None
         self._canonical_action_lengths = None
+        self._action_vocab_ids = None
+        self._entropy_band_coef = None
         self.device_name = get_device_name()
 
     def _get_canonical_action_tokens(self, device: torch.device):
@@ -93,10 +95,21 @@ class DataParallelPPOActor(BasePPOActor):
             self._canonical_action_cache_key = cache_key
             self._canonical_action_padded = padded
             self._canonical_action_lengths = lengths
+            self._action_vocab_ids = None
         return (
             self._canonical_action_padded.to(device),
             self._canonical_action_lengths.to(device),
         )
+
+    def _get_action_vocab_ids(self, device: torch.device) -> torch.Tensor:
+        canonical_padded, canonical_lengths = self._get_canonical_action_tokens(device)
+        if self._action_vocab_ids is None:
+            from verl.utils.action_set_entropy import action_vocab_ids_from_canonical
+
+            self._action_vocab_ids = action_vocab_ids_from_canonical(
+                canonical_padded.cpu(), canonical_lengths.cpu()
+            )
+        return self._action_vocab_ids.to(device)
 
     def _compute_action_set_log_scores(
         self,
@@ -105,6 +118,7 @@ class DataParallelPPOActor(BasePPOActor):
     ) -> torch.Tensor:
         """Log-probability scores for each canonical <action>X</action> string. Shape (B, num_actions)."""
         from verl.utils.action_set_entropy import (
+            action_log_scores_from_next_token_logits,
             action_log_scores_one_action_batch,
             build_prompt_action_batch_for_one_action,
             build_prompt_action_sequences,
@@ -154,6 +168,52 @@ class DataParallelPPOActor(BasePPOActor):
                         "set actor_rollout_ref.model.use_fused_kernels=False"
                     )
                 return output.logits / temp
+
+        use_single_token_fastpath = (
+            bool(self.config.get("single_token_actions", False))
+            and bool(self.config.get("entropy_action_single_token_fastpath", True))
+            and int(canonical_lengths.max().item()) == 1
+        )
+        if use_single_token_fastpath:
+            prompt_pos_ids = (prompt_mask.cumsum(dim=1) - 1).clamp(min=0) * prompt_mask
+            with torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
+                pos = prompt_pos_ids
+                if mrope:
+                    pos = pos.unsqueeze(0).expand(3, -1, -1)
+                try:
+                    output = self.actor_module(
+                        input_ids=prompt_ids,
+                        attention_mask=prompt_mask,
+                        position_ids=pos,
+                        **multi_modal_inputs,
+                        use_cache=False,
+                        logits_to_keep=1,
+                    )
+                except TypeError:
+                    output = self.actor_module(
+                        input_ids=prompt_ids,
+                        attention_mask=prompt_mask,
+                        position_ids=pos,
+                        **multi_modal_inputs,
+                        use_cache=False,
+                    )
+                if self.use_fused_kernels and hasattr(output, "logits") and output.logits is None:
+                    raise NotImplementedError(
+                        "entropy_over_valid_actions requires non-fused logits path; "
+                        "set actor_rollout_ref.model.use_fused_kernels=False"
+                    )
+                logits = output.logits / temp
+            # (B, 1, V) or (B, V): keep only 17 action-token logits to avoid full-vocab softmax backward.
+            if logits.dim() == 3:
+                next_token_logits = logits[:, -1, :]
+            else:
+                next_token_logits = logits
+            del logits, output
+            action_vocab_ids = self._get_action_vocab_ids(input_ids.device)
+            action_logits = next_token_logits.index_select(-1, action_vocab_ids)
+            del next_token_logits
+            get_torch_device().empty_cache()
+            return action_logits.float()
 
         if batched_forward:
             cand_ids, cand_mask, cand_pos_ids, _ = build_prompt_action_sequences(
@@ -586,7 +646,7 @@ class DataParallelPPOActor(BasePPOActor):
         micro_batch: dict,
         temperature: float,
     ) -> torch.Tensor:
-        from verl.utils.actor_value_token import mask_logits_to_allowed, return_bin_id_tensor
+        from verl.utils.actor_value_token import return_bin_id_tensor
 
         value_input_ids = micro_batch["value_input_ids"]
         value_attention_mask = micro_batch["value_attention_mask"]
@@ -599,23 +659,48 @@ class DataParallelPPOActor(BasePPOActor):
                     [inputs[key] for inputs in micro_batch["multi_modal_inputs"]], dim=0
                 )
 
+        temp = max(float(temperature), 1e-8)
+        mrope = value_position_ids.dim() == 3
+        pos = (value_attention_mask.cumsum(dim=-1) - 1).clamp(min=0) * value_attention_mask
+
         with torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
-            pos = value_position_ids
-            if value_position_ids.dim() == 3:
+            if mrope:
                 pos = pos.unsqueeze(0).expand(3, -1, -1)
-            output = self.actor_module(
-                input_ids=value_input_ids,
-                attention_mask=value_attention_mask,
-                position_ids=pos,
-                **multi_modal_inputs,
-                use_cache=False,
-            )
-            ret_logits = output.logits[:, -1, :] / max(float(temperature), 1e-8)
+            try:
+                output = self.actor_module(
+                    input_ids=value_input_ids,
+                    attention_mask=value_attention_mask,
+                    position_ids=pos,
+                    **multi_modal_inputs,
+                    use_cache=False,
+                    logits_to_keep=1,
+                )
+            except TypeError:
+                output = self.actor_module(
+                    input_ids=value_input_ids,
+                    attention_mask=value_attention_mask,
+                    position_ids=pos,
+                    **multi_modal_inputs,
+                    use_cache=False,
+                )
+            if self.use_fused_kernels and hasattr(output, "logits") and output.logits is None:
+                raise NotImplementedError(
+                    "actor_value_token requires non-fused logits path; "
+                    "set actor_rollout_ref.model.use_fused_kernels=False"
+                )
+            logits = output.logits / temp
+
+        if logits.dim() == 3:
+            next_token_logits = logits[:, -1, :]
+        else:
+            next_token_logits = logits
+        del logits, output
 
         tokenizer = self._get_tokenizer()
-        bin_ids = return_bin_id_tensor(tokenizer, device=ret_logits.device)
-        ret_logits = mask_logits_to_allowed(ret_logits, bin_ids)
-        return ret_logits[:, bin_ids]
+        bin_ids = return_bin_id_tensor(tokenizer, device=next_token_logits.device)
+        bin_logits = next_token_logits.index_select(-1, bin_ids)
+        del next_token_logits
+        return bin_logits.float()
 
     def _compute_return_token_ce_loss(
         self,
@@ -719,7 +804,20 @@ class DataParallelPPOActor(BasePPOActor):
         effective_entropy_coeff = float(
             data.meta_info.get("entropy_coeff", self.config.entropy_coeff)
         )
+        from verl.utils.entropy_band import adapt_entropy_coeff, entropy_band_enabled
+
+        entropy_band_cfg = self.config.get("entropy_band") or {}
+        entropy_band_on = entropy_band_enabled(entropy_band_cfg)
+        if entropy_band_on and self._entropy_band_coef is None:
+            self._entropy_band_coef = effective_entropy_coeff
+        entropy_bonus_coeff = (
+            self._entropy_band_coef if entropy_band_on else effective_entropy_coeff
+        )
         metrics = {"actor/entropy_coeff": effective_entropy_coeff}
+        if entropy_band_on:
+            metrics["actor/entropy_band_coef"] = entropy_bonus_coeff
+            metrics["actor/entropy_band_low"] = float(entropy_band_cfg.get("low", 0.7))
+            metrics["actor/entropy_band_high"] = float(entropy_band_cfg.get("high", 1.4))
         if actor_value_separate_steps:
             metrics["actor/value_separate_optimizer_steps"] = 1.0
 
@@ -777,10 +875,24 @@ class DataParallelPPOActor(BasePPOActor):
                     metrics["actor/value_warmup"] = 1.0
                     append_to_dict(metrics, {"actor/pg_loss": 0.0})
 
-                for phase in update_phases:
-                    self.actor_optimizer.zero_grad()
+                micro_batches = list(micro_batches)
+                n_micro = len(micro_batches)
 
-                    for data in micro_batches:
+                for phase in update_phases:
+                    if phase == "value" and actor_value_separate_steps:
+                        get_torch_device().empty_cache()
+                    self.actor_optimizer.zero_grad()
+                    if actor_value_token and (
+                        not torch.distributed.is_initialized()
+                        or torch.distributed.get_rank() == 0
+                    ):
+                        print(
+                            f"[update_policy] phase={phase} epoch={epoch} "
+                            f"mini_batch={batch_idx} n_micro={n_micro}",
+                            flush=True,
+                        )
+
+                    for mb_idx, data in enumerate(micro_batches):
                         # Support all hardwares
                         if isinstance(data, DataProto):
                             data = {**data.batch.to(get_torch_device().current_device()), **data.non_tensor_batch}
@@ -801,7 +913,7 @@ class DataParallelPPOActor(BasePPOActor):
                         clip_ratio_low = self.config.clip_ratio_low if self.config.clip_ratio_low is not None else clip_ratio
                         clip_ratio_high = self.config.clip_ratio_high if self.config.clip_ratio_high is not None else clip_ratio
                         clip_ratio_c = self.config.get("clip_ratio_c", 3.0)
-                        entropy_coeff = effective_entropy_coeff
+                        entropy_coeff = entropy_bonus_coeff
                         loss_agg_mode = self.config.loss_agg_mode
 
                         entropy_over_valid_actions = bool(
@@ -825,24 +937,33 @@ class DataParallelPPOActor(BasePPOActor):
                             if entropy_coeff != 0 and entropy_over_valid_actions:
                                 from verl.utils.action_set_entropy import entropy_loss_over_action_scores
 
-                                log_scores = self._compute_action_set_log_scores(data, temperature)
+                                action_logits = self._compute_action_set_log_scores(data, temperature)
                                 sample_mask = None
                                 if self.config.get("entropy_action_only_valid_rollouts", False):
                                     if "is_action_valid" in data:
                                         sample_mask = torch.tensor(
                                             data["is_action_valid"],
-                                            device=log_scores.device,
+                                            device=action_logits.device,
                                             dtype=torch.bool,
                                         )
                                 entropy_loss, entropy_per_sample = entropy_loss_over_action_scores(
-                                    log_scores,
+                                    action_logits,
                                     temperature=temperature,
                                     sample_mask=sample_mask,
                                 )
                                 metrics["actor/entropy_loss"] = entropy_loss.detach().item()
-                                metrics["actor/action_set_entropy"] = entropy_per_sample.detach().mean().item()
+                                action_set_h = entropy_per_sample.detach().mean().item()
+                                metrics["actor/action_set_entropy"] = action_set_h
                                 (-entropy_coeff * entropy_loss * loss_scale).backward()
-                                del log_scores, entropy_loss, entropy_per_sample
+                                if entropy_band_on:
+                                    self._entropy_band_coef = adapt_entropy_coeff(
+                                        entropy_coeff,
+                                        action_set_h,
+                                        entropy_band_cfg,
+                                    )
+                                    entropy_bonus_coeff = self._entropy_band_coef
+                                    metrics["actor/entropy_band_coef"] = self._entropy_band_coef
+                                del action_logits, entropy_loss, entropy_per_sample
                                 get_torch_device().empty_cache()
 
                             calculate_entropy = entropy_coeff != 0 and not entropy_over_valid_actions
@@ -919,6 +1040,16 @@ class DataParallelPPOActor(BasePPOActor):
                             (value_loss * actor_value_loss_coef * loss_scale).backward()
                             get_torch_device().empty_cache()
 
+                    if actor_value_token and (
+                        not torch.distributed.is_initialized()
+                        or torch.distributed.get_rank() == 0
+                    ):
+                        print(
+                            f"[update_policy] phase={phase} optimizer.step "
+                            f"(mini_batch={batch_idx})",
+                            flush=True,
+                        )
+                    get_torch_device().synchronize()
                     grad_norm = self._optimizer_step()
                     grad_norm_key = "actor/value_grad_norm" if phase == "value" else "actor/grad_norm"
                     append_to_dict(metrics, {grad_norm_key: grad_norm.detach().item()})

@@ -2053,17 +2053,20 @@ class RayPPOTrainer:
                         and self.total_env_steps > 0
                         and (self.total_env_steps // env_val_video_freq) > (_prev_steps // env_val_video_freq)
                     )
+                    do_test_val = (
+                        self.config.trainer.test_freq > 0
+                        and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0)
+                    )
                     # Валидация выполняется если:
                     # 1. test_freq > 0 и (последний шаг ИЛИ шаг кратен test_freq)
                     # 2. ИЛИ последний шаг (всегда валидируем в конце обучения)
-                    # 3. ИЛИ do_val_video (для записи видео)
-                    if self.val_reward_fn is not None and (
-                        (self.config.trainer.test_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0))
-                        or (is_last_step)  # Всегда валидируем на последнем шаге
-                        or do_val_video
-                    ):
+                    # 3. ИЛИ do_val_video (для записи видео по env_val_video_freq)
+                    if self.val_reward_fn is not None and (do_test_val or is_last_step or do_val_video):
                         with _timer("testing", timing_raw):
-                            val_metrics: dict = self._validate(record_video=do_val_video, logger=logger)
+                            val_metrics: dict = self._validate(
+                                record_video=do_val_video or do_test_val,
+                                logger=logger,
+                            )
                             if is_last_step:
                                 last_val_metrics = val_metrics
                         metrics.update(val_metrics)
