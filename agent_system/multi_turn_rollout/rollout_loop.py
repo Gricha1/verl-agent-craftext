@@ -772,7 +772,7 @@ class TrajectoryCollector:
                 frame = infos[record_video_env_idx].get('render_frame')
                 if frame is not None:
                     validation_video_frames.append(frame)
-                    # Align text panel with pixel frame: both are post-step (next_obs + infos).
+                    # Post-step obs/prompt: on done, env already uses terminal episode metadata.
                     post_step_obs = next_obs
                     prompt_text = (
                         post_step_obs.get('text', [None])[record_video_env_idx]

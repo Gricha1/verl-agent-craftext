@@ -619,11 +619,14 @@ def append_value_bar_column(
 
     if v is not None and v >= 0:
         v = min(max_v, max(0.0, v))
+        fill_bottom = track_bottom - 1
         fill_top = int(track_bottom - (v / max_v) * track_h)
-        draw.rectangle(
-            [track_left + 1, fill_top, track_right - 1, track_bottom - 1],
-            fill=(76, 120, 200),
-        )
+        fill_top = max(track_top, min(fill_top, fill_bottom))
+        if fill_top <= fill_bottom:
+            draw.rectangle(
+                [track_left + 1, fill_top, track_right - 1, fill_bottom],
+                fill=(76, 120, 200),
+            )
         label = f"{v:g}"
         draw.text((track_left, track_top - 14), label, fill=(20, 60, 140), font=font)
     else:

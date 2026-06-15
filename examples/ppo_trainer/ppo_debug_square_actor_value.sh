@@ -57,7 +57,7 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   true \
   "$NUM_OPTIMISTIC_ENVS" \
   1 \
-  false \
+  true \
   false \
   8000 \
   true \

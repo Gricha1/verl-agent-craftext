@@ -899,50 +899,53 @@ class RayPPOTrainer:
 
                     # Critic prompt GIF (dual-prompt actor-value mode)
                     if value_prompts is not None and len(value_prompts) > 0:
-                        from agent_system.environments.env_package.caged_craftext.return_tokens import (
-                            format_return_display,
-                        )
-                        from agent_system.environments.env_package.caged_craftext.utility import (
-                            append_value_bar_column,
-                        )
+                        try:
+                            from agent_system.environments.env_package.caged_craftext.return_tokens import (
+                                format_return_display,
+                            )
+                            from agent_system.environments.env_package.caged_craftext.utility import (
+                                append_value_bar_column,
+                            )
 
-                        critic_gif_name = f"val_critic_trajectory_step{self.total_env_steps}.gif"
-                        critic_gif_path_tmp = os.path.join(tempfile.gettempdir(), critic_gif_name)
-                        critic_gif_path_gif = os.path.join(gif_dir, critic_gif_name)
-                        critic_frames = []
-                        for i, f in enumerate(frames):
-                            arr = _frame_to_uint8_arr(f)
-                            vp = value_prompts[i] if i < len(value_prompts) else ""
-                            vt = value_tokens[i] if value_tokens is not None and i < len(value_tokens) else ""
-                            value_scalar = None
-                            if vt:
-                                display, parsed_v = format_return_display(vt)
-                                value_scalar = parsed_v if parsed_v >= 0 else None
-                                action_line = f"V={display} | raw: {vt}"
-                            else:
-                                action_line = ""
+                            critic_gif_name = f"val_critic_trajectory_step{self.total_env_steps}.gif"
+                            critic_gif_path_tmp = os.path.join(tempfile.gettempdir(), critic_gif_name)
+                            critic_gif_path_gif = os.path.join(gif_dir, critic_gif_name)
+                            critic_frames = []
+                            for i, f in enumerate(frames):
+                                arr = _frame_to_uint8_arr(f)
+                                vp = value_prompts[i] if i < len(value_prompts) else ""
+                                vt = value_tokens[i] if value_tokens is not None and i < len(value_tokens) else ""
                                 value_scalar = None
-                            arr = append_value_bar_column(arr, value_scalar)
-                            if vp:
-                                arr = composite_frame_with_prompt_text(arr, vp, action_line)
-                            critic_frames.append(arr)
+                                if vt:
+                                    display, parsed_v = format_return_display(vt)
+                                    value_scalar = parsed_v if parsed_v >= 0 else None
+                                    action_line = f"V={display} | raw: {vt}"
+                                else:
+                                    action_line = ""
+                                    value_scalar = None
+                                arr = append_value_bar_column(arr, value_scalar)
+                                if vp:
+                                    arr = composite_frame_with_prompt_text(arr, vp, action_line)
+                                critic_frames.append(arr)
 
-                        def _write_critic_gif(path):
-                            with imageio.get_writer(path, mode='I', duration=0.15, loop=0) as writer:
-                                for arr in critic_frames:
-                                    writer.append_data(arr)
+                            def _write_critic_gif(path):
+                                with imageio.get_writer(path, mode='I', duration=0.15, loop=0) as writer:
+                                    for arr in critic_frames:
+                                        writer.append_data(arr)
 
-                        _write_critic_gif(critic_gif_path_tmp)
-                        _write_critic_gif(critic_gif_path_gif)
-                        logger.log_validation_video(
-                            critic_gif_path_gif,
-                            step=self.total_env_steps,
-                            name=f"validation_critic_trajectory_step{self.total_env_steps}",
-                        )
-                        print(
-                            f"[INFO] Validation critic video saved: {critic_gif_path_gif} "
-                            f"(also in {critic_gif_path_tmp})"
-                        )
+                            _write_critic_gif(critic_gif_path_tmp)
+                            _write_critic_gif(critic_gif_path_gif)
+                            logger.log_validation_video(
+                                critic_gif_path_gif,
+                                step=self.total_env_steps,
+                                name=f"validation_critic_trajectory_step{self.total_env_steps}",
+                            )
+                            print(
+                                f"[INFO] Validation critic video saved: {critic_gif_path_gif} "
+                                f"(also in {critic_gif_path_tmp})"
+                            )
+                        except Exception as e:
+                            print(f"[WARNING] Failed to save/log validation critic video: {e}")
 
                     # Log action histogram for the recorded validation episode (same env as the GIF).
                     try:

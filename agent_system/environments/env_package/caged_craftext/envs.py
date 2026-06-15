@@ -810,51 +810,63 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
         reward_batched,
         done_batched,
         render_frames: dict[int, np.ndarray] | None = None,
+        terminal_state_batched=None,
     ):
-        # Pull CPU state for text rendering + instruction/constraint lookup
+        # Pull CPU state for text rendering + instruction/constraint lookup.
+        # On done, optimistic auto-reset already swapped in a fresh episode in state_batched;
+        # terminal_state_batched (state_pre_reset) holds the finished episode for metadata.
         render_frames = render_frames or {}
         infos: list[dict] = []
 
-        # In this optimistic env, state_batched is typically TextEnvStateCMDP (batched),
-        # where instruction index lives in state_batched.idx (NOT in state_batched.env_state.idx).
         state_cpu = jax.device_get(state_batched)
-
-        idxs_arr = getattr(state_cpu, "idx", None)
-        idxs = np.asarray(idxs_arr).tolist() if idxs_arr is not None else [0] * self.env_num
-
-        craftax_state_batched = getattr(state_cpu, "env_state", None)
-        cost_batched = getattr(state_cpu, "cost", None)
-        episode_cost_batched = getattr(state_cpu, "episode_cost", None)
-        instruction_done_batched = getattr(state_cpu, "instruction_done", None)
-        total_sr_batched = getattr(state_cpu, "total_success_rate", None)
+        terminal_cpu = (
+            jax.device_get(terminal_state_batched) if terminal_state_batched is not None else None
+        )
 
         text_renders = self._render_text_from_state_batched(state_batched)
+        terminal_text_renders = (
+            self._render_text_from_state_batched(terminal_state_batched)
+            if terminal_cpu is not None
+            else None
+        )
 
         for i in range(self.env_num):
             info = {}
             r = float(np.asarray(jax.device_get(reward_batched[i])))
             d = bool(np.asarray(jax.device_get(done_batched[i])))
             info["won"] = d and r > 0
-            info["text_render"] = text_renders[i]
+            use_terminal = d and terminal_cpu is not None
+            meta_cpu = terminal_cpu if use_terminal else state_cpu
+
+            info["text_render"] = (
+                terminal_text_renders[i] if use_terminal else text_renders[i]
+            )
+
+            idxs_arr = getattr(meta_cpu, "idx", None)
+            idx = int(np.asarray(idxs_arr).reshape(-1)[i]) if idxs_arr is not None else 0
 
             # instruction/constraint (string) from scenario handler lists
             try:
-                idx = int(idxs[i])
                 info["instruction"] = self.wrapper.scenario_handler.scenario_data.instructions_list[idx]
                 if hasattr(self.wrapper.scenario_handler.scenario_data, "constraints_list"):
                     info["constraint"] = self.wrapper.scenario_handler.scenario_data.constraints_list[idx]
             except Exception:
                 pass
 
+            cost_batched = getattr(meta_cpu, "cost", None)
+            episode_cost_batched = getattr(meta_cpu, "episode_cost", None)
+            instruction_done_batched = getattr(meta_cpu, "instruction_done", None)
+            total_sr_batched = getattr(meta_cpu, "total_success_rate", None)
+
             # cost fields if present
             try:
                 if cost_batched is not None:
-                    info["cost"] = float(np.asarray(cost_batched[i]))
+                    info["cost"] = float(np.asarray(cost_batched).reshape(-1)[i])
             except Exception:
                 pass
             try:
                 if episode_cost_batched is not None:
-                    info["episode_cost"] = float(np.asarray(episode_cost_batched[i]))
+                    info["episode_cost"] = float(np.asarray(episode_cost_batched).reshape(-1)[i])
             except Exception:
                 pass
 
@@ -865,26 +877,26 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
 
             try:
                 if instruction_done_batched is not None:
-                    info["instruction_done"] = bool(np.asarray(instruction_done_batched[i]))
+                    info["instruction_done"] = bool(np.asarray(instruction_done_batched).reshape(-1)[i])
             except Exception:
                 pass
             try:
                 if total_sr_batched is not None:
-                    info["success_rate"] = float(np.asarray(total_sr_batched[i]))
+                    info["success_rate"] = float(np.asarray(total_sr_batched).reshape(-1)[i])
             except Exception:
                 pass
 
+            craftax_state_batched = getattr(meta_cpu, "env_state", None)
             if craftax_state_batched is not None:
                 try:
                     craftax_state_i = jax.tree_util.tree_map(lambda x: x[i], craftax_state_batched)
-                    idx_i = int(idxs[i]) if i < len(idxs) else 0
                     target_state_i = None
-                    if hasattr(state_cpu, "target_state") and state_cpu.target_state is not None:
-                        target_state_i = jax.tree_util.tree_map(lambda x: x[i], state_cpu.target_state)
+                    if hasattr(meta_cpu, "target_state") and meta_cpu.target_state is not None:
+                        target_state_i = jax.tree_util.tree_map(lambda x: x[i], meta_cpu.target_state)
                     _attach_debug_square_fields(
                         info,
                         craftax_state_i,
-                        idx_i,
+                        idx,
                         str(self._env_kwargs.get("config_name", "")),
                         target_state_i,
                     )
@@ -997,7 +1009,13 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
             self._episode_return_cum[i] += r
         self._rollout_steps += 1
         self._episode_steps += 1
-        infos = self._build_info_list(new_state, reward, done, render_frames=render_frames)
+        infos = self._build_info_list(
+            new_state,
+            reward,
+            done,
+            render_frames=render_frames,
+            terminal_state_batched=state_pre_reset,
+        )
         transition_text_renders = self._render_text_from_state_batched(state_pre_reset)
         for i, transition_render in enumerate(transition_text_renders):
             infos[i]["transition_text_render"] = transition_render
