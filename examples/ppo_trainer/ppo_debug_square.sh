@@ -47,7 +47,7 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   actor_rollout_ref.actor.entropy_coeff=0.01 \
   actor_rollout_ref.actor.entropy_over_valid_actions=False \
   trainer.resume_mode=disable \
-  trainer.save_freq=20 \
+  trainer.save_freq=-1 \
   trainer.test_freq=20 \
   trainer.max_actor_ckpt_to_keep=1 \
   trainer.default_local_dir=training_checkpoints/verl_agent_caged_craftext_debug_square

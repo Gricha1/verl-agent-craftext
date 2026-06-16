@@ -754,6 +754,10 @@ class RayPPOTrainer:
         # Log to each configured logger
         self.validation_generations_logger.log(self.config.trainer.logger, samples, self.global_steps)
 
+    def _env_supports_validation_video(self) -> bool:
+        """Pixel envs (e.g. Craftext) expose set_record_video + render_frame; text-only envs do not."""
+        return hasattr(self.val_envs, "set_record_video")
+
     def _validate(self, record_video: bool = False, logger=None):
         reward_tensor_lst = []
         data_source_lst = []
@@ -832,13 +836,20 @@ class RayPPOTrainer:
             print('validation generation end')
 
             # Save validation video (GIF) and log to Comet ML after first batch when record_video
+            frames = None
+            frames_collected = False
             if record_video and batch_idx == 0 and logger is not None:
                 frames = test_output_gen_batch.meta_info.get('validation_video_frames')
-                assert frames is not None and len(frames) > 0, (
-                    "Validation video requested but no frames collected. "
-                    "Check: val_envs has set_record_video, env workers return info['render_frame'], "
-                    "record_video_env_idx=0 matches the env with record_video enabled."
-                )
+                frames_collected = frames is not None and len(frames) > 0
+                if not frames_collected:
+                    print(
+                        "[WARNING] Validation video requested but no frames collected "
+                        "(text-only env or missing render_frame). Skipping GIF upload."
+                    )
+                    if hasattr(self.val_envs, 'set_record_video'):
+                        self.val_envs.set_record_video(False)
+
+            if record_video and batch_idx == 0 and logger is not None and frames_collected:
                 prompts = test_output_gen_batch.meta_info.get('validation_video_prompts')
                 value_prompts = test_output_gen_batch.meta_info.get('validation_video_value_prompts')
                 value_tokens = test_output_gen_batch.meta_info.get('validation_video_value_tokens')
@@ -1689,7 +1700,7 @@ class RayPPOTrainer:
         # currently, we only support validation using the reward_function.
         if self.val_reward_fn is not None and self.config.trainer.get("val_before_train", True):
             env_val_video_freq = self.config.trainer.get("env_val_video_freq", 0)
-            do_val_video = env_val_video_freq > 0  # record video at step 0 when video freq is set
+            do_val_video = self._env_supports_validation_video() and env_val_video_freq > 0
             val_metrics = self._validate(record_video=do_val_video, logger=logger)
             assert val_metrics, f"{val_metrics=}"
             pprint(f"Initial validation metrics: {val_metrics}")
@@ -2059,7 +2070,8 @@ class RayPPOTrainer:
                     # Run video val when we've *crossed* a multiple of env_val_video_freq (total_env_steps jumps by num_env_steps_in_batch, so == 0 almost never holds)
                     _prev_steps = self.total_env_steps - num_env_steps_in_batch
                     do_val_video = (
-                        env_val_video_freq > 0
+                        self._env_supports_validation_video()
+                        and env_val_video_freq > 0
                         and self.total_env_steps > 0
                         and (self.total_env_steps // env_val_video_freq) > (_prev_steps // env_val_video_freq)
                     )
@@ -2074,7 +2086,8 @@ class RayPPOTrainer:
                     if self.val_reward_fn is not None and (do_test_val or is_last_step or do_val_video):
                         with _timer("testing", timing_raw):
                             val_metrics: dict = self._validate(
-                                record_video=do_val_video or do_test_val,
+                                record_video=self._env_supports_validation_video()
+                                and (do_val_video or do_test_val),
                                 logger=logger,
                             )
                             if is_last_step:
