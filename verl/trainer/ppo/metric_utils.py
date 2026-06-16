@@ -102,6 +102,18 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
     sequence_score = batch.batch["token_level_scores"].sum(-1)
     sequence_reward = batch.batch["token_level_rewards"].sum(-1)
 
+    # In actor-value-token mode each training sample is a single env step, so token_level_* sum
+    # corresponds to step reward (mostly 0). For dashboard parity with standard PPO runs, prefer
+    # episode-level env return when it is available.
+    if "actor_value_target_returns" in batch.batch and "episode_rewards" in batch.non_tensor_batch:
+        try:
+            ep = np.asarray(batch.non_tensor_batch["episode_rewards"], dtype=np.float32).reshape(-1)
+            ep_t = torch.as_tensor(ep, device=sequence_score.device, dtype=sequence_score.dtype)
+            sequence_score = ep_t
+            sequence_reward = ep_t
+        except Exception:
+            pass
+
     advantages = batch.batch["advantages"]
     returns = batch.batch["returns"]
 

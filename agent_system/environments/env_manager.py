@@ -46,6 +46,82 @@ def set_gamefile(infos, gamefile):
     return infos
 
 
+class Gsm8kEnvironmentManager(EnvironmentManagerBase):
+    """Single-turn GSM8K: question from parquet env_kwargs, reward from rule-based scorer."""
+
+    def reset(self, kwargs) -> Tuple[Dict[str, Any], List[Dict]]:
+        if kwargs is None:
+            raise ValueError("GSM8K requires env_kwargs in each parquet row / training batch")
+        if isinstance(kwargs, np.ndarray):
+            kwargs = kwargs.tolist()
+        obs, infos = self.envs.reset(kwargs=kwargs)
+        self.tasks = list(obs)
+        observations = {
+            "text": self.build_text_obs(obs, init=True),
+            "image": None,
+            "anchor": list(obs),
+        }
+        value_text = self.build_value_text_obs(infos, init=True)
+        if value_text is not None:
+            observations["value_text"] = value_text
+        return observations, infos
+
+    def step(self, text_actions: List[str]):
+        actions, valids = self.projection_f(text_actions)
+        next_obs, rewards, dones, infos = self.envs.step(actions)
+        next_observations = {
+            "text": self.build_text_obs(next_obs),
+            "image": None,
+            "anchor": list(next_obs),
+        }
+        value_text = self.build_value_text_obs(infos)
+        if value_text is not None:
+            next_observations["value_text"] = value_text
+        for i, info in enumerate(infos):
+            info["is_action_valid"] = to_numpy(valids[i])
+        rewards = to_numpy(rewards)
+        dones = to_numpy(dones)
+        return next_observations, rewards, dones, infos
+
+    def build_text_obs(self, questions: List[str], init: bool = False) -> List[str]:
+        del init
+        return [str(q) for q in questions]
+
+    def build_value_text_obs(self, infos: List[Dict], init: bool = False) -> Optional[List[str]]:
+        del init
+        value_template_type = getattr(self.config.env, "value_prompt_template_type", None)
+        if not value_template_type:
+            return None
+        if value_template_type != "single_token_return":
+            raise ValueError(f"Unsupported value_prompt_template_type: {value_template_type!r}")
+
+        from agent_system.environments.env_package.caged_craftext.projection import (
+            get_single_token_return_template_no_his,
+        )
+
+        template_no_his = get_single_token_return_template_no_his()
+        prompts = []
+        for info in infos:
+            task = info.get("instruction") or ""
+            observation = info.get("text_render") or "(awaiting solution)"
+            prompts.append(
+                template_no_his.format(task_description=task, current_observation=observation)
+            )
+        return prompts
+
+    def _process_batch(self, batch_idx, total_batch_list, total_infos, success):
+        for i in reversed(range(len(total_batch_list[batch_idx]))):
+            batch_item = total_batch_list[batch_idx][i]
+            if batch_item["active_masks"]:
+                info = total_infos[batch_idx][i]
+                won_value = float(info.get("won", 0.0))
+                success["success_rate"].append(won_value)
+                data_source = info.get("data_source")
+                if data_source:
+                    success[f"{data_source}_success_rate"].append(won_value)
+                return
+
+
 class SearchEnvironmentManager(EnvironmentManagerBase):
     """
     EnvironmentManager for SearchEnv.
@@ -1070,7 +1146,31 @@ def make_envs(config):
     group_n = config.env.rollout.n if config.env.rollout.n > 0 else 1
     resources_per_worker = OmegaConf.to_container(config.env.resources_per_worker, resolve=True)
 
-    if "search" in config.env.env_name.lower():
+    if "gsm8k" in config.env.env_name.lower():
+        from agent_system.environments.env_package.gsm8k import build_gsm8k_envs, gsm8k_projection
+
+        score_method = str(getattr(config.env, "gsm8k_score_method", "strict"))
+        format_score = float(getattr(config.env, "gsm8k_format_score", 0.0))
+        correct_score = float(getattr(config.env, "gsm8k_correct_score", 1.0))
+        _envs = build_gsm8k_envs(
+            env_num=config.data.train_batch_size,
+            group_n=group_n,
+            score_method=score_method,
+            format_score=format_score,
+            correct_score=correct_score,
+        )
+        _val_envs = build_gsm8k_envs(
+            env_num=config.data.val_batch_size,
+            group_n=1,
+            score_method=score_method,
+            format_score=format_score,
+            correct_score=correct_score,
+        )
+        projection_f = partial(gsm8k_projection)
+        envs = Gsm8kEnvironmentManager(_envs, projection_f, config)
+        val_envs = Gsm8kEnvironmentManager(_val_envs, projection_f, config)
+        return envs, val_envs
+    elif "search" in config.env.env_name.lower():
         from agent_system.environments.env_package.search import build_search_envs, search_projection
         _envs = build_search_envs(seed=config.env.seed, env_num=config.data.train_batch_size, group_n=group_n, is_train=True, env_config=config.env)
         _val_envs = build_search_envs(seed=config.env.seed + 1000, env_num=config.data.val_batch_size, group_n=1, is_train=False, env_config=config.env)
