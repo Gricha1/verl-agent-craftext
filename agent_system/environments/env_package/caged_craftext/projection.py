@@ -254,18 +254,16 @@ Reply with exactly ONE token — your chosen action (no tags, no explanation):
 
 
 def get_single_token_return_template_no_his() -> str:
-    """Critic prompt: one token = discretized remaining return (m..u = 0..8)."""
-    from .return_tokens import return_token_legend
-
-    return f"""
+    """Critic prompt: one token = discretized remaining return on a linear bin grid."""
+    return """
 Your goal is to complete the following task:
-**TASK:** {{task_description}}
+**TASK:** {task_description}
 
 This is what you currently see:
-{{current_observation}}
+{current_observation}
 
 Reply with exactly ONE token — your estimate of total remaining reward from this state (no explanation):
-{return_token_legend()}
+{return_bin_legend}
 """
 
 

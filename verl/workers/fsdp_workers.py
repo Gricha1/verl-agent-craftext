@@ -778,8 +778,11 @@ class ActorRolloutRefWorker(Worker):
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     @torch.no_grad()
     def generate_value_tokens(self, prompts: DataProto):
-        """Constrained 1-token return bin from critic prompt (m..u)."""
-        from verl.utils.actor_value_token import constrained_generate_return_token
+        """Constrained 1-token return bin from critic prompt."""
+        from verl.utils.actor_value_token import (
+            constrained_generate_return_token,
+            return_bin_spec_from_actor_cfg,
+        )
 
         assert self.config.actor.get("actor_value_token", False), "actor_value_token must be enabled"
 
@@ -798,6 +801,7 @@ class ActorRolloutRefWorker(Worker):
 
                 value_pos = compute_position_id_with_mask(value_mask)
 
+            spec = return_bin_spec_from_actor_cfg(self.config.actor)
             token_ids, _log_probs = constrained_generate_return_token(
                 self.actor_module_fsdp,
                 value_ids,
@@ -806,6 +810,7 @@ class ActorRolloutRefWorker(Worker):
                 self.tokenizer,
                 temperature=temperature,
                 do_sample=do_sample,
+                spec=spec,
             )
             responses = token_ids.unsqueeze(-1)
             output = DataProto.from_dict(

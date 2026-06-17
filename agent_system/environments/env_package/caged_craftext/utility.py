@@ -570,7 +570,7 @@ def append_value_bar_column(
     Append a vertical value bar (0..max_value) on the right of a game frame.
     Used in actor-value validation GIFs next to the pixel view.
     """
-    from agent_system.environments.env_package.caged_craftext.return_tokens import MAX_RETURN_BIN
+    from agent_system.environments.env_package.caged_craftext.return_tokens import DEFAULT_RETURN_BIN_SPEC
 
     arr = np.asarray(frame_arr)
     if arr.ndim == 2:
@@ -583,8 +583,8 @@ def append_value_bar_column(
         arr = arr.astype(np.uint8)
 
     fh, fw = arr.shape[0], arr.shape[1]
-    max_v = int(max_value if max_value is not None else MAX_RETURN_BIN)
-    max_v = max(1, max_v)
+    max_v = float(max_value if max_value is not None else DEFAULT_RETURN_BIN_SPEC.vmax)
+    max_v = max(0.2, max_v)
 
     bar_img = Image.new("RGB", (bar_width, fh), (248, 248, 252))
     draw = ImageDraw.Draw(bar_img)

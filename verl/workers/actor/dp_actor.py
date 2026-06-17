@@ -447,7 +447,7 @@ class DataParallelPPOActor(BasePPOActor):
 
                     logits.div_(temperature)
                     logits = logits[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size)
-                    if self.config.get("actor_value_token", False):
+                    if self.config.get("single_token_actions", False):
                         from verl.utils.actor_value_token import action_token_id_tensor, mask_logits_to_allowed
 
                         tokenizer = self._get_tokenizer()
@@ -594,11 +594,8 @@ class DataParallelPPOActor(BasePPOActor):
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
     def compute_actor_token_values(self, data: DataProto) -> torch.Tensor:
-        """Constrained greedy V(s) from critic prompt (separate from actor rollout)."""
-        from verl.utils.actor_value_token import (
-            build_actor_token_values,
-            constrained_decode_return_values,
-        )
+        """Per-token V(s) from critic prompt + teacher-forced response (same layout as separate critic)."""
+        from verl.utils.actor_value_token import per_token_values_from_critic_prompt
 
         self.actor_module.eval()
         batch = data.select(
@@ -607,10 +604,15 @@ class DataParallelPPOActor(BasePPOActor):
                 "value_attention_mask",
                 "value_position_ids",
                 "responses",
+                "attention_mask",
             ]
         ).batch
         tokenizer = self._get_tokenizer()
         response_length = batch["responses"].size(1)
+        response_mask = batch["attention_mask"][:, -response_length:]
+        from verl.utils.actor_value_token import return_bin_spec_from_actor_cfg
+
+        spec = return_bin_spec_from_actor_cfg(self.config)
         micro_batch_size = int(
             data.meta_info.get(
                 "micro_batch_size",
@@ -629,16 +631,18 @@ class DataParallelPPOActor(BasePPOActor):
         with torch.no_grad():
             for start in range(0, n, micro_batch_size):
                 end = min(start + micro_batch_size, n)
-                value_scalars = constrained_decode_return_values(
+                values = per_token_values_from_critic_prompt(
                     self.actor_module,
-                    batch["value_input_ids"][start:end],
-                    batch["value_attention_mask"][start:end],
-                    batch["value_position_ids"][start:end],
-                    tokenizer,
+                    value_input_ids=batch["value_input_ids"][start:end],
+                    value_attention_mask=batch["value_attention_mask"][start:end],
+                    value_position_ids=batch["value_position_ids"][start:end],
+                    responses=batch["responses"][start:end],
+                    response_mask=response_mask[start:end],
+                    tokenizer=tokenizer,
+                    spec=spec,
                 )
-                value_chunks.append(value_scalars)
-            value_scalars = torch.cat(value_chunks, dim=0)
-            values = build_actor_token_values(value_scalars, response_length)
+                value_chunks.append(values)
+            values = torch.cat(value_chunks, dim=0)
         return values
 
     def _forward_value_bin_logits(
@@ -646,84 +650,78 @@ class DataParallelPPOActor(BasePPOActor):
         micro_batch: dict,
         temperature: float,
     ) -> torch.Tensor:
-        from verl.utils.actor_value_token import return_bin_id_tensor
+        from verl.utils.actor_value_token import (
+            forward_value_bin_logits_per_response_token,
+            return_bin_spec_from_actor_cfg,
+        )
 
-        value_input_ids = micro_batch["value_input_ids"]
-        value_attention_mask = micro_batch["value_attention_mask"]
-        value_position_ids = micro_batch["value_position_ids"]
-
-        multi_modal_inputs = {}
-        if "multi_modal_inputs" in micro_batch:
-            for key in micro_batch["multi_modal_inputs"][0].keys():
-                multi_modal_inputs[key] = torch.cat(
-                    [inputs[key] for inputs in micro_batch["multi_modal_inputs"]], dim=0
-                )
-
-        temp = max(float(temperature), 1e-8)
-        mrope = value_position_ids.dim() == 3
-        pos = (value_attention_mask.cumsum(dim=-1) - 1).clamp(min=0) * value_attention_mask
-
-        with torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
-            if mrope:
-                pos = pos.unsqueeze(0).expand(3, -1, -1)
-            try:
-                output = self.actor_module(
-                    input_ids=value_input_ids,
-                    attention_mask=value_attention_mask,
-                    position_ids=pos,
-                    **multi_modal_inputs,
-                    use_cache=False,
-                    logits_to_keep=1,
-                )
-            except TypeError:
-                output = self.actor_module(
-                    input_ids=value_input_ids,
-                    attention_mask=value_attention_mask,
-                    position_ids=pos,
-                    **multi_modal_inputs,
-                    use_cache=False,
-                )
-            if self.use_fused_kernels and hasattr(output, "logits") and output.logits is None:
-                raise NotImplementedError(
-                    "actor_value_token requires non-fused logits path; "
-                    "set actor_rollout_ref.model.use_fused_kernels=False"
-                )
-            logits = output.logits / temp
-
-        if logits.dim() == 3:
-            next_token_logits = logits[:, -1, :]
+        responses = micro_batch["responses"]
+        response_length = responses.size(1)
+        if "response_mask" in micro_batch:
+            response_mask = micro_batch["response_mask"]
         else:
-            next_token_logits = logits
-        del logits, output
-
-        tokenizer = self._get_tokenizer()
-        bin_ids = return_bin_id_tensor(tokenizer, device=next_token_logits.device)
-        bin_logits = next_token_logits.index_select(-1, bin_ids)
-        del next_token_logits
-        return bin_logits.float()
+            response_mask = micro_batch["attention_mask"][:, -response_length:]
+        spec = return_bin_spec_from_actor_cfg(self.config)
+        return forward_value_bin_logits_per_response_token(
+            self.actor_module,
+            value_input_ids=micro_batch["value_input_ids"],
+            value_attention_mask=micro_batch["value_attention_mask"],
+            value_position_ids=micro_batch["value_position_ids"],
+            responses=responses,
+            response_mask=response_mask,
+            tokenizer=self._get_tokenizer(),
+            temperature=temperature,
+            spec=spec,
+        )
 
     def _compute_return_token_ce_loss(
         self,
         micro_batch: dict,
         temperature: float,
-        target_returns: torch.Tensor,
     ) -> tuple[torch.Tensor, float, float]:
         from verl.utils.actor_value_token import (
             return_bin_distribution_entropy,
+            return_bin_spec_from_actor_cfg,
             return_token_value_loss,
         )
 
         bin_logits = self._forward_value_bin_logits(micro_batch, temperature)
+        response_length = micro_batch["responses"].size(1)
+        if "response_mask" in micro_batch:
+            response_mask = micro_batch["response_mask"]
+        else:
+            response_mask = micro_batch["attention_mask"][:, -response_length:]
+
+        spec = return_bin_spec_from_actor_cfg(self.config)
+        if bool(self.config.get("actor_value_target_from_returns", False)):
+            target_returns = micro_batch["returns"].detach()
+        else:
+            target_returns = micro_batch["actor_value_target_returns"]
+
         target_encoding = str(self.config.get("actor_value_target_encoding", "one_hot"))
-        loss, hard_bins = return_token_value_loss(
+        loss, _hard_bins = return_token_value_loss(
             bin_logits,
             target_returns,
             target_encoding=target_encoding,
+            response_mask=response_mask,
+            spec=spec,
         )
         with torch.no_grad():
-            pred_bins = bin_logits.argmax(dim=-1)
-            acc = (pred_bins == hard_bins).float().mean().item()
-            entropy = return_bin_distribution_entropy(bin_logits).mean().item()
+            target_bins = (
+                target_returns.clamp(min=spec.vmin, max=spec.vmax) - spec.vmin
+            ) / spec.step
+            target_bins = target_bins.round().to(dtype=torch.long)
+            if bin_logits.dim() == 3:
+                pred_bins = bin_logits.argmax(dim=-1)
+                if target_bins.dim() == 1:
+                    target_bins = target_bins.unsqueeze(1).expand_as(pred_bins)
+                valid = response_mask.bool()
+                acc = (pred_bins[valid] == target_bins[valid]).float().mean().item()
+                entropy = return_bin_distribution_entropy(bin_logits[valid]).mean().item()
+            else:
+                pred_bins = bin_logits.argmax(dim=-1)
+                acc = (pred_bins == target_bins).float().mean().item()
+                entropy = return_bin_distribution_entropy(bin_logits).mean().item()
         return loss, acc, entropy
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
@@ -829,6 +827,7 @@ class DataParallelPPOActor(BasePPOActor):
                     "value_input_ids",
                     "value_attention_mask",
                     "value_position_ids",
+                    "returns",
                 ]
             )
         if multi_turn:
@@ -1032,11 +1031,15 @@ class DataParallelPPOActor(BasePPOActor):
                             value_loss, value_acc, value_entropy = self._compute_return_token_ce_loss(
                                 micro_batch=data,
                                 temperature=temperature,
-                                target_returns=data["actor_value_target_returns"],
                             )
-                            metrics["actor/value_token_loss"] = value_loss.detach().item()
-                            metrics["actor/value_token_accuracy"] = value_acc
-                            metrics["actor/value_token_entropy"] = value_entropy
+                            append_to_dict(
+                                metrics,
+                                {
+                                    "actor/value_token_loss": value_loss.detach().item(),
+                                    "actor/value_token_accuracy": value_acc,
+                                    "actor/value_token_entropy": value_entropy,
+                                },
+                            )
                             (value_loss * actor_value_loss_coef * loss_scale).backward()
                             get_torch_device().empty_cache()
 

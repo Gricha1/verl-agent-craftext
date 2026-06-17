@@ -10,12 +10,15 @@ import torch.nn.functional as F
 
 from agent_system.environments.env_package.caged_craftext.action_tokens import action_token_strings
 from agent_system.environments.env_package.caged_craftext.return_tokens import (
-    MAX_RETURN_BIN,
+    DEFAULT_RETURN_BIN_SPEC,
     RETURN_BIN_TO_TOKEN,
+    ReturnBinSpec,
+    bin_to_scalar,
     compute_remaining_returns,
     decode_return_token,
     parse_return_token,
     quantize_return,
+    return_bin_spec_from_actor_cfg,
 )
 
 
@@ -43,13 +46,10 @@ def return_token_id_map(tokenizer) -> Dict[int, int]:
     return out
 
 
-def return_bin_id_tensor(tokenizer, device: torch.device) -> torch.Tensor:
+def return_bin_id_tensor(tokenizer, device: torch.device, num_bins: int) -> torch.Tensor:
     id_map = return_token_id_map(tokenizer)
-    max_bin = max(id_map.keys())
-    ids = torch.zeros(max_bin + 1, dtype=torch.long, device=device)
-    for b, tid in id_map.items():
-        ids[b] = tid
-    return ids
+    ids = [id_map[b] for b in range(int(num_bins))]
+    return torch.tensor(ids, dtype=torch.long, device=device)
 
 
 def vocab_id_to_return_bin_tensor(tokenizer, device: torch.device) -> torch.Tensor:
@@ -143,10 +143,11 @@ def constrained_generate_return_token(
     *,
     temperature: float = 1.0,
     do_sample: bool = True,
+    spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """One constrained return-bin token per critic prompt. Returns (token_ids B,), (log_probs B,)."""
     device = value_prompts.device
-    return_ids_allowed = return_bin_id_tensor(tokenizer, device)
+    return_ids_allowed = return_bin_id_tensor(tokenizer, device, spec.num_bins)
     actor_module.eval()
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
         logits = _forward_last_logits(actor_module, value_prompts, attention_mask, position_ids)
@@ -164,10 +165,12 @@ def constrained_decode_return_values(
     attention_mask: torch.Tensor,
     position_ids: torch.Tensor,
     tokenizer,
+    *,
+    spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC,
 ) -> torch.Tensor:
-    """Greedy constrained decode of return bin from critic prompt only. Returns (B,) float bins."""
+    """Greedy constrained decode of return bin from critic prompt only. Returns (B,) scalars."""
     device = value_prompts.device
-    return_ids_allowed = return_bin_id_tensor(tokenizer, device)
+    return_ids_allowed = return_bin_id_tensor(tokenizer, device, spec.num_bins)
     vocab_to_bin = vocab_id_to_return_bin_tensor(tokenizer, device)
     actor_module.eval()
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
@@ -175,7 +178,11 @@ def constrained_decode_return_values(
         masked = mask_logits_to_allowed(logits, return_ids_allowed)
         pred_vocab_ids = masked.argmax(dim=-1)
     pred_bins = vocab_to_bin[pred_vocab_ids.clamp(max=vocab_to_bin.numel() - 1)]
-    return pred_bins.to(dtype=torch.float32)
+    return torch.tensor(
+        [bin_to_scalar(int(b), spec=spec) for b in pred_bins],
+        dtype=torch.float32,
+        device=pred_bins.device,
+    )
 
 
 def decode_return_from_token_ids(token_ids: torch.Tensor, tokenizer) -> torch.Tensor:
@@ -184,16 +191,123 @@ def decode_return_from_token_ids(token_ids: torch.Tensor, tokenizer) -> torch.Te
     return torch.tensor(values, dtype=torch.float32, device=token_ids.device)
 
 
+def concat_value_prompt_and_response(
+    value_input_ids: torch.Tensor,
+    value_attention_mask: torch.Tensor,
+    responses: torch.Tensor,
+    response_mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Teacher-forcing sequence: critic value prompt + actor response tokens."""
+    combined_ids = torch.cat([value_input_ids, responses], dim=-1)
+    combined_mask = torch.cat([value_attention_mask, response_mask.to(value_attention_mask.dtype)], dim=-1)
+    return combined_ids, combined_mask
+
+
+def expected_return_from_bin_logits(
+    bin_logits: torch.Tensor,
+    *,
+    spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC,
+) -> torch.Tensor:
+    """Expected scalar return from bin logits; supports (..., num_bins)."""
+    num_bins = bin_logits.shape[-1]
+    bins = torch.arange(num_bins, device=bin_logits.device, dtype=torch.float32)
+    probs = F.softmax(bin_logits.float(), dim=-1)
+    bin_expectation = (probs * bins).sum(dim=-1)
+    return float(spec.vmin) + bin_expectation * float(spec.step)
+
+
+def forward_value_bin_logits_per_response_token(
+    actor_module,
+    *,
+    value_input_ids: torch.Tensor,
+    value_attention_mask: torch.Tensor,
+    value_position_ids: torch.Tensor,
+    responses: torch.Tensor,
+    response_mask: torch.Tensor,
+    tokenizer,
+    temperature: float = 1.0,
+    spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC,
+) -> torch.Tensor:
+    """
+    Per-response-token return-bin logits from critic prompt + teacher-forced response.
+    Mirrors separate critic V(s) at each token: input is value_prompt || response[:t] before token t.
+
+    Returns:
+        (B, response_length, num_bins)
+    """
+    device = value_input_ids.device
+    combined_ids, combined_mask = concat_value_prompt_and_response(
+        value_input_ids, value_attention_mask, responses, response_mask
+    )
+    response_length = responses.size(1)
+    return_ids_allowed = return_bin_id_tensor(tokenizer, device, spec.num_bins)
+
+    mrope = value_position_ids.dim() == 3
+    pos = (combined_mask.cumsum(dim=-1) - 1).clamp(min=0) * combined_mask
+    temp = max(float(temperature), 1e-8)
+
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
+        if mrope:
+            pos = pos.unsqueeze(0).expand(3, -1, -1)
+        try:
+            output = actor_module(
+                input_ids=combined_ids,
+                attention_mask=combined_mask,
+                position_ids=pos,
+                use_cache=False,
+            )
+        except TypeError:
+            output = actor_module(
+                input_ids=combined_ids,
+                attention_mask=combined_mask,
+                position_ids=pos,
+                use_cache=False,
+            )
+        if getattr(output, "logits", None) is None:
+            raise RuntimeError("actor_value per-token forward requires model logits")
+        logits = output.logits.float() / temp
+        if logits.dim() != 3:
+            raise RuntimeError(f"Expected logits (B, S, V), got shape {tuple(logits.shape)}")
+        next_token_logits = logits[:, -response_length - 1 : -1, :]
+        bin_logits = next_token_logits.index_select(-1, return_ids_allowed)
+    return bin_logits
+
+
+def per_token_values_from_critic_prompt(
+    actor_module,
+    *,
+    value_input_ids: torch.Tensor,
+    value_attention_mask: torch.Tensor,
+    value_position_ids: torch.Tensor,
+    responses: torch.Tensor,
+    response_mask: torch.Tensor,
+    tokenizer,
+    temperature: float = 1.0,
+    spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC,
+) -> torch.Tensor:
+    """GAE values (B, response_length) — expected return at each response position."""
+    bin_logits = forward_value_bin_logits_per_response_token(
+        actor_module,
+        value_input_ids=value_input_ids,
+        value_attention_mask=value_attention_mask,
+        value_position_ids=value_position_ids,
+        responses=responses,
+        response_mask=response_mask,
+        tokenizer=tokenizer,
+        temperature=temperature,
+        spec=spec,
+    )
+    values = expected_return_from_bin_logits(bin_logits, spec=spec)
+    return values * response_mask.to(values.dtype)
+
+
 def build_actor_token_values(
     value_scalars: torch.Tensor,
     response_length: int,
 ) -> torch.Tensor:
-    """GAE values tensor (B, response_length); scalar V(s) on last response token."""
-    values = torch.zeros(
-        value_scalars.size(0), response_length, dtype=torch.float32, device=value_scalars.device
-    )
-    values[:, -1] = value_scalars
-    return values
+    """Deprecated: broadcast scalar to all tokens. Use per_token_values_from_critic_prompt."""
+    values = value_scalars.to(dtype=torch.float32).unsqueeze(1).expand(-1, response_length)
+    return values.contiguous()
 
 
 def build_step_reward_tensor(
@@ -209,9 +323,11 @@ def build_step_reward_tensor(
 def compute_remaining_return_bins(
     traj_uids: Sequence[str],
     step_rewards: Sequence[float],
+    *,
+    spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC,
 ) -> np.ndarray:
     scalars = compute_remaining_return_scalars(traj_uids, step_rewards)
-    return np.array([quantize_return(float(g)) for g in scalars], dtype=np.int64)
+    return np.array([quantize_return(float(g), spec=spec) for g in scalars], dtype=np.int64)
 
 
 def compute_remaining_return_scalars(
@@ -234,7 +350,7 @@ def compute_remaining_return_scalars(
 def two_hot_return_distribution(
     values: torch.Tensor,
     *,
-    max_bin: int = MAX_RETURN_BIN,
+    max_bin: int,
 ) -> torch.Tensor:
     """Linear two-hot distribution over bins [0, max_bin] for each scalar return."""
     num_bins = max_bin + 1
@@ -258,17 +374,45 @@ def return_token_value_loss(
     target_returns: torch.Tensor,
     *,
     target_encoding: str = "one_hot",
+    response_mask: torch.Tensor | None = None,
+    spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Cross-entropy over return bins. target_encoding: one_hot | two_hot."""
+    """Cross-entropy over return bins. Targets are scalar returns in [vmin, vmax]."""
     encoding = str(target_encoding).lower()
-    v = target_returns.to(dtype=torch.float32).clamp(min=0.0, max=float(MAX_RETURN_BIN))
-    hard_bins = v.round().to(dtype=torch.long)
+    max_bin = bin_logits.shape[-1] - 1
+    if bin_logits.dim() == 3:
+        batch_size, response_length, _ = bin_logits.shape
+        if target_returns.dim() == 1:
+            target_returns = target_returns.unsqueeze(1).expand(batch_size, response_length)
+        flat_logits = bin_logits.reshape(-1, bin_logits.size(-1))
+        flat_targets = target_returns.reshape(-1).to(dtype=torch.float32)
+        if response_mask is not None:
+            flat_mask = response_mask.reshape(-1).bool()
+            flat_logits = flat_logits[flat_mask]
+            flat_targets = flat_targets[flat_mask]
+        if flat_logits.numel() == 0:
+            zero = bin_logits.sum() * 0.0
+            return zero, torch.zeros(0, dtype=torch.long, device=bin_logits.device)
+        return return_token_value_loss(
+            flat_logits,
+            flat_targets,
+            target_encoding=target_encoding,
+            response_mask=None,
+            spec=spec,
+        )
+
+    target_bins = (
+        target_returns.to(dtype=torch.float32).clamp(min=float(spec.vmin), max=float(spec.vmax))
+        - float(spec.vmin)
+    ) / float(spec.step)
+    target_bins = target_bins.clamp(min=0.0, max=float(max_bin))
+    hard_bins = target_bins.round().to(dtype=torch.long)
     log_probs = F.log_softmax(bin_logits, dim=-1)
 
     if encoding == "one_hot":
         loss = F.nll_loss(log_probs, hard_bins, reduction="mean")
     elif encoding == "two_hot":
-        target_probs = two_hot_return_distribution(target_returns, max_bin=bin_logits.size(-1) - 1)
+        target_probs = two_hot_return_distribution(target_bins, max_bin=max_bin)
         loss = -(target_probs * log_probs).sum(dim=-1).mean()
     else:
         raise ValueError(f"Unsupported actor_value_target_encoding: {target_encoding!r}")

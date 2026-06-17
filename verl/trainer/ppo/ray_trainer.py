@@ -577,6 +577,24 @@ class RayPPOTrainer:
             assert config.actor_rollout_ref.rollout.multi_turn.tool_config_path is not None, "tool_config_path must be set when enabling multi_turn with tool, due to no role-playing support"
             assert config.algorithm.adv_estimator in [AdvantageEstimator.GRPO], "only GRPO is tested for multi-turn with tool"
 
+        algo_actor_value = bool(config.algorithm.get("use_actor_value_token", False))
+        actor_actor_value = bool(config.actor_rollout_ref.actor.get("actor_value_token", False))
+        if algo_actor_value != actor_actor_value:
+            raise ValueError(
+                "algorithm.use_actor_value_token and actor_rollout_ref.actor.actor_value_token must match "
+                f"(got {algo_actor_value} vs {actor_actor_value})"
+            )
+        if algo_actor_value:
+            from agent_system.environments.env_package.caged_craftext.return_tokens import (
+                assert_return_bin_specs_match,
+            )
+
+            assert_return_bin_specs_match(
+                config.env,
+                config.actor_rollout_ref.actor,
+                context="actor-value PPO",
+            )
+
         print("[validate_config] All configuration checks passed successfully!")
 
     def _create_dataloader(self, train_dataset, val_dataset, collate_fn, train_sampler):
@@ -913,7 +931,9 @@ class RayPPOTrainer:
                         try:
                             from agent_system.environments.env_package.caged_craftext.return_tokens import (
                                 format_return_display,
+                                return_bin_spec_from_env,
                             )
+                            val_return_spec = return_bin_spec_from_env(self.config.env)
                             from agent_system.environments.env_package.caged_craftext.utility import (
                                 append_value_bar_column,
                             )
@@ -928,7 +948,7 @@ class RayPPOTrainer:
                                 vt = value_tokens[i] if value_tokens is not None and i < len(value_tokens) else ""
                                 value_scalar = None
                                 if vt:
-                                    display, parsed_v = format_return_display(vt)
+                                    display, parsed_v = format_return_display(vt, spec=val_return_spec)
                                     value_scalar = parsed_v if parsed_v >= 0 else None
                                     action_line = f"V={display} | raw: {vt}"
                                 else:
@@ -1821,6 +1841,23 @@ class RayPPOTrainer:
                     batch = adjust_batch(self.config, batch)
 
                     batch.batch["response_mask"] = compute_response_mask(batch)
+                    if self.use_actor_value_token:
+                        from verl.utils.actor_value_token import compute_remaining_return_scalars
+
+                        step_rewards_raw = batch.non_tensor_batch.get("rewards")
+                        if step_rewards_raw is None:
+                            raise ValueError(
+                                "use_actor_value_token requires non_tensor_batch['rewards'] from rollout"
+                            )
+                        step_rewards = np.asarray(step_rewards_raw, dtype=np.float64).reshape(-1).tolist()
+                        target_returns = compute_remaining_return_scalars(
+                            batch.non_tensor_batch["traj_uid"], step_rewards
+                        )
+                        batch.batch["actor_value_target_returns"] = torch.tensor(
+                            target_returns,
+                            dtype=torch.float32,
+                            device=batch.batch["responses"].device,
+                        )
                     # balance the number of valid tokens on each dp rank.
                     # Note that this breaks the order of data inside the batch.
                     # Please take care when you implement group based adv computation such as GRPO and rloo
@@ -1910,10 +1947,7 @@ class RayPPOTrainer:
                         batch.batch["token_level_scores"] = reward_tensor
 
                         if self.use_actor_value_token:
-                            from verl.utils.actor_value_token import (
-                                build_step_reward_tensor,
-                                compute_remaining_return_scalars,
-                            )
+                            from verl.utils.actor_value_token import build_step_reward_tensor
 
                             step_rewards_raw = batch.non_tensor_batch.get("rewards")
                             if step_rewards_raw is None:
@@ -1923,12 +1957,6 @@ class RayPPOTrainer:
                             step_rewards = np.asarray(step_rewards_raw, dtype=np.float64).reshape(-1).tolist()
                             batch.batch["token_level_scores"] = build_step_reward_tensor(
                                 batch.batch["responses"], step_rewards
-                            )
-                            target_returns = compute_remaining_return_scalars(
-                                batch.non_tensor_batch["traj_uid"], step_rewards
-                            )
-                            batch.batch["actor_value_target_returns"] = torch.tensor(
-                                target_returns, dtype=torch.float32, device=batch.batch["responses"].device
                             )
                             with _timer("values", timing_raw):
                                 values = self.actor_rollout_wg.compute_actor_token_values(batch)

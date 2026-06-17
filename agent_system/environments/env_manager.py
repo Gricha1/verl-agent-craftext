@@ -98,14 +98,23 @@ class Gsm8kEnvironmentManager(EnvironmentManagerBase):
         from agent_system.environments.env_package.caged_craftext.projection import (
             get_single_token_return_template_no_his,
         )
+        from agent_system.environments.env_package.caged_craftext.return_tokens import (
+            return_bin_spec_from_env,
+            return_token_legend_for_spec,
+        )
 
         template_no_his = get_single_token_return_template_no_his()
+        legend = return_token_legend_for_spec(return_bin_spec_from_env(self.config.env))
         prompts = []
         for info in infos:
             task = info.get("instruction") or ""
             observation = info.get("text_render") or "(awaiting solution)"
             prompts.append(
-                template_no_his.format(task_description=task, current_observation=observation)
+                template_no_his.format(
+                    task_description=task,
+                    current_observation=observation,
+                    return_bin_legend=legend,
+                )
             )
         return prompts
 
@@ -1006,13 +1015,23 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
             raise ValueError(f"Unsupported value_prompt_template_type: {value_template_type!r}")
 
         template_no_his = get_single_token_return_template_no_his()
+        from agent_system.environments.env_package.caged_craftext.return_tokens import (
+            return_bin_spec_from_env,
+            return_token_legend_for_spec,
+        )
+
+        legend = return_token_legend_for_spec(return_bin_spec_from_env(self.config.env))
         final_prompts = []
         for i, (text_render, info) in enumerate(zip(text_renders, infos)):
             task = info.get("instruction") or (
                 self.tasks[i] if hasattr(self, "tasks") and i < len(self.tasks) else "No instruction found"
             )
             constraint = info.get('constraint', '')
-            prompt = template_no_his.format(task_description=task, current_observation=text_render)
+            prompt = template_no_his.format(
+                task_description=task,
+                current_observation=text_render,
+                return_bin_legend=legend,
+            )
             if constraint:
                 prompt += f"\n\n**CONSTRAINT:** {constraint}"
             final_prompts.append(prompt)

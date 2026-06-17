@@ -90,13 +90,19 @@ actor_rollout_ref:
     entropy_action_single_token_fastpath: True
     # Use with env.prompt_template_type=single_token_action (1-char labels 1..9,a..h).
     single_token_actions: False
-    # Dual-prompt actor-value: actor prompt -> action; critic prompt -> return bin (m..u).
+    # Dual-prompt actor-value: actor prompt -> action; critic prompt -> return bin grid.
     actor_value_token: False
     actor_value_loss_coef: 1.0
+    # Return bin grid for critic token: scalar = vmin + bin_index * step.
+    actor_value_return_min: 0.0
+    actor_value_return_max: 3.0
+    actor_value_return_bin_step: 0.2
     # Micro-batch for critic-prompt V(s) forward (GAE). Defaults to log_prob micro-batch.
     actor_value_micro_batch_size_per_gpu: null
     # Return target encoding for value CE: one_hot (round to bin) | two_hot (linear blend of adjacent bins).
     actor_value_target_encoding: one_hot
+    # If true: value CE targets are per-token GAE returns (batch["returns"]), not scalar episode return.
+    actor_value_target_from_returns: False
     # If true with actor_value_token: policy and value each get zero_grad -> backward -> step.
     actor_value_separate_optimizer_steps: False
     use_invalid_action_penalty: True

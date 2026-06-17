@@ -50,4 +50,5 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   trainer.save_freq=-1 \
   trainer.test_freq=20 \
   trainer.max_actor_ckpt_to_keep=1 \
+  trainer.max_critic_ckpt_to_keep=1 \
   trainer.default_local_dir=training_checkpoints/verl_agent_caged_craftext_debug_square
