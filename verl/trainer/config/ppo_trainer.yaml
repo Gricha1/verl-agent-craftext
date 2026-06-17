@@ -93,6 +93,9 @@ actor_rollout_ref:
     # Dual-prompt actor-value: actor prompt -> action; critic prompt -> return bin grid.
     actor_value_token: False
     actor_value_loss_coef: 1.0
+    # Optional entropy bonus for critic bin distribution (encourages non-collapsed bin probs).
+    # value_loss = CE - actor_value_entropy_coef * H(p_bins)
+    actor_value_entropy_coef: 0.1
     # Return bin grid for critic token: scalar = vmin + bin_index * step.
     actor_value_return_min: 0.0
     actor_value_return_max: 3.0

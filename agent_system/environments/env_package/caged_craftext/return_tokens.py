@@ -4,11 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Sequence, Tuple
 
-# Uppercase A..T (20 slots): no overlap with action tokens (1-9, a-h) or step-reward WM (i-l).
-MAX_RETURN_TOKEN_SLOTS = 20
-_RETURN_TOKEN_LABELS: Tuple[str, ...] = tuple(
-    chr(ord("A") + i) for i in range(MAX_RETURN_TOKEN_SLOTS)
-)
+# Return bins: uppercase A..Z (26) + m,n,o — no overlap with actions (1-9,a-h) or step-reward WM (i-l).
+MAX_RETURN_TOKEN_SLOTS = 29
+_RETURN_TOKEN_LABELS: Tuple[str, ...] = tuple(chr(ord("A") + i) for i in range(26)) + ("m", "n", "o")
 TOKEN_TO_RETURN_BIN: Dict[str, int] = {
     tok: i for i, tok in enumerate(_RETURN_TOKEN_LABELS)
 }

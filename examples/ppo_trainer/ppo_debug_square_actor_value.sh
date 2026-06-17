@@ -3,9 +3,9 @@
 #
 # Dual-prompt, one token per forward:
 #   actor prompt (single_token_action)  -> 1 action token
-#   critic prompt (single_token_return) -> 1 return bin token (A..T = 0..19, vmax=8)
+#   critic prompt (single_token_return) -> 1 return bin token ([-5,6] step 0.4, 29 levels)
 #
-# GAE uses V(s) from critic forward; value loss = CE on return bin vs MC remaining return.
+# GAE uses V(s) from critic forward; value loss = CE on return bin vs per-token GAE returns.
 # critic_warmup: first N PPO steps train only return-token CE (policy frozen).
 #
 # Usage:
@@ -30,6 +30,10 @@ ENTROPY_BAND_COEF_HIGH="${ENTROPY_BAND_COEF_HIGH:-1.0}"
 ACTOR_VALUE_LOSS_COEF="${ACTOR_VALUE_LOSS_COEF:-1.0}"
 ACTOR_VALUE_SEPARATE_STEPS="${ACTOR_VALUE_SEPARATE_STEPS:-true}"
 ACTOR_VALUE_TARGET_ENCODING="${ACTOR_VALUE_TARGET_ENCODING:-two_hot}"
+ACTOR_VALUE_ENTROPY_COEF="${ACTOR_VALUE_ENTROPY_COEF:-0.1}"
+RETURN_BIN_MIN="${RETURN_BIN_MIN:--5}"
+RETURN_BIN_MAX="${RETURN_BIN_MAX:-6}"
+RETURN_BIN_STEP="${RETURN_BIN_STEP:-0.4}"
 
 echo "=========================================="
 echo "PPO debug_square_8x8 (dual-prompt actor-value)"
@@ -38,9 +42,10 @@ echo "[INFO] NUM_OPTIMISTIC_ENVS=$NUM_OPTIMISTIC_ENVS"
 echo "[INFO] OPTIMISTIC_RESET_RATIO=$OPTIMISTIC_RESET_RATIO"
 echo "[INFO] Map: 8x8 — stone / wood / water (adjacent = success)"
 echo "[INFO] actor prompt: single_token_action, max_response_length=1"
-echo "[INFO] critic prompt: return bins [0,8] step 0.5 (17 levels)"
+echo "[INFO] critic prompt: return bins [$RETURN_BIN_MIN,$RETURN_BIN_MAX] step=$RETURN_BIN_STEP"
 echo "[INFO] critic: token head on same LLM (no separate critic network)"
 echo "[INFO] value warmup (critic_warmup): $CRITIC_WARMUP PPO steps (return-token CE only)"
+echo "[INFO] value targets: per-token GAE returns (actor_value_target_from_returns=True)"
 echo "[INFO] actor_value_separate_optimizer_steps: $ACTOR_VALUE_SEPARATE_STEPS"
 echo "[INFO] actor_value_target_encoding: $ACTOR_VALUE_TARGET_ENCODING"
 echo "[INFO] entropy: H over 17 action tokens (1 forward + mask, entropy_over_valid_actions=True)"
@@ -69,9 +74,9 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   +env.optimistic_reset_ratio="$OPTIMISTIC_RESET_RATIO" \
   +env.use_ray_text_render_workers=False \
   +env.value_prompt_template_type=single_token_return \
-  +env.value_return_min=0.0 \
-  +env.value_return_max=8.0 \
-  +env.value_return_bin_step=0.5 \
+  +env.value_return_min="$RETURN_BIN_MIN" \
+  +env.value_return_max="$RETURN_BIN_MAX" \
+  +env.value_return_bin_step="$RETURN_BIN_STEP" \
   ++env.use_jax_gpu=False \
   ++env.jax_gpu_fraction=0.15 \
   algorithm.use_actor_value_token=True \
@@ -79,9 +84,11 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   actor_rollout_ref.actor.actor_value_loss_coef="$ACTOR_VALUE_LOSS_COEF" \
   actor_rollout_ref.actor.actor_value_separate_optimizer_steps="$ACTOR_VALUE_SEPARATE_STEPS" \
   actor_rollout_ref.actor.actor_value_target_encoding="$ACTOR_VALUE_TARGET_ENCODING" \
-  actor_rollout_ref.actor.actor_value_return_min=0.0 \
-  actor_rollout_ref.actor.actor_value_return_max=8.0 \
-  actor_rollout_ref.actor.actor_value_return_bin_step=0.5 \
+  actor_rollout_ref.actor.actor_value_entropy_coef="$ACTOR_VALUE_ENTROPY_COEF" \
+  actor_rollout_ref.actor.actor_value_target_from_returns=True \
+  actor_rollout_ref.actor.actor_value_return_min="$RETURN_BIN_MIN" \
+  actor_rollout_ref.actor.actor_value_return_max="$RETURN_BIN_MAX" \
+  actor_rollout_ref.actor.actor_value_return_bin_step="$RETURN_BIN_STEP" \
   actor_rollout_ref.rollout.gpu_memory_utilization=0.50 \
   actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
   actor_rollout_ref.actor.entropy_coeff=0.01 \

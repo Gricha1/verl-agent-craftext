@@ -699,13 +699,23 @@ class DataParallelPPOActor(BasePPOActor):
             target_returns = micro_batch["actor_value_target_returns"]
 
         target_encoding = str(self.config.get("actor_value_target_encoding", "one_hot"))
-        loss, _hard_bins = return_token_value_loss(
+        ce_loss, _hard_bins = return_token_value_loss(
             bin_logits,
             target_returns,
             target_encoding=target_encoding,
             response_mask=response_mask,
             spec=spec,
         )
+        entropy_coef = float(self.config.get("actor_value_entropy_coef", 0.0))
+        if entropy_coef != 0.0:
+            if bin_logits.dim() == 3:
+                valid = response_mask.bool()
+                entropy_term = return_bin_distribution_entropy(bin_logits[valid]).mean()
+            else:
+                entropy_term = return_bin_distribution_entropy(bin_logits).mean()
+            loss = ce_loss - entropy_coef * entropy_term
+        else:
+            loss = ce_loss
         with torch.no_grad():
             target_bins = (
                 target_returns.clamp(min=spec.vmin, max=spec.vmax) - spec.vmin
@@ -1032,12 +1042,14 @@ class DataParallelPPOActor(BasePPOActor):
                                 micro_batch=data,
                                 temperature=temperature,
                             )
+                            value_entropy_coef = float(self.config.get("actor_value_entropy_coef", 0.0))
                             append_to_dict(
                                 metrics,
                                 {
                                     "actor/value_token_loss": value_loss.detach().item(),
                                     "actor/value_token_accuracy": value_acc,
                                     "actor/value_token_entropy": value_entropy,
+                                    "actor/value_token_entropy_coef": value_entropy_coef,
                                 },
                             )
                             (value_loss * actor_value_loss_coef * loss_scale).backward()
