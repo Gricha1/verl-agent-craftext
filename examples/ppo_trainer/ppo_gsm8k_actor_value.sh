@@ -1,5 +1,5 @@
 #!/bin/bash
-# PPO on GSM8K: actor-value critic bins [-0.2,1.2] step 0.2 (8 levels), GAE-return value targets.
+# PPO on GSM8K: actor-value critic bins [-1,3] step 0.2 (21 levels), GAE-return value targets.
 #
 # Dual-prompt:
 #   actor prompt -> full math solution (max_response_length tokens)
@@ -20,9 +20,9 @@ CRITIC_WARMUP="${CRITIC_WARMUP:-0}"
 ACTOR_VALUE_LOSS_COEF="${ACTOR_VALUE_LOSS_COEF:-1.0}"
 ACTOR_VALUE_SEPARATE_STEPS="${ACTOR_VALUE_SEPARATE_STEPS:-true}"
 ACTOR_VALUE_TARGET_ENCODING="${ACTOR_VALUE_TARGET_ENCODING:-two_hot}"
-ACTOR_VALUE_ENTROPY_COEF="${ACTOR_VALUE_ENTROPY_COEF:-0.1}"
-RETURN_BIN_MIN="${RETURN_BIN_MIN:--0.2}"
-RETURN_BIN_MAX="${RETURN_BIN_MAX:-1.2}"
+ACTOR_VALUE_ENTROPY_COEF="${ACTOR_VALUE_ENTROPY_COEF:-0}"
+RETURN_BIN_MIN="${RETURN_BIN_MIN:--1}"
+RETURN_BIN_MAX="${RETURN_BIN_MAX:-3}"
 RETURN_BIN_STEP="${RETURN_BIN_STEP:-0.2}"
 
 echo "=========================================="

@@ -469,6 +469,7 @@ class TrajectoryCollector:
         completed_episode_returns = []
         completed_episode_lengths = []
         completed_episode_costs = []
+        completed_episode_wons = []
         # Tracks env slots already pushed to completed_episode_* (avoids double-count at rollout end).
         episode_metrics_recorded = np.zeros(batch_size, dtype=bool)
         
@@ -697,16 +698,19 @@ class TrajectoryCollector:
             # Записываем завершённые эпизоды в списки для метрик (среднее по эпизодам)
             for i in range(batch_size):
                 if dones[i]:
+                    won_val = 1.0 if infos[i].get("won", False) else 0.0
                     if auto_reset_enabled:
                         completed_episode_returns.append(float(current_episode_rewards[i]))
                         completed_episode_lengths.append(float(current_episode_lengths[i]))
                         cost_val = float(episode_costs_from_info[i]) if episode_costs_from_info is not None else float(current_episode_costs[i])
                         completed_episode_costs.append(cost_val)
+                        completed_episode_wons.append(won_val)
                     else:
                         ep_len = float(episode_lengths[i])
                         completed_episode_returns.append(float(episode_rewards[i]))
                         completed_episode_lengths.append(ep_len)
                         completed_episode_costs.append(float(episode_costs[i]))
+                        completed_episode_wons.append(won_val)
                         # Debug: flag implausibly short episodes (debug_square needs ~5+ steps).
                         if os.environ.get("CRAFTEXT_DEBUG_SHORT_EPISODES", "0") == "1" and ep_len <= 3:
                             instr = infos[i].get("instruction", "?") if i < len(infos) else "?"
@@ -955,7 +959,9 @@ class TrajectoryCollector:
                 flush=True,
             )
         
-        # Без auto_reset: эпизоды, не завершившиеся по done, — один раз в конце rollout (max_steps)
+        # Без auto_reset: эпизоды, не завершившиеся по done к концу env max_steps — провал (won=0).
+        # С auto_reset незавершённый хвост в конце rollout-бюджета не учитываем: агент не исчерпал
+        # лимит эпизода, его просто оборвали по сбору шагов.
         if not auto_reset_enabled:
             for i in range(batch_size):
                 if episode_metrics_recorded[i]:
@@ -963,6 +969,7 @@ class TrajectoryCollector:
                 completed_episode_returns.append(float(episode_rewards[i]))
                 completed_episode_lengths.append(float(episode_lengths[i]))
                 completed_episode_costs.append(float(episode_costs[i]))
+                completed_episode_wons.append(0.0)
         
         success: Dict[str, np.ndarray] = envs.success_evaluator(
                     total_infos=total_infos,
@@ -995,6 +1002,7 @@ class TrajectoryCollector:
             completed_episode_returns,
             completed_episode_lengths,
             completed_episode_costs,
+            completed_episode_wons,
         )
     
     def dynamic_multi_turn_loop(
@@ -1031,6 +1039,7 @@ class TrajectoryCollector:
         total_completed_returns = []
         total_completed_lengths = []
         total_completed_costs = []
+        total_completed_wons = []
         try_count: int = 0
         max_try_count = self.config.algorithm.filter_groups.max_num_gen_batches
 
@@ -1062,6 +1071,7 @@ class TrajectoryCollector:
                 completed_returns,
                 completed_lengths,
                 completed_costs,
+                completed_wons,
             ) = self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
@@ -1070,6 +1080,7 @@ class TrajectoryCollector:
             total_completed_returns.extend(completed_returns)
             total_completed_lengths.extend(completed_lengths)
             total_completed_costs.extend(completed_costs)
+            total_completed_wons.extend(completed_wons)
             batch_list, episode_rewards, episode_lengths, episode_costs, success, traj_uid, tool_callings = filter_group_data(batch_list=batch_list, 
                                                                                                 episode_rewards=episode_rewards, 
                                                                                                 episode_lengths=episode_lengths, 
@@ -1096,7 +1107,7 @@ class TrajectoryCollector:
         total_traj_uid = np.concatenate(total_traj_uid, axis=0)
         total_tool_callings = np.concatenate(total_tool_callings, axis=0)
 
-        return total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, total_tool_callings, total_completed_returns, total_completed_lengths, total_completed_costs
+        return total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, total_tool_callings, total_completed_returns, total_completed_lengths, total_completed_costs, total_completed_wons
 
     def multi_turn_loop(
             self,
@@ -1126,7 +1137,7 @@ class TrajectoryCollector:
         # Initial observations from the environment
         if self.config.algorithm.filter_groups.enable and is_train:
             # Dynamic Sampling (for DAPO and Dynamic GiGPO)
-            total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, totoal_tool_callings, completed_episode_returns, completed_episode_lengths, completed_episode_costs = \
+            total_batch_list, total_episode_rewards, total_episode_lengths, total_episode_costs, total_success, total_traj_uid, totoal_tool_callings, completed_episode_returns, completed_episode_lengths, completed_episode_costs, completed_episode_wons = \
                 self.dynamic_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
@@ -1169,6 +1180,7 @@ class TrajectoryCollector:
                 completed_episode_returns,
                 completed_episode_lengths,
                 completed_episode_costs,
+                completed_episode_wons,
             ) = self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
@@ -1229,5 +1241,7 @@ class TrajectoryCollector:
             gen_batch_output.meta_info['completed_episode_lengths'] = np.array(completed_episode_lengths, dtype=np.float32)
         if completed_episode_costs is not None and len(completed_episode_costs) > 0:
             gen_batch_output.meta_info['completed_episode_costs'] = np.array(completed_episode_costs, dtype=np.float32)
+        if completed_episode_wons is not None and len(completed_episode_wons) > 0:
+            gen_batch_output.meta_info['completed_episode_wons'] = np.array(completed_episode_wons, dtype=np.float32)
 
         return gen_batch_output

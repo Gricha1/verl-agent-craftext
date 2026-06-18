@@ -51,6 +51,7 @@ echo "[INFO] actor_value_target_encoding: $ACTOR_VALUE_TARGET_ENCODING"
 echo "[INFO] entropy: H over 17 action tokens (1 forward + mask, entropy_over_valid_actions=True)"
 echo "[INFO] entropy_action_single_token_fastpath: $ENTROPY_SINGLE_TOKEN_FASTPATH"
 echo "[INFO] entropy_band (AEnt): enable=$ENTROPY_BAND_ENABLE range=[$ENTROPY_BAND_LOW, $ENTROPY_BAND_HIGH]"
+echo "[INFO] auto_reset: false (one episode per env slot, max 50 steps)"
 echo "[INFO] validation: every 20 PPO steps, 2 GIFs (actor prompt + critic prompt)"
 echo "[INFO] checkpoints: every 20 PPO steps, keep last 1 -> training_checkpoints/verl_agent_caged_craftext_debug_square_actor_value"
 
@@ -62,7 +63,7 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   true \
   "$NUM_OPTIMISTIC_ENVS" \
   1 \
-  true \
+  false \
   false \
   8000 \
   true \

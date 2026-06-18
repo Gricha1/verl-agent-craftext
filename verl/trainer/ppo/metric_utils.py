@@ -125,6 +125,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
     completed_returns = meta.get("completed_episode_returns")
     completed_lengths = meta.get("completed_episode_lengths")
     completed_costs = meta.get("completed_episode_costs")
+    completed_wons = meta.get("completed_episode_wons")
     if completed_returns is not None and len(completed_returns) > 0:
         completed_returns = np.asarray(completed_returns)
         episode_reward_mean = float(np.mean(completed_returns))
@@ -154,6 +155,13 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
             episode_cost_mean = batch.non_tensor_batch["episode_costs"][unique_idx].mean().item()
             episode_cost_max = batch.non_tensor_batch["episode_costs"][unique_idx].max().item()
             episode_cost_min = batch.non_tensor_batch["episode_costs"][unique_idx].min().item()
+
+    episode_success_rate = None
+    episode_count = None
+    if completed_wons is not None and len(completed_wons) > 0:
+        completed_wons = np.asarray(completed_wons, dtype=np.float32)
+        episode_success_rate = float(np.mean(completed_wons))
+        episode_count = int(len(completed_wons))
 
     if use_critic:
         values = batch.batch["values"]
@@ -213,12 +221,18 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
             batch.non_tensor_batch["tool_callings"][unique_idx].max().item(),
         "episode/tool_call_count/min":
             batch.non_tensor_batch["tool_callings"][unique_idx].min().item(),
-        **({f"episode/{k}": v[0].item() for k, v in batch.non_tensor_batch.items() if "success_rate" in k}),
         # episode cost (по завершённым эпизодам, если есть completed_episode_costs в meta_info)
         "episode/cost/mean": episode_cost_mean,
         "episode/cost/max": episode_cost_max,
         "episode/cost/min": episode_cost_min,
     }
+    if episode_success_rate is not None:
+        metrics["episode/success_rate"] = episode_success_rate
+        metrics["episode/count"] = episode_count
+    else:
+        metrics.update(
+            {f"episode/{k}": v[0].item() for k, v in batch.non_tensor_batch.items() if "success_rate" in k}
+        )
     return metrics
 
 

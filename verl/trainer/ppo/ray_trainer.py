@@ -782,6 +782,7 @@ class RayPPOTrainer:
         tool_calling_list = []
         traj_uid_list = []
         success_rate_dict = {}
+        val_completed_wons = []
 
         # Lists to collect samples for the table
         sample_inputs = []
@@ -1392,7 +1393,10 @@ class RayPPOTrainer:
             data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
             tool_calling_list.append(test_output_gen_batch.non_tensor_batch['tool_callings'])
             traj_uid_list.append(test_output_gen_batch.non_tensor_batch['traj_uid'])
-            # success rate
+            completed_wons = test_output_gen_batch.meta_info.get("completed_episode_wons")
+            if completed_wons is not None and len(completed_wons) > 0:
+                val_completed_wons.append(np.asarray(completed_wons, dtype=np.float32))
+            # legacy success_rate (last step per env slot) — kept only as fallback
             for k in test_batch.non_tensor_batch.keys():
                 if 'success_rate' in k:
                     if k not in success_rate_dict:
@@ -1440,8 +1444,13 @@ class RayPPOTrainer:
             metric_dict[f'val/{data_source}/tool_call_count/max'] = np.max(tool_calls)
             metric_dict[f'val/{data_source}/tool_call_count/min'] = np.min(tool_calls)
 
-        for k, v in success_rate.items():
-            metric_dict[f'val/{k}'] = v
+        if val_completed_wons:
+            all_val_wons = np.concatenate(val_completed_wons)
+            metric_dict['val/success_rate'] = float(np.mean(all_val_wons))
+            metric_dict['val/episode_count'] = int(len(all_val_wons))
+        else:
+            for k, v in success_rate.items():
+                metric_dict[f'val/{k}'] = v
 
         if val_wm_inverse_accuracy is not None:
             metric_dict['val/world_model/inverse_action_accuracy'] = val_wm_inverse_accuracy
