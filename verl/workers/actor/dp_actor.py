@@ -20,7 +20,7 @@ Single Process Actor
 import itertools
 import logging
 import os
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 from torch import nn
@@ -295,13 +295,31 @@ class DataParallelPPOActor(BasePPOActor):
 
         return log_scores
 
-    def _forward_micro_batch(self, micro_batch, temperature, calculate_entropy=False) -> Tuple[torch.Tensor, torch.Tensor]:
+    @staticmethod
+    def _greedy_response_token_accuracy(logits, labels, response_mask):
+        """Argmax token accuracy on teacher-forced response positions."""
+        with torch.no_grad():
+            preds = torch.argmax(logits, dim=-1)
+            mask = response_mask.bool()
+            correct = (preds == labels) & mask
+            return correct.sum(), mask.sum()
+
+    def _forward_micro_batch(
+        self,
+        micro_batch,
+        temperature,
+        calculate_entropy=False,
+        compute_accuracy=False,
+        response_mask=None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         """
         Returns:
             entropy: # (bs, response_len)
             log_probs: # (bs, response_len)
+            acc_stats: optional (correct, total) token counts for WM accuracy
         """
         response_length = micro_batch["responses"].size(-1)
+        acc_stats = None
         multi_modal_inputs = {}
         if "multi_modal_inputs" in micro_batch:
             for key in micro_batch["multi_modal_inputs"][0].keys():
@@ -377,8 +395,27 @@ class DataParallelPPOActor(BasePPOActor):
 
                     # if use_sp: ((total_nnz / sp) + pad) ; if not use_sp: (batch, seqlen)
                     inplace_backward = True
-                    if calculate_entropy:
+                    if calculate_entropy or compute_accuracy:
                         inplace_backward = False
+                    if compute_accuracy and response_mask is not None:
+                        logits_for_acc = logits_rmpad
+                        if self.use_ulysses_sp:
+                            logits_for_acc = gather_outpus_and_unpad(
+                                logits_for_acc,
+                                gather_dim=0,
+                                unpad_dim=0,
+                                padding_size=pad_size,
+                            )
+                        full_logits = pad_input(
+                            hidden_states=logits_for_acc,
+                            indices=indices,
+                            batch=batch_size,
+                            seqlen=seqlen,
+                        )
+                        logits_resp = full_logits[:, -response_length - 1 : -1, :]
+                        acc_stats = self._greedy_response_token_accuracy(
+                            logits_resp, micro_batch["responses"], response_mask
+                        )
                     log_probs = logprobs_from_logits(
                         logits=logits_rmpad,
                         labels=input_ids_rmpad_rolled,
@@ -453,11 +490,15 @@ class DataParallelPPOActor(BasePPOActor):
                         tokenizer = self._get_tokenizer()
                         action_ids = action_token_id_tensor(tokenizer, device=logits.device)
                         logits[:, 0, :] = mask_logits_to_allowed(logits[:, 0, :], action_ids)
+                    if compute_accuracy and response_mask is not None:
+                        acc_stats = self._greedy_response_token_accuracy(
+                            logits, micro_batch["responses"], response_mask
+                        )
                     log_probs = logprobs_from_logits(logits, micro_batch["responses"])
                     if calculate_entropy:
                         entropy = verl_F.entropy_from_logits(logits)  # (bsz, response_length)
 
-            return entropy, log_probs
+            return entropy, log_probs, acc_stats
 
     def _optimizer_step(self):
         assert self.config.grad_clip is not None
@@ -526,7 +567,9 @@ class DataParallelPPOActor(BasePPOActor):
             if isinstance(micro_batch, DataProto):
                 micro_batch = {**micro_batch.batch, **micro_batch.non_tensor_batch}
             with torch.no_grad():
-                entropy, log_probs = self._forward_micro_batch(micro_batch, temperature=temperature, calculate_entropy=calculate_entropy)
+                entropy, log_probs, _ = self._forward_micro_batch(
+                    micro_batch, temperature=temperature, calculate_entropy=calculate_entropy
+                )
             log_probs_lst.append(log_probs)
             if calculate_entropy:
                 entropy_lst.append(entropy)
@@ -762,6 +805,8 @@ class DataParallelPPOActor(BasePPOActor):
         metrics: dict = {}
         num_micro = max(len(micro_batches), 1)
         last_wm_loss = None
+        acc_correct = 0
+        acc_total = 0
 
         for micro_batch in micro_batches:
             micro_data = {**micro_batch.to(get_torch_device().current_device())}
@@ -770,11 +815,16 @@ class DataParallelPPOActor(BasePPOActor):
             attention_mask = micro_data["attention_mask"]
             response_mask = attention_mask[:, -response_length:]
 
-            _, log_prob = self._forward_micro_batch(
+            _, log_prob, acc_stats = self._forward_micro_batch(
                 micro_batch=micro_data,
                 temperature=temperature,
                 calculate_entropy=False,
+                compute_accuracy=True,
+                response_mask=response_mask,
             )
+            if acc_stats is not None:
+                acc_correct += int(acc_stats[0].item())
+                acc_total += int(acc_stats[1].item())
             wm_loss = -agg_loss(
                 loss_mat=log_prob,
                 loss_mask=response_mask,
@@ -792,6 +842,10 @@ class DataParallelPPOActor(BasePPOActor):
             "world_model/grad_norm": grad_norm.detach().item(),
             "world_model/num_samples": float(batch.batch_size[0]),
         })
+        if acc_total > 0:
+            metrics["world_model/reward_token_accuracy"] = acc_correct / acc_total
+            metrics["world_model/reward_token_correct"] = float(acc_correct)
+            metrics["world_model/reward_token_total"] = float(acc_total)
         self.actor_optimizer.zero_grad()
         get_torch_device().empty_cache()
         return metrics
@@ -976,7 +1030,7 @@ class DataParallelPPOActor(BasePPOActor):
                                 get_torch_device().empty_cache()
 
                             calculate_entropy = entropy_coeff != 0 and not entropy_over_valid_actions
-                            entropy, log_prob = self._forward_micro_batch(
+                            entropy, log_prob, _ = self._forward_micro_batch(
                                 micro_batch=data, temperature=temperature, calculate_entropy=calculate_entropy
                             )
 

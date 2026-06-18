@@ -34,6 +34,9 @@ ACTOR_VALUE_ENTROPY_COEF="${ACTOR_VALUE_ENTROPY_COEF:-0.1}"
 RETURN_BIN_MIN="${RETURN_BIN_MIN:--5}"
 RETURN_BIN_MAX="${RETURN_BIN_MAX:-6}"
 RETURN_BIN_STEP="${RETURN_BIN_STEP:-0.4}"
+ACTOR_VALUE_ONLINE_REWARD_WM="${ACTOR_VALUE_ONLINE_REWARD_WM:-false}"
+ACTOR_VALUE_REWARD_WM_LOSS_COEF="${ACTOR_VALUE_REWARD_WM_LOSS_COEF:-0.1}"
+USE_ACTOR_LORA="${USE_ACTOR_LORA:-false}"
 
 echo "=========================================="
 echo "PPO debug_square_8x8 (dual-prompt actor-value)"
@@ -51,7 +54,9 @@ echo "[INFO] actor_value_target_encoding: $ACTOR_VALUE_TARGET_ENCODING"
 echo "[INFO] entropy: H over 17 action tokens (1 forward + mask, entropy_over_valid_actions=True)"
 echo "[INFO] entropy_action_single_token_fastpath: $ENTROPY_SINGLE_TOKEN_FASTPATH"
 echo "[INFO] entropy_band (AEnt): enable=$ENTROPY_BAND_ENABLE range=[$ENTROPY_BAND_LOW, $ENTROPY_BAND_HIGH]"
+echo "[INFO] USE_ACTOR_LORA=$USE_ACTOR_LORA (false -> full finetune, actor=value same weights)"
 echo "[INFO] auto_reset: false (one episode per env slot, max 50 steps)"
+echo "[INFO] actor_value_online_reward_wm: $ACTOR_VALUE_ONLINE_REWARD_WM (loss_coef=$ACTOR_VALUE_REWARD_WM_LOSS_COEF)"
 echo "[INFO] validation: every 20 PPO steps, 2 GIFs (actor prompt + critic prompt)"
 echo "[INFO] checkpoints: every 20 PPO steps, keep last 1 -> training_checkpoints/verl_agent_caged_craftext_debug_square_actor_value"
 
@@ -66,7 +71,7 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   false \
   false \
   8000 \
-  true \
+  "$USE_ACTOR_LORA" \
   single_token_action \
   "$CRITIC_WARMUP" \
   ascii \
@@ -111,4 +116,6 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   trainer.test_freq=20 \
   trainer.max_actor_ckpt_to_keep=1 \
   trainer.max_critic_ckpt_to_keep=1 \
-  trainer.default_local_dir=training_checkpoints/verl_agent_caged_craftext_debug_square_actor_value
+  trainer.default_local_dir=training_checkpoints/verl_agent_caged_craftext_debug_square_actor_value \
+  trainer.actor_value_online_reward_wm.enable="$ACTOR_VALUE_ONLINE_REWARD_WM" \
+  trainer.actor_value_online_reward_wm.loss_coef="$ACTOR_VALUE_REWARD_WM_LOSS_COEF"

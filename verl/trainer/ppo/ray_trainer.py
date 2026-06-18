@@ -466,6 +466,44 @@ class RayPPOTrainer:
         self._validate_config()
         self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
 
+    def _actor_value_online_reward_wm_enabled(self) -> bool:
+        av = self.config.trainer.get("actor_value_online_reward_wm", {})
+        return bool(av.get("enable", False)) and self.use_actor_value_token
+
+    def _world_model_reward_enabled(self) -> bool:
+        wm = self.config.trainer.get("world_model", {})
+        return bool(wm.get("enable", False)) and str(wm.get("task", "latent")) == "reward"
+
+    def _online_reward_wm_enabled(self) -> bool:
+        return self._world_model_reward_enabled() or self._actor_value_online_reward_wm_enabled()
+
+    def _online_reward_wm_metrics_prefix(self) -> str:
+        if self._actor_value_online_reward_wm_enabled():
+            return "actor_value/reward_wm"
+        return "world_model"
+
+    def _online_reward_wm_loss_coef(self) -> float:
+        if self._actor_value_online_reward_wm_enabled():
+            return float(self.config.trainer.actor_value_online_reward_wm.get("loss_coef", 0.1))
+        return float(self.config.trainer.world_model.get("loss_coef", 1.0))
+
+    def _online_reward_wm_micro_batch_size(self):
+        if self._actor_value_online_reward_wm_enabled():
+            return self.config.trainer.actor_value_online_reward_wm.get("micro_batch_size_per_gpu")
+        return self.config.trainer.world_model.get("micro_batch_size_per_gpu")
+
+    @staticmethod
+    def _remap_metrics_prefix(metrics: Dict[str, float], prefix: str) -> Dict[str, float]:
+        if prefix == "world_model":
+            return metrics
+        out: Dict[str, float] = {}
+        for key, value in metrics.items():
+            if key.startswith("world_model/"):
+                out[key.replace("world_model/", f"{prefix}/", 1)] = value
+            else:
+                out[key] = value
+        return out
+
     def _validate_config(self):
         config = self.config
         # number of GPUs total
@@ -594,6 +632,19 @@ class RayPPOTrainer:
                 config.actor_rollout_ref.actor,
                 context="actor-value PPO",
             )
+
+        av_rm = bool(config.trainer.get("actor_value_online_reward_wm", {}).get("enable", False))
+        wm_reward = bool(
+            config.trainer.get("world_model", {}).get("enable", False)
+            and str(config.trainer.world_model.get("task", "latent")) == "reward"
+        )
+        if av_rm and wm_reward:
+            raise ValueError(
+                "Enable only one online reward model path: "
+                "trainer.world_model (task=reward) OR trainer.actor_value_online_reward_wm"
+            )
+        if av_rm and not algo_actor_value:
+            raise ValueError("trainer.actor_value_online_reward_wm requires use_actor_value_token=True")
 
         print("[validate_config] All configuration checks passed successfully!")
 
@@ -1120,9 +1171,16 @@ class RayPPOTrainer:
 
                     # Reward world model: table + sample panel.
                     try:
+                        _wm_reward_val = (
+                            self._online_reward_wm_enabled()
+                            if hasattr(self, "_online_reward_wm_enabled")
+                            else (
+                                self.config.trainer.get("world_model", {}).get("enable", False)
+                                and self.config.trainer.world_model.get("task") == "reward"
+                            )
+                        )
                         if (
-                            self.config.trainer.get("world_model", {}).get("enable", False)
-                            and self.config.trainer.world_model.get("task") == "reward"
+                            _wm_reward_val
                             and true_rewards_list is not None
                             and pred_rewards_list is not None
                             and actions is not None
@@ -1454,10 +1512,15 @@ class RayPPOTrainer:
 
         if val_wm_inverse_accuracy is not None:
             metric_dict['val/world_model/inverse_action_accuracy'] = val_wm_inverse_accuracy
+        _val_rm_prefix = (
+            "val/actor_value/reward_wm"
+            if self._actor_value_online_reward_wm_enabled()
+            else "val/world_model"
+        )
         if val_wm_reward_mae is not None:
-            metric_dict['val/world_model/reward_mae'] = val_wm_reward_mae
+            metric_dict[f'{_val_rm_prefix}/reward_mae'] = val_wm_reward_mae
         if val_wm_reward_token_accuracy is not None:
-            metric_dict['val/world_model/reward_token_accuracy'] = val_wm_reward_token_accuracy
+            metric_dict[f'{_val_rm_prefix}/reward_token_accuracy'] = val_wm_reward_token_accuracy
 
         return metric_dict
 
@@ -1535,10 +1598,30 @@ class RayPPOTrainer:
         self.actor_rollout_wg = all_wg["actor_rollout"]
         self.actor_rollout_wg.init_model()
         
-        # Initialize world model trainer if enabled
+        # Initialize world model / online reward WM trainer if enabled
         self.world_model_trainer = None
         self.world_model_loss_coef = 1.0
-        if self.config.trainer.get("world_model", {}).get("enable", False):
+        if self._actor_value_online_reward_wm_enabled():
+            av_rm_config = self.config.trainer.actor_value_online_reward_wm
+            self.world_model_loss_coef = float(av_rm_config.get("loss_coef", 0.1))
+            from verl.trainer.world_model import RewardWorldModelTrainer
+
+            self.world_model_trainer = RewardWorldModelTrainer(
+                actor_rollout_wg=self.actor_rollout_wg,
+                tokenizer=self.tokenizer,
+                prompt_template=av_rm_config.get("reward_prompt"),
+                max_reward_tokens=int(av_rm_config.get("max_reward_tokens", 1)),
+                device=self.device_name,
+                prompt_style=str(av_rm_config.get("prompt_style", "craftext")),
+                max_prompt_length=int(av_rm_config.get("max_prompt_length", 2048)),
+            )
+            print(
+                "[init_workers] actor_value_online_reward_wm: "
+                f"loss_coef={self.world_model_loss_coef} "
+                f"prompt_style={av_rm_config.get('prompt_style', 'craftext')} "
+                f"(online SFT on PPO rollout -> reward token j/k or i/j/k/l)"
+            )
+        elif self.config.trainer.get("world_model", {}).get("enable", False):
             world_model_config = self.config.trainer.world_model
             self.world_model_loss_coef = world_model_config.get("loss_coef", 1.0)
             wm_task = world_model_config.get("task", "latent")
@@ -2065,13 +2148,37 @@ class RayPPOTrainer:
                         if _verbose_phases:
                             self._ppo_phase_log(f"■ UPDATE actor done in {time.monotonic() - _t_ac:.1f}s")
 
-                        # World model: separate step AFTER PPO (on-policy w.r.t. updated actor weights)
-                        if self.config.trainer.get("world_model", {}).get("enable", False):
+                        # Online reward WM / world model: separate step AFTER actor (+ value) update
+                        if self._online_reward_wm_enabled():
+                            _wm_label = (
+                                "actor_value/reward_wm"
+                                if self._actor_value_online_reward_wm_enabled()
+                                else "world_model (reward)"
+                            )
+                            if _verbose_phases:
+                                self._ppo_phase_log(f"▶ UPDATE: {_wm_label} (after PPO) …")
+                            _t_wm = time.monotonic()
+                            with _timer("update_world_model", timing_raw):
+                                world_model_metrics = self._train_reward_world_model(
+                                    batch,
+                                    loss_coef=self._online_reward_wm_loss_coef(),
+                                    metrics_prefix=self._online_reward_wm_metrics_prefix(),
+                                )
+                            if _verbose_phases:
+                                self._ppo_phase_log(f"■ UPDATE {_wm_label} done in {time.monotonic() - _t_wm:.1f}s")
+                            if world_model_metrics:
+                                metrics.update(world_model_metrics)
+                                logger.log(data=world_model_metrics, step=self.total_env_steps)
+                            else:
+                                print("[World Model Debug] Warning: reward WM update returned empty dict")
+                        elif self.config.trainer.get("world_model", {}).get("enable", False):
                             if _verbose_phases:
                                 self._ppo_phase_log("▶ UPDATE: world_model (after PPO) …")
                             _t_wm = time.monotonic()
                             with _timer("update_world_model", timing_raw):
-                                world_model_metrics = self._train_world_model(batch, loss_coef=self.world_model_loss_coef)
+                                world_model_metrics = self._train_world_model(
+                                    batch, loss_coef=self.world_model_loss_coef
+                                )
                             if _verbose_phases:
                                 self._ppo_phase_log(f"■ UPDATE world_model done in {time.monotonic() - _t_wm:.1f}s")
                             if world_model_metrics:
@@ -2292,18 +2399,26 @@ class RayPPOTrainer:
             traceback.print_exc()
             return driver_metrics
 
-    def _train_reward_world_model(self, batch: DataProto, loss_coef: float = 1.0) -> Dict[str, float]:
-        """Train reward WM on (s_t, a_t) -> r_t. No s_t == s_{t+1} filtering."""
+    def _train_reward_world_model(
+        self,
+        batch: DataProto,
+        loss_coef: float = 1.0,
+        metrics_prefix: str = "world_model",
+    ) -> Dict[str, float]:
+        """Train reward WM on (s_t, a_t) -> r_t from on-policy PPO rollout batch."""
         driver_metrics: Dict[str, float] = {}
+
+        if self.world_model_trainer is None:
+            return driver_metrics
 
         required_keys = ("curr_obs_ascii", "wm_action_token")
         for key in required_keys:
             if key not in batch.non_tensor_batch:
                 print(
-                    f"[World Model Debug] Warning: {key} not found in batch. "
+                    f"[Reward WM] Warning: {key} not found in batch. "
                     f"Available keys: {list(batch.non_tensor_batch.keys())}"
                 )
-                driver_metrics["world_model/num_valid_samples"] = 0.0
+                driver_metrics[f"{metrics_prefix}/num_valid_samples"] = 0.0
                 return driver_metrics
 
         curr_observations = batch.non_tensor_batch["curr_obs_ascii"].tolist()
@@ -2317,8 +2432,8 @@ class RayPPOTrainer:
         if step_rewards_raw is None:
             step_rewards_raw = batch.non_tensor_batch.get("rewards")
         if step_rewards_raw is None:
-            print("[World Model Debug] Warning: wm_step_reward / rewards not in batch")
-            driver_metrics["world_model/num_valid_samples"] = 0.0
+            print("[Reward WM] Warning: wm_step_reward / rewards not in batch")
+            driver_metrics[f"{metrics_prefix}/num_valid_samples"] = 0.0
             return driver_metrics
         step_rewards = np.asarray(step_rewards_raw, dtype=np.float64).reshape(-1).tolist()
 
@@ -2328,9 +2443,9 @@ class RayPPOTrainer:
                 continue
             valid_indices.append(i)
 
-        driver_metrics["world_model/num_valid_samples"] = float(len(valid_indices))
+        driver_metrics[f"{metrics_prefix}/num_valid_samples"] = float(len(valid_indices))
         if len(valid_indices) == 0:
-            print("[World Model Debug] No valid reward-model samples in batch")
+            print("[Reward WM] No valid reward-model samples in batch")
             return driver_metrics
 
         curr_observations = [curr_observations[i] for i in valid_indices]
@@ -2345,10 +2460,10 @@ class RayPPOTrainer:
             q = [int(quantize_step_reward(r)) for r in step_rewards]
             if q:
                 n = float(len(q))
-                driver_metrics["world_model/reward_frac_-1"] = float(sum(v == -1 for v in q) / n)
-                driver_metrics["world_model/reward_frac_0"] = float(sum(v == 0 for v in q) / n)
-                driver_metrics["world_model/reward_frac_1"] = float(sum(v == 1 for v in q) / n)
-                driver_metrics["world_model/reward_frac_2"] = float(sum(v == 2 for v in q) / n)
+                driver_metrics[f"{metrics_prefix}/reward_frac_-1"] = float(sum(v == -1 for v in q) / n)
+                driver_metrics[f"{metrics_prefix}/reward_frac_0"] = float(sum(v == 0 for v in q) / n)
+                driver_metrics[f"{metrics_prefix}/reward_frac_1"] = float(sum(v == 1 for v in q) / n)
+                driver_metrics[f"{metrics_prefix}/reward_frac_2"] = float(sum(v == 2 for v in q) / n)
         except Exception:
             pass
 
@@ -2361,7 +2476,7 @@ class RayPPOTrainer:
             )
             wm_batch.meta_info["world_model_loss_coef"] = loss_coef
             wm_batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
-            wm_micro = self.config.trainer.world_model.get("micro_batch_size_per_gpu")
+            wm_micro = self._online_reward_wm_micro_batch_size()
             if wm_micro is not None:
                 wm_batch.meta_info["world_model_micro_batch_size_per_gpu"] = int(wm_micro)
             from verl.protocol import DataProtoConfig
@@ -2370,18 +2485,21 @@ class RayPPOTrainer:
 
             output = self.actor_rollout_wg.update_world_model(wm_batch)
             raw_metrics = extract_metrics_from_dataproto(output)
-            metrics = normalize_worker_metrics(raw_metrics)
+            metrics = self._remap_metrics_prefix(
+                normalize_worker_metrics(raw_metrics), metrics_prefix
+            )
             metrics.update(driver_metrics)
-            if metrics.get("world_model/loss") is not None:
-                metrics["world_model/reward_loss"] = metrics["world_model/loss"]
+            if metrics.get(f"{metrics_prefix}/loss") is not None:
+                metrics[f"{metrics_prefix}/reward_loss"] = metrics[f"{metrics_prefix}/loss"]
                 print(
-                    f"[Reward World Model] loss={metrics['world_model/loss']:.4f} "
-                    f"samples={int(metrics['world_model/num_valid_samples'])} "
+                    f"[Reward WM] loss={metrics[f'{metrics_prefix}/loss']:.4f} "
+                    f"acc={metrics.get(f'{metrics_prefix}/reward_token_accuracy', float('nan')):.3f} "
+                    f"samples={int(metrics[f'{metrics_prefix}/num_valid_samples'])} "
                     f"target_frac(-1/0/1/2)="
-                    f"{metrics.get('world_model/reward_frac_-1', float('nan')):.2f}/"
-                    f"{metrics.get('world_model/reward_frac_0', float('nan')):.2f}/"
-                    f"{metrics.get('world_model/reward_frac_1', float('nan')):.2f}/"
-                    f"{metrics.get('world_model/reward_frac_2', float('nan')):.2f}"
+                    f"{metrics.get(f'{metrics_prefix}/reward_frac_-1', float('nan')):.2f}/"
+                    f"{metrics.get(f'{metrics_prefix}/reward_frac_0', float('nan')):.2f}/"
+                    f"{metrics.get(f'{metrics_prefix}/reward_frac_1', float('nan')):.2f}/"
+                    f"{metrics.get(f'{metrics_prefix}/reward_frac_2', float('nan')):.2f}"
                 )
             return metrics
         except Exception as e:

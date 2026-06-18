@@ -10,6 +10,7 @@ set -e
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-256}"
 MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-512}"
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-6}"
+USE_ACTOR_LORA="${USE_ACTOR_LORA:-false}"
 
 echo "=========================================="
 echo "PPO GSM8K (standard critic + vocab entropy)"
@@ -18,6 +19,7 @@ echo "[INFO] TRAIN_BATCH_SIZE=$TRAIN_BATCH_SIZE"
 echo "[INFO] MAX_RESPONSE_LENGTH=$MAX_RESPONSE_LENGTH"
 echo "[INFO] single-turn env (max_steps=1), rule-based reward"
 echo "[INFO] entropy: full vocabulary (entropy_over_valid_actions=False)"
+echo "[INFO] USE_ACTOR_LORA=$USE_ACTOR_LORA (false -> full finetune actor; critic lora_rank=0)"
 echo "[INFO] checkpoints: disabled (trainer.save_freq=-1)"
 
 export RUN_NAME="${RUN_NAME:-PPO GSM8K}"
@@ -28,7 +30,7 @@ bash examples/ppo_trainer/run_gsm8k_lora_job.sh \
   "$TRAIN_BATCH_SIZE" \
   "$MAX_RESPONSE_LENGTH" \
   "$TOTAL_EPOCHS" \
-  true \
+  "$USE_ACTOR_LORA" \
   0 \
   actor_rollout_ref.rollout.gpu_memory_utilization=0.50 \
   actor_rollout_ref.actor.entropy_coeff=0.01 \

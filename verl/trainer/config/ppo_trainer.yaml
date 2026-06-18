@@ -357,6 +357,18 @@ trainer:
     inverse_action_prompt: null  # null = default template in world_model_inverse_action.py
     loss_coef: 1.0  # Multiplier on WM loss in the separate post-PPO update_world_model step
 
+  # Online step-reward model for actor-value (same SFT target as train_reward_wm_sft.sh: s_t,a_t -> i/j/k/l).
+  # Collects transitions from PPO rollout; trains after actor (+ value) update via update_world_model.
+  actor_value_online_reward_wm:
+    enable: False
+    loss_coef: 0.1
+    # craftext: (ascii state, action token) -> i/j/k/l; gsm8k: (question, full solution) -> j/k
+    prompt_style: craftext  # craftext | gsm8k
+    reward_prompt: null  # null = default for prompt_style
+    max_reward_tokens: 1
+    micro_batch_size_per_gpu: null  # null = actor ppo_micro_batch_size_per_gpu
+    max_prompt_length: 2048  # GSM8K: question + solution in RM prompt
+
 ray_init:
   num_cpus: null # `None` means using all CPUs, which might cause hang if limited in systems like SLURM. Please set to a number allowed then.
   # Raylet warns when the FS that holds the session dir is this fraction full (default in Ray is 0.95).

@@ -9,7 +9,8 @@
 #
 # Usage:
 #   bash examples/ppo_trainer/ppo_gsm8k_actor_value.sh
-#   CRITIC_WARMUP=20 TRAIN_BATCH_SIZE=32 bash examples/ppo_trainer/ppo_gsm8k_actor_value.sh
+#   ACTOR_VALUE_ONLINE_REWARD_WM=true bash examples/ppo_trainer/ppo_gsm8k_actor_value.sh
+#   bash examples/ppo_trainer/ppo_gsm8k_actor_value_reward_wm.sh
 
 set -e
 
@@ -20,10 +21,15 @@ CRITIC_WARMUP="${CRITIC_WARMUP:-0}"
 ACTOR_VALUE_LOSS_COEF="${ACTOR_VALUE_LOSS_COEF:-1.0}"
 ACTOR_VALUE_SEPARATE_STEPS="${ACTOR_VALUE_SEPARATE_STEPS:-true}"
 ACTOR_VALUE_TARGET_ENCODING="${ACTOR_VALUE_TARGET_ENCODING:-two_hot}"
-ACTOR_VALUE_ENTROPY_COEF="${ACTOR_VALUE_ENTROPY_COEF:-0}"
-RETURN_BIN_MIN="${RETURN_BIN_MIN:--1}"
-RETURN_BIN_MAX="${RETURN_BIN_MAX:-3}"
+ACTOR_VALUE_ENTROPY_COEF="${ACTOR_VALUE_ENTROPY_COEF:-0.1}"
+RETURN_BIN_MIN="${RETURN_BIN_MIN:--0.2}"
+RETURN_BIN_MAX="${RETURN_BIN_MAX:-1.2}"
 RETURN_BIN_STEP="${RETURN_BIN_STEP:-0.2}"
+ACTOR_VALUE_ONLINE_REWARD_WM="${ACTOR_VALUE_ONLINE_REWARD_WM:-false}"
+ACTOR_VALUE_REWARD_WM_LOSS_COEF="${ACTOR_VALUE_REWARD_WM_LOSS_COEF:-0.1}"
+ACTOR_VALUE_REWARD_WM_PROMPT_STYLE="${ACTOR_VALUE_REWARD_WM_PROMPT_STYLE:-gsm8k}"
+ACTOR_VALUE_REWARD_WM_MAX_PROMPT_LENGTH="${ACTOR_VALUE_REWARD_WM_MAX_PROMPT_LENGTH:-2048}"
+USE_ACTOR_LORA="${USE_ACTOR_LORA:-false}"
 
 echo "=========================================="
 echo "PPO GSM8K (dual-prompt actor-value)"
@@ -37,6 +43,8 @@ echo "[INFO] critic_warmup: $CRITIC_WARMUP PPO steps"
 echo "[INFO] actor_value_loss_coef: $ACTOR_VALUE_LOSS_COEF"
 echo "[INFO] entropy: full vocabulary (entropy_over_valid_actions=False)"
 echo "[INFO] checkpoints: disabled (trainer.save_freq=-1)"
+echo "[INFO] USE_ACTOR_LORA=$USE_ACTOR_LORA (false -> full finetune, actor=value same weights)"
+echo "[INFO] actor_value_online_reward_wm: $ACTOR_VALUE_ONLINE_REWARD_WM (style=$ACTOR_VALUE_REWARD_WM_PROMPT_STYLE, loss_coef=$ACTOR_VALUE_REWARD_WM_LOSS_COEF)"
 
 export RUN_NAME="${RUN_NAME:-PPO GSM8K dual-prompt actor value}"
 
@@ -46,7 +54,7 @@ bash examples/ppo_trainer/run_gsm8k_lora_job.sh \
   "$TRAIN_BATCH_SIZE" \
   "$MAX_RESPONSE_LENGTH" \
   "$TOTAL_EPOCHS" \
-  true \
+  "$USE_ACTOR_LORA" \
   "$CRITIC_WARMUP" \
   +env.value_prompt_template_type=single_token_return \
   +env.value_return_min="$RETURN_BIN_MIN" \
@@ -72,4 +80,8 @@ bash examples/ppo_trainer/run_gsm8k_lora_job.sh \
   trainer.test_freq=20 \
   trainer.max_actor_ckpt_to_keep=1 \
   trainer.max_critic_ckpt_to_keep=1 \
-  trainer.default_local_dir=training_checkpoints/verl_agent_gsm8k_actor_value
+  trainer.default_local_dir=training_checkpoints/verl_agent_gsm8k_actor_value \
+  trainer.actor_value_online_reward_wm.enable="$ACTOR_VALUE_ONLINE_REWARD_WM" \
+  trainer.actor_value_online_reward_wm.loss_coef="$ACTOR_VALUE_REWARD_WM_LOSS_COEF" \
+  trainer.actor_value_online_reward_wm.prompt_style="$ACTOR_VALUE_REWARD_WM_PROMPT_STYLE" \
+  trainer.actor_value_online_reward_wm.max_prompt_length="$ACTOR_VALUE_REWARD_WM_MAX_PROMPT_LENGTH"

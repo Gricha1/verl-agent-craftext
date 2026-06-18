@@ -9,6 +9,7 @@ set -e
 
 NUM_OPTIMISTIC_ENVS="${NUM_OPTIMISTIC_ENVS:-64}"
 OPTIMISTIC_RESET_RATIO="${OPTIMISTIC_RESET_RATIO:-8}"
+USE_ACTOR_LORA="${USE_ACTOR_LORA:-false}"
 
 echo "=========================================="
 echo "PPO debug_square_8x8 (vocab entropy)"
@@ -18,6 +19,8 @@ echo "[INFO] OPTIMISTIC_RESET_RATIO=$OPTIMISTIC_RESET_RATIO"
 echo "[INFO] Map: 8x8 — stone / wood / water (adjacent = success)"
 echo "[INFO] prompt: single_token_action, max_response_length=1"
 echo "[INFO] entropy: full vocabulary (entropy_over_valid_actions=False)"
+echo "[INFO] USE_ACTOR_LORA=$USE_ACTOR_LORA (false -> full finetune actor; critic lora_rank=0)"
+echo "[INFO] auto_reset: false (one episode per env slot, max 50 steps)"
 echo "[INFO] validation: every 20 PPO steps"
 echo "[INFO] checkpoints: every 20 PPO steps, keep last 1 -> training_checkpoints/verl_agent_caged_craftext_debug_square"
 
@@ -29,10 +32,10 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   true \
   "$NUM_OPTIMISTIC_ENVS" \
   1 \
-  true \
+  false \
   false \
   8000 \
-  true \
+  "$USE_ACTOR_LORA" \
   single_token_action \
   0 \
   ascii \

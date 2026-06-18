@@ -710,6 +710,8 @@ class RewardWorldModelTrainer:
         prompt_template: Optional[str] = None,
         max_reward_tokens: int = 1,
         device: str = "cuda",
+        prompt_style: str = "craftext",
+        max_prompt_length: int = 2048,
     ):
         from agent_system.environments.prompts.world_model_reward import (
             format_reward_prompt,
@@ -720,6 +722,7 @@ class RewardWorldModelTrainer:
         self.tokenizer = tokenizer
         self.device = device
         self.max_reward_tokens = max_reward_tokens
+        self.max_prompt_length = int(max_prompt_length)
         self._format_reward_target = format_reward_target
         self._parse_reward_prediction = None
         from agent_system.environments.prompts import world_model_reward as _wm_reward
@@ -732,6 +735,16 @@ class RewardWorldModelTrainer:
                 action=action,
                 task=(task or "").strip() or "Unknown task",
             )
+        elif str(prompt_style).lower() == "gsm8k":
+            from agent_system.environments.prompts.world_model_reward_gsm8k import (
+                format_gsm8k_reward_prompt,
+                format_gsm8k_reward_target,
+                parse_gsm8k_reward_prediction,
+            )
+
+            self._format_prompt = format_gsm8k_reward_prompt
+            self._format_reward_target = format_gsm8k_reward_target
+            self._parse_reward_prediction = parse_gsm8k_reward_prediction
         else:
             self._format_prompt = format_reward_prompt
 
@@ -829,7 +842,7 @@ class RewardWorldModelTrainer:
             input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(
                 prompt=prompt_text,
                 tokenizer=self.tokenizer,
-                max_length=2048,
+                max_length=self.max_prompt_length,
                 pad_token_id=self.tokenizer.pad_token_id,
                 left_pad=True,
                 truncation="error",

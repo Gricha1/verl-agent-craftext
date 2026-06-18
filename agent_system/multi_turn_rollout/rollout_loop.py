@@ -23,6 +23,20 @@ import verl.utils.torch_functional as verl_F
 from transformers import PreTrainedTokenizer
 import uuid
 from verl.models.transformers.qwen2_vl import get_rope_index
+
+
+def resolve_rollout_wm_task(config) -> str | None:
+    """Which WM transition fields to store during rollout (reward | inverse_action | latent)."""
+    try:
+        wm_cfg = config.trainer.get("world_model", {}) if hasattr(config, "trainer") else {}
+        if wm_cfg and bool(wm_cfg.get("enable", False)):
+            return str(wm_cfg.get("task", "latent"))
+        av_rm = config.trainer.get("actor_value_online_reward_wm", {}) if hasattr(config, "trainer") else {}
+        if av_rm and bool(av_rm.get("enable", False)):
+            return "reward"
+    except Exception:
+        pass
+    return None
 from agent_system.multi_turn_rollout.utils import process_image, to_list_of_dict, torch_to_numpy, filter_group_data
 from agent_system.environments import EnvironmentManagerBase
 from typing import List, Dict, Optional
@@ -390,9 +404,15 @@ class TrajectoryCollector:
         wm_reward_val_enabled = (
             not is_train
             and world_model_trainer is not None
-            and bool(wm_cfg.get("enable", False))
-            and wm_cfg.get("task", "latent") == "reward"
             and hasattr(world_model_trainer, "predict_rewards")
+            and (
+                (bool(wm_cfg.get("enable", False)) and wm_cfg.get("task", "latent") == "reward")
+                or bool(
+                    OmegaConf.select(
+                        self.config, "trainer.actor_value_online_reward_wm.enable", default=False
+                    )
+                )
+            )
         )
 
         # Initial observations from the environment
@@ -728,10 +748,8 @@ class TrajectoryCollector:
             batch.non_tensor_batch['active_masks'] = torch_to_numpy(active_masks, is_object=True)
             
             # Store next observations only when needed (e.g., world model training).
-            wm_cfg = self.config.trainer.get("world_model", {}) if hasattr(self.config, "trainer") else {}
-            wm_enabled = bool(wm_cfg.get("enable", False))
-            if wm_enabled:
-                wm_task = wm_cfg.get("task", "latent")
+            wm_task = resolve_rollout_wm_task(self.config)
+            if wm_task:
                 if wm_task == "inverse_action":
                     if isinstance(obs, dict) and obs.get("anchor") is not None:
                         batch.non_tensor_batch["curr_obs_ascii"] = np.array(obs["anchor"], dtype=object)
