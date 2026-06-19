@@ -84,4 +84,5 @@ bash examples/ppo_trainer/run_gsm8k_lora_job.sh \
   trainer.actor_value_online_reward_wm.enable="$ACTOR_VALUE_ONLINE_REWARD_WM" \
   trainer.actor_value_online_reward_wm.loss_coef="$ACTOR_VALUE_REWARD_WM_LOSS_COEF" \
   trainer.actor_value_online_reward_wm.prompt_style="$ACTOR_VALUE_REWARD_WM_PROMPT_STYLE" \
-  trainer.actor_value_online_reward_wm.max_prompt_length="$ACTOR_VALUE_REWARD_WM_MAX_PROMPT_LENGTH"
+  trainer.actor_value_online_reward_wm.max_prompt_length="$ACTOR_VALUE_REWARD_WM_MAX_PROMPT_LENGTH" \
+  "$@"

@@ -9,7 +9,9 @@ set -e
 
 NUM_OPTIMISTIC_ENVS="${NUM_OPTIMISTIC_ENVS:-64}"
 OPTIMISTIC_RESET_RATIO="${OPTIMISTIC_RESET_RATIO:-8}"
-USE_ACTOR_LORA="${USE_ACTOR_LORA:-false}"
+USE_ACTOR_LORA="${USE_ACTOR_LORA:-true}"
+CRITIC_LORA_RANK="${CRITIC_LORA_RANK:-64}"
+CRITIC_LORA_ALPHA="${CRITIC_LORA_ALPHA:-64}"
 
 echo "=========================================="
 echo "PPO debug_square_8x8 (vocab entropy)"
@@ -19,7 +21,8 @@ echo "[INFO] OPTIMISTIC_RESET_RATIO=$OPTIMISTIC_RESET_RATIO"
 echo "[INFO] Map: 8x8 — stone / wood / water (adjacent = success)"
 echo "[INFO] prompt: single_token_action, max_response_length=1"
 echo "[INFO] entropy: full vocabulary (entropy_over_valid_actions=False)"
-echo "[INFO] USE_ACTOR_LORA=$USE_ACTOR_LORA (false -> full finetune actor; critic lora_rank=0)"
+echo "[INFO] USE_ACTOR_LORA=$USE_ACTOR_LORA (actor lora_rank=64 when true)"
+echo "[INFO] CRITIC_LORA_RANK=$CRITIC_LORA_RANK CRITIC_LORA_ALPHA=$CRITIC_LORA_ALPHA"
 echo "[INFO] auto_reset: false (one episode per env slot, max 50 steps)"
 echo "[INFO] validation: every 20 PPO steps"
 echo "[INFO] checkpoints: every 20 PPO steps, keep last 1 -> training_checkpoints/verl_agent_caged_craftext_debug_square"
@@ -49,6 +52,8 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
   actor_rollout_ref.actor.entropy_coeff=0.01 \
   actor_rollout_ref.actor.entropy_over_valid_actions=False \
+  critic.model.lora_rank="$CRITIC_LORA_RANK" \
+  critic.model.lora_alpha="$CRITIC_LORA_ALPHA" \
   trainer.resume_mode=disable \
   trainer.save_freq=-1 \
   trainer.test_freq=20 \
