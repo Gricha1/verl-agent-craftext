@@ -272,9 +272,10 @@ class CagedCraftextWorker:
         self._reset_counter = 0  # Счетчик для добавления случайности при каждом reset
 
         # --- Компиляция на уровне экземпляра ---
-        # Компилируем bound-функции, не делая wrapper/env_params static_arg.
-        # НЕ указываем action/instruction_idx в static_argnames, если они меняются
-        self._jitted_reset = jax.jit(self.wrapper.reset, static_argnames=['env_params'])
+        # instruction_idx static: separate compile per stone/wood/water (0/1/2); -1 = random task.
+        self._jitted_reset = jax.jit(
+            self.wrapper.reset, static_argnames=["env_params", "instruction_idx"]
+        )
         self._jitted_step = jax.jit(self.wrapper.step, static_argnames=['env_params'])
 
         self.observation_type = env_kwargs.get('observation_type', 'ascii')
@@ -315,13 +316,17 @@ class CagedCraftextWorker:
             print(f"[DEBUG CagedCraftext] Calling _jitted_step. action={action}, state_shapes={shapes}")
             self._debug_step_count += 1
 
-        # Вызываем скомпилированную функцию, передавая только числовой env_state
-        obs_jax, new_state_jax, reward_jax, done_jax, info_jax = self._jitted_step(
-            step_key,
-            self.state,
-            action,
-            env_params=self.env_params
-        )
+        try:
+            obs_jax, new_state_jax, reward_jax, done_jax, info_jax = self._jitted_step(
+                step_key,
+                self.state,
+                action,
+                env_params=self.env_params
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"CagedCraftextWorker.step failed (action={action}): {exc}"
+            ) from exc
 
         # Заметь: если ты хочешь хранить состояние на host, можно делать jax.device_get здесь
         self.state = new_state_jax
@@ -410,11 +415,16 @@ class CagedCraftextWorker:
         if _CAGED_CRAFTEXT_DEBUG_SHAPES and self._debug_reset_count < 5:
             print(f"[DEBUG CagedCraftext] Calling _jitted_reset. instruction_idx={scenario_idx}, reset_counter={self._reset_counter}")
             self._debug_reset_count += 1
-        obs_jax, new_state_jax = self._jitted_reset(
-            reset_key,
-            instruction_idx=scenario_idx,
-            env_params=self.env_params
-        )
+        try:
+            obs_jax, new_state_jax = self._jitted_reset(
+                reset_key,
+                self.env_params,
+                int(scenario_idx),
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"CagedCraftextWorker.reset failed (scenario_idx={scenario_idx}): {exc}"
+            ) from exc
 
         self.state = new_state_jax
 
@@ -577,6 +587,16 @@ class CagedCraftextMultiProcessEnv(gym.Env):
 
         # Индексы воркеров, для которых при step/reset возвращать render_frame (для записи видео)
         self._record_video_worker_idxs = set()
+        self._reset_instruction_override = None
+        self._validation_scenario_pins: dict[int, int] | None = None
+
+    def set_reset_instruction_override(self, idx: int | None):
+        """Force instruction_idx on next reset (validation: stone/wood/water). None = default sampling."""
+        self._reset_instruction_override = idx
+
+    def set_validation_scenario_pins(self, pins: dict[int, int] | None):
+        """One-shot: pin Ray worker index -> scenario index on next reset (e.g. 0=stone, 1=wood, 2=water)."""
+        self._validation_scenario_pins = dict(pins) if pins is not None else None
 
     def set_record_video_worker_idxs(self, idxs):
         """Установить индексы воркеров, для которых возвращать render_frame в info (для записи видео)."""
@@ -588,15 +608,36 @@ class CagedCraftextMultiProcessEnv(gym.Env):
             worker.step.remote(action, return_render=return_render)
             for worker, action, return_render in zip(self._workers, actions, return_render_flags)
         ]
-        results = ray.get(futures)
+        try:
+            results = ray.get(futures)
+        except ray.exceptions.RayTaskError as exc:
+            print(f"[CagedCraftextMultiProcessEnv] step RayTaskError: {exc}", flush=True)
+            raise
+        except Exception as exc:
+            print(f"[CagedCraftextMultiProcessEnv] step failed: {exc}", flush=True)
+            raise
         obs_list, reward_list, done_list, info_list = zip(*results)
         return list(obs_list), list(reward_list), list(done_list), list(info_list)
 
     def reset(self):
-        fixed = self._env_kwargs.get("fixed_scenario_idx")
-        if fixed is not None:
+        fixed = self._reset_instruction_override
+        if fixed is None:
+            fixed = self._env_kwargs.get("fixed_scenario_idx")
+        pins = self._validation_scenario_pins
+        self._validation_scenario_pins = None
+
+        if pins:
+            random_idxs = self._rng.choice(self.scenario_idxs, size=self.env_num, replace=True)
+            random_idxs = np.repeat(random_idxs, self.group_n).tolist()
+            idxs = []
+            for worker_i in range(len(self._workers)):
+                if worker_i in pins:
+                    idxs.append(int(pins[worker_i]))
+                else:
+                    idxs.append(int(random_idxs[worker_i]))
+        elif fixed is not None:
             scenario = int(fixed)
-            idxs = np.repeat(scenario, self.env_num).tolist()
+            idxs = np.repeat(np.full(self.env_num, scenario, dtype=int), self.group_n).tolist()
         else:
             # Выбираем случайные индексы сценариев для каждого env в группе
             idxs = self._rng.choice(self.scenario_idxs, size=self.env_num, replace=True)
@@ -608,7 +649,14 @@ class CagedCraftextMultiProcessEnv(gym.Env):
             worker.reset.remote(idx, return_render=return_render)
             for worker, idx, return_render in zip(self._workers, idxs, return_render_flags)
         ]
-        results = ray.get(futures)
+        try:
+            results = ray.get(futures)
+        except ray.exceptions.RayTaskError as exc:
+            print(f"[CagedCraftextMultiProcessEnv] reset RayTaskError: {exc}", flush=True)
+            raise
+        except Exception as exc:
+            print(f"[CagedCraftextMultiProcessEnv] reset failed: {exc}", flush=True)
+            raise
         obs_list, info_list = zip(*results)
         return list(obs_list), list(info_list)
 
@@ -744,6 +792,8 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
             raise ValueError(f"Invalid observation type: {self.observation_type}")
 
         self._record_video_env_idxs: set[int] = set()
+        self._reset_instruction_override = None
+        self._fixed_instr_reset_fns: dict[int, object] = {}
         self._is_train = bool(is_train)
         self._episode_return_cum = np.zeros(self.env_num, dtype=np.float32)
         self._episode_steps = np.zeros(self.env_num, dtype=np.int32)
@@ -777,6 +827,26 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
     def set_record_video_worker_idxs(self, idxs):
         # Keep same API as MultiProcess env, but here idxs refer to env indices inside the batch.
         self._record_video_env_idxs = set(idxs) if idxs is not None else set()
+
+    def set_reset_instruction_override(self, idx: int | None):
+        """Force instruction_idx on next reset (validation: stone/wood/water). None = default sampling."""
+        self._reset_instruction_override = idx
+
+    def _reset_with_fixed_instruction(self, reset_key, instruction_idx: int):
+        """Batched reset with a constant scenario index (closure, not vmap over idx)."""
+        instruction_idx = int(instruction_idx)
+        if instruction_idx not in self._fixed_instr_reset_fns:
+            idx = instruction_idx
+
+            def _reset_one(rng, params):
+                return self.wrapper.reset(rng, params, instruction_idx=idx)
+
+            self._fixed_instr_reset_fns[instruction_idx] = jax.jit(
+                jax.vmap(_reset_one, in_axes=(0, None))
+            )
+        reset_key, _rng = jax.random.split(reset_key)
+        rngs = jax.random.split(_rng, self.env_num)
+        return self._fixed_instr_reset_fns[instruction_idx](rngs, self.env_params)
 
     def _render_text_from_state_batched(self, state_batched) -> list[str]:
         """ASCII grid renders for each env slot from a batched TextEnvStateCMDP."""
@@ -921,7 +991,12 @@ class CagedCraftextOptimisticVecEnv(gym.Env):
 
     def reset(self):
         self.key, reset_key = jax.random.split(self.key)
-        obs, state = self._vec_env.reset(reset_key, self.env_params)
+        if self._reset_instruction_override is not None:
+            obs, state = self._reset_with_fixed_instruction(
+                reset_key, int(self._reset_instruction_override)
+            )
+        else:
+            obs, state = self._vec_env.reset(reset_key, self.env_params)
         self.state = state
         self._episode_return_cum[:] = 0.0
         self._episode_steps[:] = 0

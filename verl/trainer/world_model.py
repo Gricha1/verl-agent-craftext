@@ -712,6 +712,8 @@ class RewardWorldModelTrainer:
         device: str = "cuda",
         prompt_style: str = "craftext",
         max_prompt_length: int = 2048,
+        gsm8k_mc_q_step_split: str = "newline",
+        gsm8k_mc_q_max_steps_per_traj: int = 32,
     ):
         from agent_system.environments.prompts.world_model_reward import (
             format_reward_prompt,
@@ -723,6 +725,9 @@ class RewardWorldModelTrainer:
         self.device = device
         self.max_reward_tokens = max_reward_tokens
         self.max_prompt_length = int(max_prompt_length)
+        self._prompt_style = str(prompt_style).lower()
+        self._gsm8k_mc_q_step_split = str(gsm8k_mc_q_step_split)
+        self._gsm8k_mc_q_max_steps_per_traj = int(gsm8k_mc_q_max_steps_per_traj)
         self._format_reward_target = format_reward_target
         self._parse_reward_prediction = None
         from agent_system.environments.prompts import world_model_reward as _wm_reward
@@ -735,7 +740,7 @@ class RewardWorldModelTrainer:
                 action=action,
                 task=(task or "").strip() or "Unknown task",
             )
-        elif str(prompt_style).lower() == "gsm8k":
+        elif self._prompt_style == "gsm8k":
             from agent_system.environments.prompts.world_model_reward_gsm8k import (
                 format_gsm8k_reward_prompt,
                 format_gsm8k_reward_target,
@@ -745,39 +750,76 @@ class RewardWorldModelTrainer:
             self._format_prompt = format_gsm8k_reward_prompt
             self._format_reward_target = format_gsm8k_reward_target
             self._parse_reward_prediction = parse_gsm8k_reward_prediction
+        elif self._prompt_style == "gsm8k_mc_q":
+            from agent_system.environments.prompts.world_model_reward_gsm8k_q import (
+                expand_gsm8k_mc_q_examples,
+                format_gsm8k_mc_q_prompt,
+                format_gsm8k_reward_target,
+                parse_gsm8k_reward_prediction,
+            )
+
+            self._expand_gsm8k_mc_q = expand_gsm8k_mc_q_examples
+            self._format_mc_q_prompt = format_gsm8k_mc_q_prompt
+            self._format_prompt = None
+            self._format_reward_target = format_gsm8k_reward_target
+            self._parse_reward_prediction = parse_gsm8k_reward_prediction
         else:
             self._format_prompt = format_reward_prompt
 
-    def prepare_batch(
+    def _build_training_examples(
         self,
         curr_observations: list[str],
         action_tokens: list[str],
         step_rewards: list[float],
-        task_instructions: list[str] | None = None,
-    ) -> DataProto:
-        """Tokenize (task, s_t, a_t) -> r_t pairs for update_world_model."""
-        if task_instructions is None:
-            task_instructions = [""] * len(curr_observations)
-        sequences: list[torch.Tensor] = []
-        response_rows: list[torch.Tensor] = []
+        task_instructions: list[str],
+    ) -> list[tuple[str, float]]:
+        """Return (prompt_text, target_reward) rows for SFT."""
+        rows: list[tuple[str, float]] = []
+        if self._prompt_style == "gsm8k_mc_q":
+            for state, action, reward, task in zip(
+                curr_observations, action_tokens, step_rewards, task_instructions
+            ):
+                question = str(task or state or "").strip()
+                expanded = self._expand_gsm8k_mc_q(
+                    question,
+                    str(action or ""),
+                    float(reward),
+                    step_split=self._gsm8k_mc_q_step_split,
+                    max_steps_per_traj=self._gsm8k_mc_q_max_steps_per_traj,
+                )
+                for q, prefix, step, y in expanded:
+                    prompt = self._format_mc_q_prompt(q, prefix, step, task=q)
+                    rows.append((prompt, y))
+            return rows
 
         for state, action, reward, task in zip(
             curr_observations, action_tokens, step_rewards, task_instructions
         ):
             prompt = self._format_prompt(state=state, action=action, task=task)
+            rows.append((prompt, float(reward)))
+        return rows
+
+    def _tokenize_sft_rows(self, rows: list[tuple[str, float]]) -> DataProto:
+        from agent_system.environments.env_package.caged_craftext.reward_tokens import (
+            tokenize_reward_response_ids,
+        )
+
+        sequences: list[torch.Tensor] = []
+        response_rows: list[torch.Tensor] = []
+        for prompt, reward in rows:
             chat = [{"role": "user", "content": prompt}]
             prompt_text = self.tokenizer.apply_chat_template(
                 chat, add_generation_prompt=True, tokenize=False
             )
             prompt_ids = self.tokenizer(
-                prompt_text, return_tensors="pt", add_special_tokens=False
+                prompt_text,
+                return_tensors="pt",
+                add_special_tokens=False,
+                truncation=True,
+                max_length=self.max_prompt_length,
             )["input_ids"][0]
 
             target_text = self._format_reward_target(reward)
-            from agent_system.environments.env_package.caged_craftext.reward_tokens import (
-                tokenize_reward_response_ids,
-            )
-
             response_ids = torch.tensor(
                 tokenize_reward_response_ids(self.tokenizer, target_text, add_eos=False),
                 dtype=torch.long,
@@ -787,6 +829,9 @@ class RewardWorldModelTrainer:
 
             sequences.append(torch.cat([prompt_ids, response_ids], dim=0))
             response_rows.append(response_ids)
+
+        if not sequences:
+            raise ValueError("Reward WM prepare_batch: no training rows after expansion")
 
         max_len = max(seq.shape[0] for seq in sequences)
         max_response_len = max(r.shape[0] for r in response_rows)
@@ -819,6 +864,21 @@ class RewardWorldModelTrainer:
         }
         batch_dict["position_ids"] = compute_position_id_with_mask(batch_dict["attention_mask"])
         return DataProto.from_dict(tensors=batch_dict, non_tensors={}, meta_info={})
+
+    def prepare_batch(
+        self,
+        curr_observations: list[str],
+        action_tokens: list[str],
+        step_rewards: list[float],
+        task_instructions: list[str] | None = None,
+    ) -> DataProto:
+        """Tokenize (task, s_t, a_t) -> r_t pairs for update_world_model."""
+        if task_instructions is None:
+            task_instructions = [""] * len(curr_observations)
+        rows = self._build_training_examples(
+            curr_observations, action_tokens, step_rewards, task_instructions
+        )
+        return self._tokenize_sft_rows(rows)
 
     def _build_generation_batch(
         self,

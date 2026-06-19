@@ -822,11 +822,25 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
         self.memory = SimpleMemory()
         super().__init__(envs, projection_f, config)
 
-    def set_record_video(self, record: bool = True, env_idx: int = 0):
+    def set_record_video(self, record: bool = True, env_idx: int = 0, env_idxs: list[int] | None = None):
         """Включить/выключить запись кадров для одного env (для записи видео траектории в Comet ML)."""
         if hasattr(self.envs, 'set_record_video_worker_idxs'):
-            self.envs.set_record_video_worker_idxs([env_idx] if record else None)
-    
+            if env_idxs is not None:
+                idxs = list(env_idxs) if record else None
+            else:
+                idxs = [env_idx] if record else None
+            self.envs.set_record_video_worker_idxs(idxs)
+
+    def set_validation_scenario_idx(self, idx: int | None):
+        """Pin debug_square task (0=stone, 1=wood, 2=water) for the next env reset."""
+        if hasattr(self.envs, "set_reset_instruction_override"):
+            self.envs.set_reset_instruction_override(idx)
+
+    def set_validation_scenario_pins(self, pins: dict[int, int] | None):
+        """One-shot: worker slot -> scenario (e.g. {0:0, 1:1, 2:2}) on next reset."""
+        if hasattr(self.envs, "set_validation_scenario_pins"):
+            self.envs.set_validation_scenario_pins(pins)
+
     def reset(self, kwargs) -> Dict[str, Any]:
         obs, infos = self.envs.reset()
         self.tasks = [info.get('instruction', 'No instruction found') for info in infos]
@@ -1382,6 +1396,9 @@ def make_envs(config):
         
         # 3. Создаем train и val среды
         optimistic_reset_ratio = getattr(config.env, "optimistic_reset_ratio", None)
+        _debug_square = "debug_square" in str(config.env.craftext_settings)
+        # debug_square val: 1 batched slot (stone/wood/water via scenario override), not 16 Ray workers.
+        _val_env_num = 1 if _debug_square else int(config.data.val_batch_size)
         if use_optimistic_parallel:
             _envs = build_caged_craftext_envs_optimistic(
                 seed=config.env.seed,
@@ -1392,15 +1409,30 @@ def make_envs(config):
                 resources_per_worker=resources_per_worker,
                 reset_ratio=optimistic_reset_ratio,
             )
-            _val_envs = build_caged_craftext_envs_optimistic(
-                seed=config.env.seed + 1000,
-                env_num=config.data.val_batch_size,
-                group_n=1,
-                is_train=False,
-                env_kwargs=env_kwargs,
-                resources_per_worker=resources_per_worker,
-                reset_ratio=optimistic_reset_ratio,
-            )
+            if _debug_square:
+                # Same as validate_debug_square_actor_value_last_ckpt.sh: 1 Ray env worker, not optimistic JAX reset.
+                print(
+                    "[make_envs] debug_square: val env Ray MultiProcess env_num=1 "
+                    "(stone/wood/water via set_validation_scenario_idx)"
+                )
+                _val_envs = build_caged_craftext_envs(
+                    seed=config.env.seed + 1000,
+                    env_num=1,
+                    group_n=1,
+                    is_train=False,
+                    env_kwargs=env_kwargs,
+                    resources_per_worker=resources_per_worker,
+                )
+            else:
+                _val_envs = build_caged_craftext_envs_optimistic(
+                    seed=config.env.seed + 1000,
+                    env_num=int(config.data.val_batch_size),
+                    group_n=1,
+                    is_train=False,
+                    env_kwargs=env_kwargs,
+                    resources_per_worker=resources_per_worker,
+                    reset_ratio=optimistic_reset_ratio,
+                )
         else:
             _envs = build_caged_craftext_envs(
                 seed=config.env.seed,
@@ -1412,7 +1444,7 @@ def make_envs(config):
             )
             _val_envs = build_caged_craftext_envs(
                 seed=config.env.seed + 1000,
-                env_num=config.data.val_batch_size,
+                env_num=_val_env_num,
                 group_n=1,
                 is_train=False,
                 env_kwargs=env_kwargs,

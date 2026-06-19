@@ -57,7 +57,7 @@ echo "[INFO] entropy_band (AEnt): enable=$ENTROPY_BAND_ENABLE range=[$ENTROPY_BA
 echo "[INFO] USE_ACTOR_LORA=$USE_ACTOR_LORA (true -> LoRA rank 64, actor=value same weights)"
 echo "[INFO] auto_reset: false (one episode per env slot, max 50 steps)"
 echo "[INFO] actor_value_online_reward_wm: $ACTOR_VALUE_ONLINE_REWARD_WM (loss_coef=$ACTOR_VALUE_REWARD_WM_LOSS_COEF)"
-echo "[INFO] validation: every 20 PPO steps, 2 GIFs (actor prompt + critic prompt)"
+echo "[INFO] validation: every 20 PPO steps — trajectory GIF, actor Q panel (frame+prompt + return hist), action histogram"
 echo "[INFO] checkpoints: every 20 PPO steps, keep last 1 -> training_checkpoints/verl_agent_caged_craftext_debug_square_actor_value"
 
 export RUN_NAME="${RUN_NAME:-PPO Debug Square 8x8 dual-prompt actor value}"

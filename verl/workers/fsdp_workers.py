@@ -778,9 +778,10 @@ class ActorRolloutRefWorker(Worker):
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     @torch.no_grad()
     def generate_value_tokens(self, prompts: DataProto):
-        """Constrained 1-token return bin from critic prompt."""
+        """Constrained return-bin decode from critic prompt (1 or more tokens)."""
         from verl.utils.actor_value_token import (
             constrained_generate_return_token,
+            constrained_generate_return_token_sequence,
             return_bin_spec_from_actor_cfg,
         )
 
@@ -788,6 +789,7 @@ class ActorRolloutRefWorker(Worker):
 
         temperature = prompts.meta_info.get("temperature", self.config.rollout.temperature)
         do_sample = prompts.meta_info.get("do_sample", False)
+        num_tokens = int(prompts.meta_info.get("value_num_tokens", 1))
 
         with self.rollout_sharding_manager:
             prompts_sharded = self.rollout_sharding_manager.preprocess_data(prompts)
@@ -802,17 +804,95 @@ class ActorRolloutRefWorker(Worker):
                 value_pos = compute_position_id_with_mask(value_mask)
 
             spec = return_bin_spec_from_actor_cfg(self.config.actor)
-            token_ids, _log_probs = constrained_generate_return_token(
-                self.actor_module_fsdp,
-                value_ids,
-                value_mask,
-                value_pos,
-                self.tokenizer,
-                temperature=temperature,
-                do_sample=do_sample,
-                spec=spec,
+            if num_tokens <= 1:
+                token_ids, _log_probs = constrained_generate_return_token(
+                    self.actor_module_fsdp,
+                    value_ids,
+                    value_mask,
+                    value_pos,
+                    self.tokenizer,
+                    temperature=temperature,
+                    do_sample=do_sample,
+                    spec=spec,
+                )
+                responses = token_ids.unsqueeze(-1)
+            else:
+                token_ids, _log_probs = constrained_generate_return_token_sequence(
+                    self.actor_module_fsdp,
+                    value_ids,
+                    value_mask,
+                    value_pos,
+                    self.tokenizer,
+                    num_tokens=num_tokens,
+                    temperature=temperature,
+                    do_sample=do_sample,
+                    spec=spec,
+                )
+                responses = token_ids
+            output = DataProto.from_dict(
+                tensors={"responses": responses},
+                meta_info=prompts.meta_info if hasattr(prompts, "meta_info") else {},
             )
-            responses = token_ids.unsqueeze(-1)
+            output = self.rollout_sharding_manager.postprocess_data(output)
+
+        output = output.to("cpu")
+        get_torch_device().empty_cache()
+        return output
+
+    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
+    @torch.no_grad()
+    def generate_actor_q_returns(self, prompts: DataProto):
+        """Validation Q: actor LLM decodes 1+ constrained return-bin tokens (no actor_value_token required)."""
+        from agent_system.environments.env_package.caged_craftext.return_tokens import (
+            return_bin_spec_from_meta,
+        )
+        from verl.utils.actor_value_token import (
+            constrained_generate_return_token,
+            constrained_generate_return_token_sequence,
+        )
+
+        temperature = prompts.meta_info.get("temperature", self.config.rollout.temperature)
+        do_sample = prompts.meta_info.get("do_sample", False)
+        num_tokens = int(prompts.meta_info.get("value_num_tokens", 1))
+        spec = return_bin_spec_from_meta(prompts.meta_info, actor_cfg=self.config.actor)
+
+        with self.rollout_sharding_manager:
+            prompts_sharded = self.rollout_sharding_manager.preprocess_data(prompts)
+            value_ids = prompts_sharded.batch["value_input_ids"]
+            value_mask = prompts_sharded.batch.get("value_attention_mask", None)
+            value_pos = prompts_sharded.batch.get("value_position_ids", None)
+            if value_mask is None:
+                value_mask = torch.ones_like(value_ids, dtype=torch.long)
+            if value_pos is None:
+                from verl.utils.model import compute_position_id_with_mask
+
+                value_pos = compute_position_id_with_mask(value_mask)
+
+            if num_tokens <= 1:
+                token_ids, _log_probs = constrained_generate_return_token(
+                    self.actor_module_fsdp,
+                    value_ids,
+                    value_mask,
+                    value_pos,
+                    self.tokenizer,
+                    temperature=temperature,
+                    do_sample=do_sample,
+                    spec=spec,
+                )
+                responses = token_ids.unsqueeze(-1)
+            else:
+                token_ids, _log_probs = constrained_generate_return_token_sequence(
+                    self.actor_module_fsdp,
+                    value_ids,
+                    value_mask,
+                    value_pos,
+                    self.tokenizer,
+                    num_tokens=num_tokens,
+                    temperature=temperature,
+                    do_sample=do_sample,
+                    spec=spec,
+                )
+                responses = token_ids
             output = DataProto.from_dict(
                 tensors={"responses": responses},
                 meta_info=prompts.meta_info if hasattr(prompts, "meta_info") else {},

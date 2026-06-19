@@ -24,7 +24,7 @@ echo "[INFO] entropy: full vocabulary (entropy_over_valid_actions=False)"
 echo "[INFO] USE_ACTOR_LORA=$USE_ACTOR_LORA (actor lora_rank=64 when true)"
 echo "[INFO] CRITIC_LORA_RANK=$CRITIC_LORA_RANK CRITIC_LORA_ALPHA=$CRITIC_LORA_ALPHA"
 echo "[INFO] auto_reset: false (one episode per env slot, max 50 steps)"
-echo "[INFO] validation: every 20 PPO steps"
+echo "[INFO] validation: every 20 PPO steps — trajectory GIF, actor Q panel (frame+prompt + return hist)"
 echo "[INFO] checkpoints: every 20 PPO steps, keep last 1 -> training_checkpoints/verl_agent_caged_craftext_debug_square"
 
 export RUN_NAME="${RUN_NAME:-PPO Debug Square 8x8}"
@@ -46,6 +46,9 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   +env.use_optimistic_parallel=True \
   +env.optimistic_reset_ratio="$OPTIMISTIC_RESET_RATIO" \
   +env.use_ray_text_render_workers=False \
+  +env.value_return_min=-5 \
+  +env.value_return_max=6 \
+  +env.value_return_bin_step=0.4 \
   ++env.use_jax_gpu=False \
   ++env.jax_gpu_fraction=0.15 \
   actor_rollout_ref.rollout.gpu_memory_utilization=0.50 \

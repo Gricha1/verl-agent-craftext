@@ -173,6 +173,7 @@ class InstructionWrapper(Wrapper):
                 ach_mask,
                 instruction_done,
                 instruction_idx=env_state.idx,
+                game_map=state.map,
             )
         else:
             # Craftax achievement reward (scaled unless EXPLORE mode).

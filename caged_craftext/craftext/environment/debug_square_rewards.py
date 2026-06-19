@@ -1,4 +1,4 @@
-"""Reward shaping and goal checks for the fixed 8x8 debug_square map."""
+"""Reward shaping and goal checks for the 8x8 debug_square map (resources may move each reset)."""
 from __future__ import annotations
 
 import jax
@@ -6,7 +6,7 @@ import jax.numpy as jnp
 
 from craftext.environment.craftext_constants import Achievement, AchievementState
 
-# Corner resource cells (row, col) — see debug_square_world_gen.py
+# Goal tiles: inner corners only; assignment shuffled each reset (see debug_square_world_gen.py).
 _DEBUG_ACHIEVEMENT_IDS = jnp.array(
     [
         Achievement.COLLECT_STONE,
@@ -72,6 +72,23 @@ def _normalize_achievement_mask(achievement_mask) -> jnp.ndarray:
     return mask.reshape(-1)
 
 
+def debug_square_find_resource_cell(game_map, block_type_id) -> jnp.ndarray:
+    """(row, col) of the unique inner STONE/WOOD/WATER tile on the current map."""
+    game_map = jnp.asarray(game_map, dtype=jnp.int32)
+    block_type = jnp.asarray(block_type_id, dtype=jnp.int32).reshape(())
+    h, w = game_map.shape[0], game_map.shape[1]
+    rows = jnp.arange(1, h - 1, dtype=jnp.int32)
+    cols = jnp.arange(1, w - 1, dtype=jnp.int32)
+    rr, cc = jnp.meshgrid(rows, cols, indexing="ij")
+    flat_r = rr.reshape(-1)
+    flat_c = cc.reshape(-1)
+    matches = (game_map[flat_r, flat_c] == block_type).astype(jnp.float32)
+    weights = matches / (jnp.sum(matches) + 1e-8)
+    target_r = jnp.sum(weights * flat_r.astype(jnp.float32))
+    target_c = jnp.sum(weights * flat_c.astype(jnp.float32))
+    return jnp.array([target_r, target_c], dtype=jnp.int32)
+
+
 def debug_square_target_cell(achievement_mask) -> jnp.ndarray:
     """(row, col) of the resource block for the current task."""
     mask = _normalize_achievement_mask(achievement_mask)
@@ -113,20 +130,31 @@ def chebyshev_distance(player_pos, target_cell) -> jnp.ndarray:
     )
 
 
-def debug_square_target_cell_for_idx(instruction_idx) -> jnp.ndarray:
-    """Fixed goal cell from scenario index (stone=0, wood=1, water=2)."""
+def debug_square_target_cell_for_idx(
+    instruction_idx, game_map=None
+) -> jnp.ndarray:
+    """Goal cell from scenario index (stone=0, wood=1, water=2). Uses live map when provided."""
     idx = jnp.asarray(instruction_idx, dtype=jnp.int32).reshape(())
-    in_range = (idx >= 0) & (idx < _DEBUG_TARGET_CELLS_BY_IDX.shape[0])
-    target = _DEBUG_TARGET_CELLS_BY_IDX[
-        jnp.clip(idx, 0, _DEBUG_TARGET_CELLS_BY_IDX.shape[0] - 1)
-    ]
+    in_range = (idx >= 0) & (idx < _DEBUG_GOAL_BLOCK_BY_IDX.shape[0])
+    clipped = jnp.clip(idx, 0, _DEBUG_GOAL_BLOCK_BY_IDX.shape[0] - 1)
+    block_type = _DEBUG_GOAL_BLOCK_BY_IDX[clipped]
+
+    if game_map is not None:
+        from_map = debug_square_find_resource_cell(game_map, block_type)
+        fixed = _DEBUG_TARGET_CELLS_BY_IDX[clipped]
+        target = jnp.where(in_range, from_map, _DEBUG_TARGET_CELLS[0])
+        return target
+
+    target = _DEBUG_TARGET_CELLS_BY_IDX[clipped]
     return jnp.where(in_range, target, _DEBUG_TARGET_CELLS[0])
 
 
-def debug_square_resolve_target_cell(achievement_mask, instruction_idx=None) -> jnp.ndarray:
+def debug_square_resolve_target_cell(
+    achievement_mask, instruction_idx=None, game_map=None
+) -> jnp.ndarray:
     """Prefer instruction_idx on debug_square; fall back to achievement mask."""
     if instruction_idx is not None:
-        return debug_square_target_cell_for_idx(instruction_idx)
+        return debug_square_target_cell_for_idx(instruction_idx, game_map=game_map)
     return debug_square_target_cell(achievement_mask)
 
 
@@ -173,10 +201,14 @@ def debug_square_adjacent_to_goal(
         map_ok = debug_square_at_goal_from_map(
             env_state, achievement_mask, instruction_idx=instruction_idx
         )
+        game_map = env_state.map
     else:
         map_ok = jnp.array(False)
+        game_map = None
 
-    target = debug_square_resolve_target_cell(achievement_mask, instruction_idx=instruction_idx)
+    target = debug_square_resolve_target_cell(
+        achievement_mask, instruction_idx=instruction_idx, game_map=game_map
+    )
     coord_ok = chebyshev_distance(player_pos, target) <= 1
     return jnp.logical_or(map_ok, coord_ok)
 
@@ -186,9 +218,12 @@ def debug_square_navigation_reward(
     new_player_pos,
     achievement_mask,
     instruction_idx=None,
+    game_map=None,
 ) -> jnp.ndarray:
     """Potential-based shaping: d(s_t, goal) - d(s_{t+1}, goal) in grid cells (L1)."""
-    target = debug_square_resolve_target_cell(achievement_mask, instruction_idx=instruction_idx)
+    target = debug_square_resolve_target_cell(
+        achievement_mask, instruction_idx=instruction_idx, game_map=game_map
+    )
     prev_d = manhattan_distance(prev_player_pos, target).astype(jnp.float32)
     new_d = manhattan_distance(new_player_pos, target).astype(jnp.float32)
     return prev_d - new_d
@@ -201,6 +236,7 @@ def debug_square_step_reward(
     achievement_mask,
     instruction_done,
     instruction_idx=None,
+    game_map=None,
 ) -> jnp.ndarray:
     """
     debug_square_8x8:
@@ -214,6 +250,7 @@ def debug_square_step_reward(
         new_player_pos,
         achievement_mask,
         instruction_idx=instruction_idx,
+        game_map=game_map,
     )
     task_bonus = jnp.where(instruction_done, TASK_COMPLETION_REWARD, jnp.float32(0.0))
     return nav + task_bonus

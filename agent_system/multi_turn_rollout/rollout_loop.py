@@ -56,7 +56,13 @@ class TrajectoryCollector:
         self.tokenizer = tokenizer
         self.processor = processor
 
-    def _encode_user_prompt(self, prompt_text: str) -> dict:
+    def _encode_user_prompt(
+        self,
+        prompt_text: str,
+        *,
+        max_length: int | None = None,
+        truncation: str | None = None,
+    ) -> dict:
         """Tokenize a user-role prompt string (chat template + left pad)."""
         chat = np.array([{"content": prompt_text, "role": "user"}])
         if getattr(self.tokenizer, "chat_template", None):
@@ -69,10 +75,10 @@ class TrajectoryCollector:
         input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(
             prompt=prompt_with_chat_template,
             tokenizer=self.tokenizer,
-            max_length=self.config.data.max_prompt_length,
+            max_length=max_length if max_length is not None else self.config.data.max_prompt_length,
             pad_token_id=self.tokenizer.pad_token_id,
             left_pad=True,
-            truncation=self.config.data.truncation,
+            truncation=truncation if truncation is not None else self.config.data.truncation,
         )
         position_ids = compute_position_id_with_mask(attention_mask)
         return {
@@ -81,6 +87,92 @@ class TrajectoryCollector:
             "position_ids": position_ids[0],
             "prompt_text": prompt_text,
         }
+
+    def _validation_per_action_q_enabled(self) -> bool:
+        """Per-action Q panel on validation (actor LLM decodes 17 return tokens at t=0)."""
+        from omegaconf import OmegaConf
+
+        if not bool(OmegaConf.select(self.config, "trainer.validation_per_action_q.enable", default=True)):
+            return False
+        env_name = str(OmegaConf.select(self.config, "env.env_name", default="")).lower()
+        return "caged_craftext" in env_name
+
+    def _predict_per_action_returns_first_frame(
+        self,
+        *,
+        obs: dict,
+        infos: list,
+        record_video_env_idx: int,
+        actor_rollout_wg,
+        gen_batch_meta_info: dict | None,
+    ) -> tuple[list[str], list[float], list[str]]:
+        """One actor forward at t=0: 17 return tokens (one per action) in a single reply."""
+        from agent_system.environments.env_package.caged_craftext.projection import (
+            ACTION_TO_TEXT,
+            format_all_actions_return_prompt,
+        )
+        from agent_system.environments.env_package.caged_craftext.return_tokens import (
+            decode_return_token,
+            return_bin_spec_from_env,
+            return_token_legend_compact_for_spec,
+        )
+        from omegaconf import OmegaConf
+
+        info = infos[record_video_env_idx]
+        task = str(info.get("instruction", "") or "")
+        observation = str(info.get("text_render", "") or "")
+        if isinstance(obs, dict) and obs.get("anchor") is not None:
+            observation = str(obs["anchor"][record_video_env_idx] or observation)
+        constraint = ""
+        if isinstance(obs, dict) and obs.get("constraint") is not None:
+            constraint = str(obs["constraint"][record_video_env_idx] or "")
+
+        spec = return_bin_spec_from_env(self.config.env)
+        legend = return_token_legend_compact_for_spec(spec)
+        num_actions = int(self.config.actor_rollout_ref.model.get("num_actions", 17))
+        num_actions = min(num_actions, len(ACTION_TO_TEXT))
+
+        prompt = format_all_actions_return_prompt(
+            task_description=task,
+            current_observation=observation,
+            return_bin_legend=legend,
+            num_actions=num_actions,
+            constraint=constraint,
+        )
+        q_max_len = int(
+            OmegaConf.select(self.config, "trainer.validation_per_action_q.max_prompt_length", default=2048)
+        )
+        enc = self._encode_user_prompt(prompt, max_length=q_max_len, truncation="left")
+
+        value_batch = DataProto.from_single_dict(
+            {
+                "value_input_ids": enc["input_ids"].unsqueeze(0),
+                "value_attention_mask": enc["attention_mask"].unsqueeze(0),
+                "value_position_ids": enc["position_ids"].unsqueeze(0),
+            }
+        )
+        value_batch.meta_info = dict(gen_batch_meta_info or {})
+        value_batch.meta_info["value_num_tokens"] = int(num_actions)
+        value_batch.meta_info["return_bin_vmin"] = float(spec.vmin)
+        value_batch.meta_info["return_bin_vmax"] = float(spec.vmax)
+        value_batch.meta_info["return_bin_step"] = float(spec.step)
+        value_padded, value_pad = pad_dataproto_to_divisor(value_batch, actor_rollout_wg.world_size)
+        q_generate = getattr(actor_rollout_wg, "generate_actor_q_returns", None)
+        if q_generate is not None:
+            value_out_padded = q_generate(value_padded)
+        else:
+            value_out_padded = actor_rollout_wg.generate_value_tokens(value_padded)
+        value_out = unpad_dataproto(value_out_padded, pad_size=value_pad)
+
+        response_ids = value_out.batch["responses"][0]
+        tokens: list[str] = []
+        scalars: list[float] = []
+        for i in range(num_actions):
+            tok_id = int(response_ids[i].item())
+            tok = self.tokenizer.decode([tok_id], skip_special_tokens=True).strip()
+            tokens.append(tok)
+            scalars.append(float(decode_return_token(tok, spec=spec)))
+        return tokens, scalars, [prompt]
 
     def preprocess_single_sample(
         self,
@@ -387,6 +479,9 @@ class TrajectoryCollector:
         validation_video_task_instructions = [] if record_video_env_idx is not None else None
         validation_video_value_prompts = [] if record_video_env_idx is not None else None
         validation_video_value_tokens = [] if record_video_env_idx is not None else None
+        validation_video_per_action_return_tokens = None
+        validation_video_per_action_returns = None
+        validation_video_per_action_prompts = None
         from omegaconf import OmegaConf
 
         use_actor_value_token = bool(
@@ -463,6 +558,33 @@ class TrajectoryCollector:
                     vp = vtexts[record_video_env_idx] if vtexts is not None else ""
                     validation_video_value_prompts.append(vp or "")
                     validation_video_value_tokens.append("")
+
+                if (
+                    self._validation_per_action_q_enabled()
+                    and not is_train
+                    and record_video_env_idx is not None
+                ):
+                    try:
+                        pa_tokens, pa_returns, pa_prompts = self._predict_per_action_returns_first_frame(
+                            obs=obs,
+                            infos=infos,
+                            record_video_env_idx=record_video_env_idx,
+                            actor_rollout_wg=actor_rollout_wg,
+                            gen_batch_meta_info=gen_batch.meta_info,
+                        )
+                        validation_video_per_action_return_tokens = pa_tokens
+                        validation_video_per_action_returns = pa_returns
+                        validation_video_per_action_prompts = pa_prompts
+                        print(
+                            f"[validation] per-action returns at t=0: "
+                            f"{[round(r, 2) for r in pa_returns]}",
+                            flush=True,
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[validation] per-action return prediction at t=0 failed: {exc}",
+                            flush=True,
+                        )
 
         lenght_obs = len(obs['text']) if obs['text'] is not None else len(obs['image'])
         assert len(gen_batch.batch) == lenght_obs, f"gen_batch size {len(gen_batch.batch)} does not match obs size {lenght_obs}"
@@ -1017,6 +1139,9 @@ class TrajectoryCollector:
             validation_video_task_instructions,
             validation_video_value_prompts,
             validation_video_value_tokens,
+            validation_video_per_action_return_tokens,
+            validation_video_per_action_returns,
+            validation_video_per_action_prompts,
             completed_episode_returns,
             completed_episode_lengths,
             completed_episode_costs,
@@ -1172,6 +1297,9 @@ class TrajectoryCollector:
             validation_video_next_ascii = None
             validation_video_value_prompts = None
             validation_video_value_tokens = None
+            validation_video_per_action_return_tokens = None
+            validation_video_per_action_returns = None
+            validation_video_per_action_prompts = None
         else:
             # Vanilla Sampling   
             (
@@ -1195,6 +1323,9 @@ class TrajectoryCollector:
                 validation_video_task_instructions,
                 validation_video_value_prompts,
                 validation_video_value_tokens,
+                validation_video_per_action_return_tokens,
+                validation_video_per_action_returns,
+                validation_video_per_action_prompts,
                 completed_episode_returns,
                 completed_episode_lengths,
                 completed_episode_costs,
@@ -1252,6 +1383,12 @@ class TrajectoryCollector:
             gen_batch_output.meta_info['validation_video_value_prompts'] = validation_video_value_prompts
         if validation_video_value_tokens is not None:
             gen_batch_output.meta_info['validation_video_value_tokens'] = validation_video_value_tokens
+        if validation_video_per_action_returns is not None:
+            gen_batch_output.meta_info['validation_video_per_action_returns'] = validation_video_per_action_returns
+        if validation_video_per_action_prompts is not None:
+            gen_batch_output.meta_info['validation_video_per_action_prompts'] = validation_video_per_action_prompts
+        if validation_video_per_action_return_tokens is not None:
+            gen_batch_output.meta_info['validation_video_per_action_return_tokens'] = validation_video_per_action_return_tokens
         # Метрики по завершённым эпизодам (среднее по эпизодам, как в caged_craftext baselines)
         if completed_episode_returns is not None and len(completed_episode_returns) > 0:
             gen_batch_output.meta_info['completed_episode_returns'] = np.array(completed_episode_returns, dtype=np.float32)

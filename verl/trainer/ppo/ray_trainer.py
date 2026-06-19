@@ -827,6 +827,27 @@ class RayPPOTrainer:
         """Pixel envs (e.g. Craftext) expose set_record_video + render_frame; text-only envs do not."""
         return hasattr(self.val_envs, "set_record_video")
 
+
+    def _is_debug_square_env(self) -> bool:
+        cs = str(getattr(self.config.env, "craftext_settings", "") or "")
+        return "debug_square" in cs
+
+    @staticmethod
+    def _debug_square_val_video_specs():
+        return ((0, "stone"), (1, "wood"), (2, "water"))
+
+    def _validation_artifact_name(self, stem: str, task_slug: str | None) -> str:
+        step = self.total_env_steps
+        if task_slug:
+            return f"{stem}_{task_slug}_step{step}"
+        return f"{stem}_step{step}"
+
+    def _validation_file_stem(self, prefix: str, task_slug: str | None) -> str:
+        step = self.total_env_steps
+        if task_slug:
+            return f"{prefix}_{task_slug}_step{step}"
+        return f"{prefix}_step{step}"
+
     def _validate(self, record_video: bool = False, logger=None):
         reward_tensor_lst = []
         data_source_lst = []
@@ -886,6 +907,10 @@ class RayPPOTrainer:
             }
             print(f"test_gen_batch meta info: {test_gen_batch.meta_info}")
 
+            # debug_square val env has env_num=1; keep gen batch aligned.
+            if self._is_debug_square_env() and len(test_gen_batch.batch) > 1:
+                test_gen_batch = test_gen_batch.slice(0, 1)
+
             # # pad to be divisible by dp_size
             # test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
             # test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
@@ -894,521 +919,604 @@ class RayPPOTrainer:
             # test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
 
             ################ agent-environment loop ###############
-            record_video_env_idx = 0 if (record_video and batch_idx == 0) else None
-            test_output_gen_batch = self.traj_collector.multi_turn_loop(
-                                                    gen_batch=test_gen_batch,
-                                                    actor_rollout_wg=self.actor_rollout_wg,
-                                                    envs=self.val_envs,
-                                                    is_train=False,
-                                                    world_model_trainer=self.world_model_trainer,
-                                                    record_video_env_idx=record_video_env_idx,
-                                                    )
+            if record_video and batch_idx == 0 and self._is_debug_square_env():
+                val_video_specs = list(self._debug_square_val_video_specs())
+            else:
+                val_video_specs = [(None, None)]
+
+            test_output_gen_batch = None
+            for spec_i, (scenario_idx, task_slug) in enumerate(val_video_specs):
+                try:
+                    if scenario_idx is not None and hasattr(self.val_envs, "set_validation_scenario_idx"):
+                        self.val_envs.set_validation_scenario_idx(scenario_idx)
+
+                    record_video_env_idx = 0 if (record_video and batch_idx == 0) else None
+                    out = self.traj_collector.multi_turn_loop(
+                        gen_batch=test_gen_batch,
+                        actor_rollout_wg=self.actor_rollout_wg,
+                        envs=self.val_envs,
+                        is_train=False,
+                        world_model_trainer=self.world_model_trainer,
+                        record_video_env_idx=record_video_env_idx,
+                    )
+                    if spec_i == 0:
+                        test_output_gen_batch = out
+
+                    if record_video and batch_idx == 0 and logger is not None:
+                        video_out = out
+                        frames = video_out.meta_info.get('validation_video_frames')
+                        frames_collected = frames is not None and len(frames) > 0
+                        if not frames_collected:
+                            slug_note = f" ({task_slug})" if task_slug else ""
+                            print(
+                                f"[WARNING] Validation video requested but no frames collected{slug_note} "
+                                "(text-only env or missing render_frame). Skipping GIF upload."
+                            )
+                        elif frames_collected:
+                            prompts = video_out.meta_info.get('validation_video_prompts')
+                            value_prompts = video_out.meta_info.get('validation_video_value_prompts')
+                            value_tokens = video_out.meta_info.get('validation_video_value_tokens')
+                            actions = video_out.meta_info.get('validation_video_actions')
+                            action_ids = video_out.meta_info.get('validation_video_action_ids')
+                            inverse_actions = video_out.meta_info.get('validation_video_inverse_actions')
+                            inverse_action_ids = video_out.meta_info.get('validation_video_inverse_action_ids')
+                            curr_ascii_list = video_out.meta_info.get('validation_video_curr_ascii')
+                            next_ascii_list = video_out.meta_info.get('validation_video_next_ascii')
+                            true_rewards_list = video_out.meta_info.get('validation_video_true_rewards')
+                            pred_rewards_list = video_out.meta_info.get('validation_video_pred_rewards')
+                            task_instructions_list = video_out.meta_info.get('validation_video_task_instructions')
+                            import tempfile
+                            try:
+                                import imageio
+                                gif_name = f"{self._validation_file_stem('val_trajectory', task_slug)}.gif"
+                                gif_path_tmp = os.path.join(tempfile.gettempdir(), gif_name)
+                                gif_dir = os.path.join(os.getcwd(), "gif")
+                                os.makedirs(gif_dir, exist_ok=True)
+                                gif_path_gif = os.path.join(gif_dir, gif_name)
+                                # Optionally composite each frame with observation + action text (like evaluation_caged_craftext)
+                                from agent_system.environments.env_package.caged_craftext.utility import (
+                                    composite_frame_with_prompt_text,
+                                )
+        
+                                def _frame_to_uint8_arr(f):
+                                    arr = np.asarray(f)
+                                    if arr.ndim == 2:
+                                        arr = np.stack([arr] * 3, axis=-1)
+                                    elif arr.ndim == 3 and arr.shape[0] == 3:
+                                        arr = np.transpose(arr, (1, 2, 0))
+                                    if arr.max() <= 1.0:
+                                        arr = (arr * 255).astype(np.uint8)
+                                    else:
+                                        arr = arr.astype(np.uint8)
+                                    return arr
+        
+                                composed_frames = []
+                                for i, f in enumerate(frames):
+                                    arr = _frame_to_uint8_arr(f)
+                                    if prompts is not None and actions is not None and i < len(prompts) and i < len(actions):
+                                        inv_text = None
+                                        if inverse_actions is not None and i < len(inverse_actions):
+                                            inv_text = inverse_actions[i]
+                                        arr = composite_frame_with_prompt_text(
+                                            arr, prompts[i], actions[i], inverse_action_text=inv_text
+                                        )
+                                    composed_frames.append(arr)
+                                def _write_gif(path):
+                                    with imageio.get_writer(path, mode='I', duration=0.15, loop=0) as writer:
+                                        for arr in composed_frames:
+                                            writer.append_data(arr)
+                                _write_gif(gif_path_tmp)
+                                _write_gif(gif_path_gif)
+                                gif_path = gif_path_gif
+                                logger.log_validation_video(gif_path, step=self.total_env_steps, name=self._validation_artifact_name("validation_trajectory", task_slug))
+                                print(f"[INFO] Validation video saved and logged to Comet ML: {gif_path} (also in {gif_path_tmp})")
+        
+                                # Critic prompt GIF (dual-prompt actor-value mode)
+                                if value_prompts is not None and len(value_prompts) > 0:
+                                    try:
+                                        from agent_system.environments.env_package.caged_craftext.return_tokens import (
+                                            format_return_display,
+                                            return_bin_spec_from_env,
+                                        )
+                                        val_return_spec = return_bin_spec_from_env(self.config.env)
+                                        from agent_system.environments.env_package.caged_craftext.utility import (
+                                            append_value_bar_column,
+                                        )
+        
+                                        critic_gif_name = f"{self._validation_file_stem('val_critic_trajectory', task_slug)}.gif"
+                                        critic_gif_path_tmp = os.path.join(tempfile.gettempdir(), critic_gif_name)
+                                        critic_gif_path_gif = os.path.join(gif_dir, critic_gif_name)
+                                        critic_frames = []
+                                        for i, f in enumerate(frames):
+                                            arr = _frame_to_uint8_arr(f)
+                                            vp = value_prompts[i] if i < len(value_prompts) else ""
+                                            vt = value_tokens[i] if value_tokens is not None and i < len(value_tokens) else ""
+                                            value_scalar = None
+                                            if vt:
+                                                display, parsed_v = format_return_display(vt, spec=val_return_spec)
+                                                value_scalar = parsed_v if parsed_v >= 0 else None
+                                                action_line = f"V={display} | raw: {vt}"
+                                            else:
+                                                action_line = ""
+                                                value_scalar = None
+                                            arr = append_value_bar_column(arr, value_scalar)
+                                            if vp:
+                                                arr = composite_frame_with_prompt_text(arr, vp, action_line)
+                                            critic_frames.append(arr)
+        
+                                        def _write_critic_gif(path):
+                                            with imageio.get_writer(path, mode='I', duration=0.15, loop=0) as writer:
+                                                for arr in critic_frames:
+                                                    writer.append_data(arr)
+        
+                                        _write_critic_gif(critic_gif_path_tmp)
+                                        _write_critic_gif(critic_gif_path_gif)
+                                        logger.log_validation_video(
+                                            critic_gif_path_gif,
+                                            step=self.total_env_steps,
+                                            name=self._validation_artifact_name("validation_critic_trajectory", task_slug),
+                                        )
+                                        print(
+                                            f"[INFO] Validation critic video saved: {critic_gif_path_gif} "
+                                            f"(also in {critic_gif_path_tmp})"
+                                        )
+                                    except Exception as e:
+                                        print(f"[WARNING] Failed to save/log validation critic video: {e}")
+        
+                                # Log action histogram for the recorded validation episode (same env as the GIF).
+                                try:
+                                    if action_ids is not None:
+                                        # Filter out placeholder -1 for initial frame (and any invalids).
+                                        action_ids_np = np.array(action_ids, dtype=np.int64)
+                                        action_ids_np = action_ids_np[action_ids_np >= 0]
+                                        num_actions = int(self.config.actor_rollout_ref.model.get("num_actions", 17))
+                                        counts = np.bincount(action_ids_np, minlength=num_actions) if action_ids_np.size > 0 else np.zeros(num_actions, dtype=np.int64)
+        
+                                        import matplotlib
+                                        matplotlib.use("Agg")
+                                        import matplotlib.pyplot as plt
+                                        try:
+                                            from agent_system.environments.env_package.caged_craftext.projection import ACTION_TO_TEXT as _ACTION_TO_TEXT
+                                            action_names = list(_ACTION_TO_TEXT)[:num_actions]
+                                        except Exception:
+                                            action_names = [str(i) for i in range(num_actions)]
+        
+                                        x = np.arange(num_actions, dtype=np.int64)
+                                        fig_w = max(10, 0.6 * num_actions)
+                                        fig, ax = plt.subplots(figsize=(fig_w, 4.5), dpi=160)
+                                        bars = ax.bar(x, counts, color="#4C78A8", edgecolor="#2F3B4A", linewidth=0.6)
+                                        ax.set_title("Validation action histogram (recorded episode)")
+                                        ax.set_xlabel("action")
+                                        ax.set_ylabel("count")
+                                        ax.set_xticks(x)
+                                        ax.set_xticklabels(action_names, rotation=45, ha="right", fontsize=8)
+                                        ax.grid(axis="y", linestyle="--", alpha=0.35)
+                                        ax.set_axisbelow(True)
+        
+                                        ymax = int(counts.max()) if counts.size > 0 else 0
+                                        ax.set_ylim(0, max(1, ymax + max(1, int(0.15 * ymax))))
+                                        for rect, c in zip(bars, counts):
+                                            if int(c) == 0:
+                                                continue
+                                            ax.text(
+                                                rect.get_x() + rect.get_width() / 2.0,
+                                                rect.get_height(),
+                                                str(int(c)),
+                                                ha="center",
+                                                va="bottom",
+                                                fontsize=8,
+                                                color="#1B1F24",
+                                            )
+        
+                                        png_name = f"{self._validation_file_stem('val_action_hist', task_slug)}.png"
+                                        png_path = os.path.join(tempfile.gettempdir(), png_name)
+                                        fig.tight_layout()
+                                        fig.savefig(png_path)
+                                        plt.close(fig)
+                                        logger.log_image(png_path, step=self.total_env_steps, name=self._validation_artifact_name("validation_action_hist", task_slug))
+                                except Exception as e:
+                                    print(f"[WARNING] Failed to log validation action histogram: {e}")
+
+                                # Per-action Q at first frame: 17 return tokens -> bar chart.
+                                try:
+                                    per_action_returns = video_out.meta_info.get(
+                                        "validation_video_per_action_returns"
+                                    )
+                                    per_action_prompts = video_out.meta_info.get(
+                                        "validation_video_per_action_prompts"
+                                    )
+                                    per_action_tokens = video_out.meta_info.get(
+                                        "validation_video_per_action_return_tokens"
+                                    )
+                                    if per_action_returns and frames and len(frames) > 0:
+                                        from agent_system.environments.env_package.caged_craftext.utility import (
+                                            render_validation_per_action_frame_prompt_figure,
+                                            render_validation_per_action_return_histogram,
+                                        )
+
+                                        num_actions = int(self.config.actor_rollout_ref.model.get("num_actions", 17))
+                                        try:
+                                            from agent_system.environments.env_package.caged_craftext.projection import (
+                                                ACTION_TO_TEXT as _ACTION_TO_TEXT,
+                                            )
+                                            action_names = list(_ACTION_TO_TEXT)[:num_actions]
+                                        except Exception:
+                                            action_names = [str(i) for i in range(num_actions)]
+
+                                        frame_prompt_panel = render_validation_per_action_frame_prompt_figure(
+                                            frames[0],
+                                            action_names=action_names,
+                                            per_action_prompts=per_action_prompts,
+                                            per_action_returns=per_action_returns,
+                                            per_action_tokens=per_action_tokens,
+                                        )
+                                        hist_panel = render_validation_per_action_return_histogram(
+                                            per_action_returns,
+                                            action_names=action_names,
+                                        )
+                                        import imageio
+
+                                        fp_png_name = f"{self._validation_file_stem('val_per_action_frame_prompt', task_slug)}.png"
+                                        fp_png_path = os.path.join(gif_dir, fp_png_name)
+                                        imageio.imwrite(fp_png_path, frame_prompt_panel)
+                                        logger.log_image(
+                                            fp_png_path,
+                                            step=self.total_env_steps,
+                                            name=self._validation_artifact_name(
+                                                "validation_per_action_frame_prompt", task_slug
+                                            ),
+                                        )
+
+                                        hist_png_name = f"{self._validation_file_stem('val_per_action_return_hist', task_slug)}.png"
+                                        hist_png_path = os.path.join(gif_dir, hist_png_name)
+                                        imageio.imwrite(hist_png_path, hist_panel)
+                                        logger.log_image(
+                                            hist_png_path,
+                                            step=self.total_env_steps,
+                                            name=self._validation_artifact_name(
+                                                "validation_per_action_return_hist", task_slug
+                                            ),
+                                        )
+                                        slug_note = f" ({task_slug})" if task_slug else ""
+                                        print(
+                                            f"[INFO] Validation per-action panels{slug_note} saved: "
+                                            f"{fp_png_path}, {hist_png_path}"
+                                        )
+                                except Exception as e:
+                                    print(f"[WARNING] Failed to log per-action return panel: {e}")
+
+                                # World model inverse-action accuracy table (when WM enabled).
+                                try:
+                                    if (
+                                        action_ids is not None
+                                        and inverse_action_ids is not None
+                                        and self.config.trainer.get("world_model", {}).get("enable", False)
+                                        and self.config.trainer.world_model.get("task") == "inverse_action"
+                                    ):
+                                        from agent_system.environments.env_package.caged_craftext.projection import (
+                                            ACTION_TO_TEXT as _ACTION_TO_TEXT,
+                                        )
+        
+                                        rows = []
+                                        matches = []
+                                        for step_i, (aid, pid) in enumerate(zip(action_ids, inverse_action_ids)):
+                                            if int(aid) < 0:
+                                                continue
+                                            actual_name = _ACTION_TO_TEXT[int(aid)] if int(aid) < len(_ACTION_TO_TEXT) else str(aid)
+                                            if int(pid) >= 0 and int(pid) < len(_ACTION_TO_TEXT):
+                                                pred_name = _ACTION_TO_TEXT[int(pid)]
+                                            else:
+                                                pred_name = "?"
+                                            inv_raw = ""
+                                            if inverse_actions and step_i < len(inverse_actions):
+                                                inv_raw = inverse_actions[step_i]
+                                                if "raw:" in inv_raw:
+                                                    inv_raw = inv_raw.split("raw:", 1)[1].strip()
+                                            elif int(pid) >= 0:
+                                                from agent_system.environments.env_package.caged_craftext.action_tokens import (
+                                                    action_token_label,
+                                                )
+                                                inv_raw = action_token_label(int(pid))
+                                            ok = int(aid) == int(pid) and int(pid) >= 0
+                                            matches.append(ok)
+                                            rows.append([
+                                                str(step_i),
+                                                actual_name,
+                                                pred_name,
+                                                "✓" if ok else "✗",
+                                                inv_raw,
+                                            ])
+        
+                                        if matches:
+                                            val_wm_inverse_accuracy = float(np.mean(matches))
+                                            print(
+                                                f"[INFO] Validation WM inverse-action accuracy: "
+                                                f"{val_wm_inverse_accuracy:.3f} ({sum(matches)}/{len(matches)})"
+                                            )
+        
+                                        if rows:
+                                            import matplotlib
+                                            matplotlib.use("Agg")
+                                            import matplotlib.pyplot as plt
+        
+                                            fig_h = max(2.5, 0.35 * len(rows) + 1.5)
+                                            fig, ax = plt.subplots(figsize=(12, fig_h), dpi=140)
+                                            ax.axis("off")
+                                            col_labels = ["step", "action (policy)", "inverse action (WM)", "match", "WM raw"]
+                                            table = ax.table(
+                                                cellText=rows,
+                                                colLabels=col_labels,
+                                                loc="center",
+                                                cellLoc="left",
+                                            )
+                                            table.auto_set_font_size(False)
+                                            table.set_fontsize(8)
+                                            table.scale(1, 1.25)
+                                            title = "World model inverse-action vs policy"
+                                            if val_wm_inverse_accuracy is not None:
+                                                title += f" — accuracy {val_wm_inverse_accuracy:.1%}"
+                                            ax.set_title(title, fontsize=10, pad=12)
+        
+                                            tbl_name = f"{self._validation_file_stem('val_wm_inverse_action', task_slug)}.png"
+                                            tbl_path = os.path.join(tempfile.gettempdir(), tbl_name)
+                                            fig.tight_layout()
+                                            fig.savefig(tbl_path, bbox_inches="tight")
+                                            plt.close(fig)
+                                            logger.log_image(
+                                                tbl_path,
+                                                step=self.total_env_steps,
+                                                name=self._validation_artifact_name("validation_wm_inverse_action", task_slug),
+                                            )
+                                except Exception as e:
+                                    print(f"[WARNING] Failed to log validation WM inverse-action table: {e}")
+        
+                                # Reward world model: table + sample panel.
+                                try:
+                                    _wm_reward_val = (
+                                        self._online_reward_wm_enabled()
+                                        if hasattr(self, "_online_reward_wm_enabled")
+                                        else (
+                                            self.config.trainer.get("world_model", {}).get("enable", False)
+                                            and self.config.trainer.world_model.get("task") == "reward"
+                                        )
+                                    )
+                                    if (
+                                        _wm_reward_val
+                                        and true_rewards_list is not None
+                                        and pred_rewards_list is not None
+                                        and actions is not None
+                                    ):
+                                        from agent_system.environments.prompts.world_model_reward import (
+                                            format_reward_prompt,
+                                            format_reward_target_display,
+                                            parse_reward_prediction,
+                                        )
+                                        from agent_system.environments.env_package.caged_craftext.reward_tokens import (
+                                            format_reward_display,
+                                            reward_to_token,
+                                        )
+        
+                                        rows = []
+                                        abs_errors = []
+                                        token_matches = []
+                                        for step_i, (true_s, pred_s) in enumerate(
+                                            zip(true_rewards_list, pred_rewards_list)
+                                        ):
+                                            if not str(true_s).strip():
+                                                continue
+                                            true_part = str(true_s).split("(", 1)[0].strip()
+                                            try:
+                                                true_val = float(true_part)
+                                            except ValueError:
+                                                true_val = parse_reward_prediction(true_s)
+                                                if true_val is None:
+                                                    continue
+                                            pred_val = parse_reward_prediction(str(pred_s))
+                                            pred_display, _ = format_reward_display(str(pred_s))
+                                            true_tok = (
+                                                str(true_s).split("(", 1)[1].rstrip(")").strip()
+                                                if "(" in str(true_s)
+                                                else reward_to_token(true_val)
+                                            )
+                                            pred_tok = str(pred_s).strip().split()[0] if str(pred_s).strip() else ""
+                                            if pred_val is None:
+                                                err_str = "—"
+                                                token_matches.append(False)
+                                            else:
+                                                err_str = str(int(abs(true_val - pred_val)))
+                                                abs_errors.append(abs(true_val - pred_val))
+                                                token_matches.append(true_tok == pred_tok and pred_tok != "")
+                                            action_disp = (
+                                                str(actions[step_i]) if step_i < len(actions) else ""
+                                            )
+                                            rows.append([
+                                                str(step_i),
+                                                action_disp,
+                                                str(true_s),
+                                                pred_display,
+                                                err_str,
+                                            ])
+        
+                                        if token_matches:
+                                            val_wm_reward_token_accuracy = float(np.mean(token_matches))
+                                            print(
+                                                f"[INFO] Validation WM reward token accuracy: "
+                                                f"{val_wm_reward_token_accuracy:.3f} ({sum(token_matches)}/{len(token_matches)})"
+                                            )
+        
+                                        if abs_errors:
+                                            val_wm_reward_mae = float(np.mean(abs_errors))
+                                            print(
+                                                f"[INFO] Validation WM reward MAE: {val_wm_reward_mae:.4f} "
+                                                f"({len(abs_errors)} steps)"
+                                            )
+        
+                                        if rows:
+                                            import matplotlib
+                                            matplotlib.use("Agg")
+                                            import matplotlib.pyplot as plt
+        
+                                            fig_h = max(2.5, 0.35 * len(rows) + 1.5)
+                                            fig, ax = plt.subplots(figsize=(12, fig_h), dpi=140)
+                                            ax.axis("off")
+                                            col_labels = [
+                                                "step",
+                                                "action (policy)",
+                                                "reward (true)",
+                                                "reward (WM)",
+                                                "|error|",
+                                            ]
+                                            table = ax.table(
+                                                cellText=rows,
+                                                colLabels=col_labels,
+                                                loc="center",
+                                                cellLoc="left",
+                                            )
+                                            table.auto_set_font_size(False)
+                                            table.set_fontsize(8)
+                                            table.scale(1, 1.25)
+                                            title = "Reward world model vs environment"
+                                            if val_wm_reward_mae is not None:
+                                                title += f" — MAE {val_wm_reward_mae:.4f}"
+                                            ax.set_title(title, fontsize=10, pad=12)
+        
+                                            tbl_name = f"{self._validation_file_stem('val_wm_reward', task_slug)}.png"
+                                            tbl_path = os.path.join(tempfile.gettempdir(), tbl_name)
+                                            fig.tight_layout()
+                                            fig.savefig(tbl_path, bbox_inches="tight")
+                                            plt.close(fig)
+                                            logger.log_image(
+                                                tbl_path,
+                                                step=self.total_env_steps,
+                                                name=self._validation_artifact_name("validation_wm_reward", task_slug),
+                                            )
+        
+                                        if (
+                                            curr_ascii_list is not None
+                                            and actions is not None
+                                            and true_rewards_list is not None
+                                            and pred_rewards_list is not None
+                                        ):
+                                            valid_steps = [
+                                                i
+                                                for i, tr in enumerate(true_rewards_list)
+                                                if str(tr).strip()
+                                                and i < len(actions)
+                                                and i < len(curr_ascii_list)
+                                                and i < len(pred_rewards_list)
+                                            ]
+                                            if valid_steps:
+                                                pick_i = valid_steps[len(valid_steps) // 2]
+                                                from agent_system.environments.env_package.caged_craftext.utility import (
+                                                    render_world_model_reward_panel,
+                                                )
+        
+                                                action_raw = str(actions[pick_i] or "")
+                                                if "raw:" in action_raw:
+                                                    action_raw = action_raw.split("raw:", 1)[1].strip()
+                                                wm_input = format_reward_prompt(
+                                                    state=str(curr_ascii_list[pick_i] or ""),
+                                                    action=action_raw,
+                                                    task=str(
+                                                        task_instructions_list[pick_i]
+                                                        if task_instructions_list is not None
+                                                        and pick_i < len(task_instructions_list)
+                                                        else ""
+                                                    ),
+                                                )
+                                                reward_img = render_world_model_reward_panel(
+                                                    step=int(pick_i),
+                                                    world_model_input=wm_input,
+                                                    policy_action=str(actions[pick_i] or ""),
+                                                    ground_truth_reward=str(true_rewards_list[pick_i] or ""),
+                                                    world_model_output=str(pred_rewards_list[pick_i] or ""),
+                                                )
+                                                from PIL import Image
+        
+                                                png_name = f"{self._validation_file_stem('val_wm_reward_input', task_slug)}.png"
+                                                png_path = os.path.join(tempfile.gettempdir(), png_name)
+                                                Image.fromarray(reward_img).save(png_path)
+                                                logger.log_image(
+                                                    png_path,
+                                                    step=self.total_env_steps,
+                                                    name=self._validation_artifact_name("validation_wm_reward_input", task_slug),
+                                                )
+                                                print(
+                                                    f"[INFO] Validation reward WM panel logged (step {pick_i}): {png_path}"
+                                                )
+                                except Exception as e:
+                                    print(f"[WARNING] Failed to log validation WM reward table: {e}")
+        
+                                # One validation transition: WM input, policy a_t, WM output.
+                                try:
+                                    wm_enabled = (
+                                        self.config.trainer.get("world_model", {}).get("enable", False)
+                                        and self.config.trainer.world_model.get("task") == "inverse_action"
+                                    )
+                                    if wm_enabled and (
+                                        actions is not None
+                                        and action_ids is not None
+                                        and curr_ascii_list is not None
+                                        and next_ascii_list is not None
+                                        and inverse_actions is not None
+                                    ):
+                                        valid_steps = [
+                                            i
+                                            for i, aid in enumerate(action_ids)
+                                            if int(aid) >= 0
+                                            and i < len(actions)
+                                            and i < len(curr_ascii_list)
+                                            and i < len(next_ascii_list)
+                                            and i < len(inverse_actions)
+                                            and (curr_ascii_list[i] or next_ascii_list[i])
+                                        ]
+                                        if valid_steps:
+                                            pick_i = valid_steps[len(valid_steps) // 2]
+        
+                                            from agent_system.environments.env_package.caged_craftext.utility import (
+                                                render_world_model_transition_panel,
+                                            )
+                                            from agent_system.environments.prompts.world_model_inverse_action import (
+                                                format_inverse_action_prompt,
+                                            )
+        
+                                            wm_input = format_inverse_action_prompt(
+                                                state_before=str(curr_ascii_list[pick_i] or ""),
+                                                state_after=str(next_ascii_list[pick_i] or ""),
+                                            )
+                                            transition_img = render_world_model_transition_panel(
+                                                step=int(pick_i),
+                                                world_model_input=wm_input,
+                                                policy_action=str(actions[pick_i] or ""),
+                                                world_model_output=str(inverse_actions[pick_i] or ""),
+                                            )
+        
+                                            from PIL import Image
+        
+                                            png_name = f"{self._validation_file_stem('val_wm_transition', task_slug)}.png"
+                                            png_path = os.path.join(tempfile.gettempdir(), png_name)
+                                            Image.fromarray(transition_img).save(png_path)
+                                            logger.log_image(
+                                                png_path,
+                                                step=self.total_env_steps,
+                                                name=self._validation_artifact_name("validation_wm_transition", task_slug),
+                                            )
+                                            print(
+                                                f"[INFO] Validation WM transition logged (step index {pick_i}): {png_path}"
+                                            )
+                                except Exception as e:
+                                    print(f"[WARNING] Failed to log validation WM transition: {e}")
+                            except Exception as e:
+                                print(f"[WARNING] Failed to save/log validation video: {e}")
+                finally:
+                    if scenario_idx is not None and hasattr(self.val_envs, "set_validation_scenario_idx"):
+                        self.val_envs.set_validation_scenario_idx(None)
+
             print('validation generation end')
 
-            # Save validation video (GIF) and log to Comet ML after first batch when record_video
-            frames = None
-            frames_collected = False
-            if record_video and batch_idx == 0 and logger is not None:
-                frames = test_output_gen_batch.meta_info.get('validation_video_frames')
-                frames_collected = frames is not None and len(frames) > 0
-                if not frames_collected:
-                    print(
-                        "[WARNING] Validation video requested but no frames collected "
-                        "(text-only env or missing render_frame). Skipping GIF upload."
-                    )
-                    if hasattr(self.val_envs, 'set_record_video'):
-                        self.val_envs.set_record_video(False)
+            if record_video and batch_idx == 0 and hasattr(self.val_envs, 'set_record_video'):
+                self.val_envs.set_record_video(False)
 
-            if record_video and batch_idx == 0 and logger is not None and frames_collected:
-                prompts = test_output_gen_batch.meta_info.get('validation_video_prompts')
-                value_prompts = test_output_gen_batch.meta_info.get('validation_video_value_prompts')
-                value_tokens = test_output_gen_batch.meta_info.get('validation_video_value_tokens')
-                actions = test_output_gen_batch.meta_info.get('validation_video_actions')
-                action_ids = test_output_gen_batch.meta_info.get('validation_video_action_ids')
-                inverse_actions = test_output_gen_batch.meta_info.get('validation_video_inverse_actions')
-                inverse_action_ids = test_output_gen_batch.meta_info.get('validation_video_inverse_action_ids')
-                curr_ascii_list = test_output_gen_batch.meta_info.get('validation_video_curr_ascii')
-                next_ascii_list = test_output_gen_batch.meta_info.get('validation_video_next_ascii')
-                true_rewards_list = test_output_gen_batch.meta_info.get('validation_video_true_rewards')
-                pred_rewards_list = test_output_gen_batch.meta_info.get('validation_video_pred_rewards')
-                task_instructions_list = test_output_gen_batch.meta_info.get('validation_video_task_instructions')
-                import tempfile
-                try:
-                    import imageio
-                    gif_name = f"val_trajectory_step{self.total_env_steps}.gif"
-                    gif_path_tmp = os.path.join(tempfile.gettempdir(), gif_name)
-                    gif_dir = os.path.join(os.getcwd(), "gif")
-                    os.makedirs(gif_dir, exist_ok=True)
-                    gif_path_gif = os.path.join(gif_dir, gif_name)
-                    # Optionally composite each frame with observation + action text (like evaluation_caged_craftext)
-                    from agent_system.environments.env_package.caged_craftext.utility import (
-                        composite_frame_with_prompt_text,
-                    )
-
-                    def _frame_to_uint8_arr(f):
-                        arr = np.asarray(f)
-                        if arr.ndim == 2:
-                            arr = np.stack([arr] * 3, axis=-1)
-                        elif arr.ndim == 3 and arr.shape[0] == 3:
-                            arr = np.transpose(arr, (1, 2, 0))
-                        if arr.max() <= 1.0:
-                            arr = (arr * 255).astype(np.uint8)
-                        else:
-                            arr = arr.astype(np.uint8)
-                        return arr
-
-                    composed_frames = []
-                    for i, f in enumerate(frames):
-                        arr = _frame_to_uint8_arr(f)
-                        if prompts is not None and actions is not None and i < len(prompts) and i < len(actions):
-                            inv_text = None
-                            if inverse_actions is not None and i < len(inverse_actions):
-                                inv_text = inverse_actions[i]
-                            arr = composite_frame_with_prompt_text(
-                                arr, prompts[i], actions[i], inverse_action_text=inv_text
-                            )
-                        composed_frames.append(arr)
-                    def _write_gif(path):
-                        with imageio.get_writer(path, mode='I', duration=0.15, loop=0) as writer:
-                            for arr in composed_frames:
-                                writer.append_data(arr)
-                    _write_gif(gif_path_tmp)
-                    _write_gif(gif_path_gif)
-                    gif_path = gif_path_gif
-                    logger.log_validation_video(gif_path, step=self.total_env_steps, name=f"validation_trajectory_step{self.total_env_steps}")
-                    print(f"[INFO] Validation video saved and logged to Comet ML: {gif_path} (also in {gif_path_tmp})")
-
-                    # Critic prompt GIF (dual-prompt actor-value mode)
-                    if value_prompts is not None and len(value_prompts) > 0:
-                        try:
-                            from agent_system.environments.env_package.caged_craftext.return_tokens import (
-                                format_return_display,
-                                return_bin_spec_from_env,
-                            )
-                            val_return_spec = return_bin_spec_from_env(self.config.env)
-                            from agent_system.environments.env_package.caged_craftext.utility import (
-                                append_value_bar_column,
-                            )
-
-                            critic_gif_name = f"val_critic_trajectory_step{self.total_env_steps}.gif"
-                            critic_gif_path_tmp = os.path.join(tempfile.gettempdir(), critic_gif_name)
-                            critic_gif_path_gif = os.path.join(gif_dir, critic_gif_name)
-                            critic_frames = []
-                            for i, f in enumerate(frames):
-                                arr = _frame_to_uint8_arr(f)
-                                vp = value_prompts[i] if i < len(value_prompts) else ""
-                                vt = value_tokens[i] if value_tokens is not None and i < len(value_tokens) else ""
-                                value_scalar = None
-                                if vt:
-                                    display, parsed_v = format_return_display(vt, spec=val_return_spec)
-                                    value_scalar = parsed_v if parsed_v >= 0 else None
-                                    action_line = f"V={display} | raw: {vt}"
-                                else:
-                                    action_line = ""
-                                    value_scalar = None
-                                arr = append_value_bar_column(arr, value_scalar)
-                                if vp:
-                                    arr = composite_frame_with_prompt_text(arr, vp, action_line)
-                                critic_frames.append(arr)
-
-                            def _write_critic_gif(path):
-                                with imageio.get_writer(path, mode='I', duration=0.15, loop=0) as writer:
-                                    for arr in critic_frames:
-                                        writer.append_data(arr)
-
-                            _write_critic_gif(critic_gif_path_tmp)
-                            _write_critic_gif(critic_gif_path_gif)
-                            logger.log_validation_video(
-                                critic_gif_path_gif,
-                                step=self.total_env_steps,
-                                name=f"validation_critic_trajectory_step{self.total_env_steps}",
-                            )
-                            print(
-                                f"[INFO] Validation critic video saved: {critic_gif_path_gif} "
-                                f"(also in {critic_gif_path_tmp})"
-                            )
-                        except Exception as e:
-                            print(f"[WARNING] Failed to save/log validation critic video: {e}")
-
-                    # Log action histogram for the recorded validation episode (same env as the GIF).
-                    try:
-                        if action_ids is not None:
-                            # Filter out placeholder -1 for initial frame (and any invalids).
-                            action_ids_np = np.array(action_ids, dtype=np.int64)
-                            action_ids_np = action_ids_np[action_ids_np >= 0]
-                            num_actions = int(self.config.actor_rollout_ref.model.get("num_actions", 17))
-                            counts = np.bincount(action_ids_np, minlength=num_actions) if action_ids_np.size > 0 else np.zeros(num_actions, dtype=np.int64)
-
-                            import matplotlib
-                            matplotlib.use("Agg")
-                            import matplotlib.pyplot as plt
-                            try:
-                                from agent_system.environments.env_package.caged_craftext.projection import ACTION_TO_TEXT as _ACTION_TO_TEXT
-                                action_names = list(_ACTION_TO_TEXT)[:num_actions]
-                            except Exception:
-                                action_names = [str(i) for i in range(num_actions)]
-
-                            x = np.arange(num_actions, dtype=np.int64)
-                            fig_w = max(10, 0.6 * num_actions)
-                            fig, ax = plt.subplots(figsize=(fig_w, 4.5), dpi=160)
-                            bars = ax.bar(x, counts, color="#4C78A8", edgecolor="#2F3B4A", linewidth=0.6)
-                            ax.set_title("Validation action histogram (recorded episode)")
-                            ax.set_xlabel("action")
-                            ax.set_ylabel("count")
-                            ax.set_xticks(x)
-                            ax.set_xticklabels(action_names, rotation=45, ha="right", fontsize=8)
-                            ax.grid(axis="y", linestyle="--", alpha=0.35)
-                            ax.set_axisbelow(True)
-
-                            ymax = int(counts.max()) if counts.size > 0 else 0
-                            ax.set_ylim(0, max(1, ymax + max(1, int(0.15 * ymax))))
-                            for rect, c in zip(bars, counts):
-                                if int(c) == 0:
-                                    continue
-                                ax.text(
-                                    rect.get_x() + rect.get_width() / 2.0,
-                                    rect.get_height(),
-                                    str(int(c)),
-                                    ha="center",
-                                    va="bottom",
-                                    fontsize=8,
-                                    color="#1B1F24",
-                                )
-
-                            png_name = f"val_action_hist_step{self.total_env_steps}.png"
-                            png_path = os.path.join(tempfile.gettempdir(), png_name)
-                            fig.tight_layout()
-                            fig.savefig(png_path)
-                            plt.close(fig)
-                            logger.log_image(png_path, step=self.total_env_steps, name=f"validation_action_hist_step{self.total_env_steps}")
-                    except Exception as e:
-                        print(f"[WARNING] Failed to log validation action histogram: {e}")
-
-                    # World model inverse-action accuracy table (when WM enabled).
-                    try:
-                        if (
-                            action_ids is not None
-                            and inverse_action_ids is not None
-                            and self.config.trainer.get("world_model", {}).get("enable", False)
-                            and self.config.trainer.world_model.get("task") == "inverse_action"
-                        ):
-                            from agent_system.environments.env_package.caged_craftext.projection import (
-                                ACTION_TO_TEXT as _ACTION_TO_TEXT,
-                            )
-
-                            rows = []
-                            matches = []
-                            for step_i, (aid, pid) in enumerate(zip(action_ids, inverse_action_ids)):
-                                if int(aid) < 0:
-                                    continue
-                                actual_name = _ACTION_TO_TEXT[int(aid)] if int(aid) < len(_ACTION_TO_TEXT) else str(aid)
-                                if int(pid) >= 0 and int(pid) < len(_ACTION_TO_TEXT):
-                                    pred_name = _ACTION_TO_TEXT[int(pid)]
-                                else:
-                                    pred_name = "?"
-                                inv_raw = ""
-                                if inverse_actions and step_i < len(inverse_actions):
-                                    inv_raw = inverse_actions[step_i]
-                                    if "raw:" in inv_raw:
-                                        inv_raw = inv_raw.split("raw:", 1)[1].strip()
-                                elif int(pid) >= 0:
-                                    from agent_system.environments.env_package.caged_craftext.action_tokens import (
-                                        action_token_label,
-                                    )
-                                    inv_raw = action_token_label(int(pid))
-                                ok = int(aid) == int(pid) and int(pid) >= 0
-                                matches.append(ok)
-                                rows.append([
-                                    str(step_i),
-                                    actual_name,
-                                    pred_name,
-                                    "✓" if ok else "✗",
-                                    inv_raw,
-                                ])
-
-                            if matches:
-                                val_wm_inverse_accuracy = float(np.mean(matches))
-                                print(
-                                    f"[INFO] Validation WM inverse-action accuracy: "
-                                    f"{val_wm_inverse_accuracy:.3f} ({sum(matches)}/{len(matches)})"
-                                )
-
-                            if rows:
-                                import matplotlib
-                                matplotlib.use("Agg")
-                                import matplotlib.pyplot as plt
-
-                                fig_h = max(2.5, 0.35 * len(rows) + 1.5)
-                                fig, ax = plt.subplots(figsize=(12, fig_h), dpi=140)
-                                ax.axis("off")
-                                col_labels = ["step", "action (policy)", "inverse action (WM)", "match", "WM raw"]
-                                table = ax.table(
-                                    cellText=rows,
-                                    colLabels=col_labels,
-                                    loc="center",
-                                    cellLoc="left",
-                                )
-                                table.auto_set_font_size(False)
-                                table.set_fontsize(8)
-                                table.scale(1, 1.25)
-                                title = "World model inverse-action vs policy"
-                                if val_wm_inverse_accuracy is not None:
-                                    title += f" — accuracy {val_wm_inverse_accuracy:.1%}"
-                                ax.set_title(title, fontsize=10, pad=12)
-
-                                tbl_name = f"val_wm_inverse_action_step{self.total_env_steps}.png"
-                                tbl_path = os.path.join(tempfile.gettempdir(), tbl_name)
-                                fig.tight_layout()
-                                fig.savefig(tbl_path, bbox_inches="tight")
-                                plt.close(fig)
-                                logger.log_image(
-                                    tbl_path,
-                                    step=self.total_env_steps,
-                                    name=f"validation_wm_inverse_action_step{self.total_env_steps}",
-                                )
-                    except Exception as e:
-                        print(f"[WARNING] Failed to log validation WM inverse-action table: {e}")
-
-                    # Reward world model: table + sample panel.
-                    try:
-                        _wm_reward_val = (
-                            self._online_reward_wm_enabled()
-                            if hasattr(self, "_online_reward_wm_enabled")
-                            else (
-                                self.config.trainer.get("world_model", {}).get("enable", False)
-                                and self.config.trainer.world_model.get("task") == "reward"
-                            )
-                        )
-                        if (
-                            _wm_reward_val
-                            and true_rewards_list is not None
-                            and pred_rewards_list is not None
-                            and actions is not None
-                        ):
-                            from agent_system.environments.prompts.world_model_reward import (
-                                format_reward_prompt,
-                                format_reward_target_display,
-                                parse_reward_prediction,
-                            )
-                            from agent_system.environments.env_package.caged_craftext.reward_tokens import (
-                                format_reward_display,
-                                reward_to_token,
-                            )
-
-                            rows = []
-                            abs_errors = []
-                            token_matches = []
-                            for step_i, (true_s, pred_s) in enumerate(
-                                zip(true_rewards_list, pred_rewards_list)
-                            ):
-                                if not str(true_s).strip():
-                                    continue
-                                true_part = str(true_s).split("(", 1)[0].strip()
-                                try:
-                                    true_val = float(true_part)
-                                except ValueError:
-                                    true_val = parse_reward_prediction(true_s)
-                                    if true_val is None:
-                                        continue
-                                pred_val = parse_reward_prediction(str(pred_s))
-                                pred_display, _ = format_reward_display(str(pred_s))
-                                true_tok = (
-                                    str(true_s).split("(", 1)[1].rstrip(")").strip()
-                                    if "(" in str(true_s)
-                                    else reward_to_token(true_val)
-                                )
-                                pred_tok = str(pred_s).strip().split()[0] if str(pred_s).strip() else ""
-                                if pred_val is None:
-                                    err_str = "—"
-                                    token_matches.append(False)
-                                else:
-                                    err_str = str(int(abs(true_val - pred_val)))
-                                    abs_errors.append(abs(true_val - pred_val))
-                                    token_matches.append(true_tok == pred_tok and pred_tok != "")
-                                action_disp = (
-                                    str(actions[step_i]) if step_i < len(actions) else ""
-                                )
-                                rows.append([
-                                    str(step_i),
-                                    action_disp,
-                                    str(true_s),
-                                    pred_display,
-                                    err_str,
-                                ])
-
-                            if token_matches:
-                                val_wm_reward_token_accuracy = float(np.mean(token_matches))
-                                print(
-                                    f"[INFO] Validation WM reward token accuracy: "
-                                    f"{val_wm_reward_token_accuracy:.3f} ({sum(token_matches)}/{len(token_matches)})"
-                                )
-
-                            if abs_errors:
-                                val_wm_reward_mae = float(np.mean(abs_errors))
-                                print(
-                                    f"[INFO] Validation WM reward MAE: {val_wm_reward_mae:.4f} "
-                                    f"({len(abs_errors)} steps)"
-                                )
-
-                            if rows:
-                                import matplotlib
-                                matplotlib.use("Agg")
-                                import matplotlib.pyplot as plt
-
-                                fig_h = max(2.5, 0.35 * len(rows) + 1.5)
-                                fig, ax = plt.subplots(figsize=(12, fig_h), dpi=140)
-                                ax.axis("off")
-                                col_labels = [
-                                    "step",
-                                    "action (policy)",
-                                    "reward (true)",
-                                    "reward (WM)",
-                                    "|error|",
-                                ]
-                                table = ax.table(
-                                    cellText=rows,
-                                    colLabels=col_labels,
-                                    loc="center",
-                                    cellLoc="left",
-                                )
-                                table.auto_set_font_size(False)
-                                table.set_fontsize(8)
-                                table.scale(1, 1.25)
-                                title = "Reward world model vs environment"
-                                if val_wm_reward_mae is not None:
-                                    title += f" — MAE {val_wm_reward_mae:.4f}"
-                                ax.set_title(title, fontsize=10, pad=12)
-
-                                tbl_name = f"val_wm_reward_step{self.total_env_steps}.png"
-                                tbl_path = os.path.join(tempfile.gettempdir(), tbl_name)
-                                fig.tight_layout()
-                                fig.savefig(tbl_path, bbox_inches="tight")
-                                plt.close(fig)
-                                logger.log_image(
-                                    tbl_path,
-                                    step=self.total_env_steps,
-                                    name=f"validation_wm_reward_step{self.total_env_steps}",
-                                )
-
-                            if (
-                                curr_ascii_list is not None
-                                and actions is not None
-                                and true_rewards_list is not None
-                                and pred_rewards_list is not None
-                            ):
-                                valid_steps = [
-                                    i
-                                    for i, tr in enumerate(true_rewards_list)
-                                    if str(tr).strip()
-                                    and i < len(actions)
-                                    and i < len(curr_ascii_list)
-                                    and i < len(pred_rewards_list)
-                                ]
-                                if valid_steps:
-                                    pick_i = valid_steps[len(valid_steps) // 2]
-                                    from agent_system.environments.env_package.caged_craftext.utility import (
-                                        render_world_model_reward_panel,
-                                    )
-
-                                    action_raw = str(actions[pick_i] or "")
-                                    if "raw:" in action_raw:
-                                        action_raw = action_raw.split("raw:", 1)[1].strip()
-                                    wm_input = format_reward_prompt(
-                                        state=str(curr_ascii_list[pick_i] or ""),
-                                        action=action_raw,
-                                        task=str(
-                                            task_instructions_list[pick_i]
-                                            if task_instructions_list is not None
-                                            and pick_i < len(task_instructions_list)
-                                            else ""
-                                        ),
-                                    )
-                                    reward_img = render_world_model_reward_panel(
-                                        step=int(pick_i),
-                                        world_model_input=wm_input,
-                                        policy_action=str(actions[pick_i] or ""),
-                                        ground_truth_reward=str(true_rewards_list[pick_i] or ""),
-                                        world_model_output=str(pred_rewards_list[pick_i] or ""),
-                                    )
-                                    from PIL import Image
-
-                                    png_name = f"val_wm_reward_input_step{self.total_env_steps}.png"
-                                    png_path = os.path.join(tempfile.gettempdir(), png_name)
-                                    Image.fromarray(reward_img).save(png_path)
-                                    logger.log_image(
-                                        png_path,
-                                        step=self.total_env_steps,
-                                        name=f"validation_wm_reward_input_step{self.total_env_steps}",
-                                    )
-                                    print(
-                                        f"[INFO] Validation reward WM panel logged (step {pick_i}): {png_path}"
-                                    )
-                    except Exception as e:
-                        print(f"[WARNING] Failed to log validation WM reward table: {e}")
-
-                    # One validation transition: WM input, policy a_t, WM output.
-                    try:
-                        wm_enabled = (
-                            self.config.trainer.get("world_model", {}).get("enable", False)
-                            and self.config.trainer.world_model.get("task") == "inverse_action"
-                        )
-                        if wm_enabled and (
-                            actions is not None
-                            and action_ids is not None
-                            and curr_ascii_list is not None
-                            and next_ascii_list is not None
-                            and inverse_actions is not None
-                        ):
-                            valid_steps = [
-                                i
-                                for i, aid in enumerate(action_ids)
-                                if int(aid) >= 0
-                                and i < len(actions)
-                                and i < len(curr_ascii_list)
-                                and i < len(next_ascii_list)
-                                and i < len(inverse_actions)
-                                and (curr_ascii_list[i] or next_ascii_list[i])
-                            ]
-                            if valid_steps:
-                                pick_i = valid_steps[len(valid_steps) // 2]
-
-                                from agent_system.environments.env_package.caged_craftext.utility import (
-                                    render_world_model_transition_panel,
-                                )
-                                from agent_system.environments.prompts.world_model_inverse_action import (
-                                    format_inverse_action_prompt,
-                                )
-
-                                wm_input = format_inverse_action_prompt(
-                                    state_before=str(curr_ascii_list[pick_i] or ""),
-                                    state_after=str(next_ascii_list[pick_i] or ""),
-                                )
-                                transition_img = render_world_model_transition_panel(
-                                    step=int(pick_i),
-                                    world_model_input=wm_input,
-                                    policy_action=str(actions[pick_i] or ""),
-                                    world_model_output=str(inverse_actions[pick_i] or ""),
-                                )
-
-                                from PIL import Image
-
-                                png_name = f"val_wm_transition_step{self.total_env_steps}.png"
-                                png_path = os.path.join(tempfile.gettempdir(), png_name)
-                                Image.fromarray(transition_img).save(png_path)
-                                logger.log_image(
-                                    png_path,
-                                    step=self.total_env_steps,
-                                    name=f"validation_wm_transition_step{self.total_env_steps}",
-                                )
-                                print(
-                                    f"[INFO] Validation WM transition logged (step index {pick_i}): {png_path}"
-                                )
-                    except Exception as e:
-                        print(f"[WARNING] Failed to log validation WM transition: {e}")
-                except Exception as e:
-                    print(f"[WARNING] Failed to save/log validation video: {e}")
-                if hasattr(self.val_envs, 'set_record_video'):
-                    self.val_envs.set_record_video(False)
 
             del test_batch
             test_batch = test_output_gen_batch

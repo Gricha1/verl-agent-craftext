@@ -11,6 +11,8 @@ from craftax.craftax_classic.renderer import render_craftax_pixels as render_cla
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import textwrap
+from typing import Sequence
+
 from .projection import ACTION_TO_TEXT
 
 ACTION_TO_DIRECTION = {"1": "Left", "2": "Right", "3": "Up", "4": "Down"}
@@ -585,6 +587,7 @@ def append_value_bar_column(
     fh, fw = arr.shape[0], arr.shape[1]
     max_v = float(max_value if max_value is not None else DEFAULT_RETURN_BIN_SPEC.vmax)
     max_v = max(0.2, max_v)
+    max_v_int = int(max_v)
 
     bar_img = Image.new("RGB", (bar_width, fh), (248, 248, 252))
     draw = ImageDraw.Draw(bar_img)
@@ -597,7 +600,7 @@ def append_value_bar_column(
     track_right = bar_width - 10
 
     draw.text((4, 2), "V", fill=(40, 40, 40), font=font)
-    for tick in range(max_v + 1):
+    for tick in range(max_v_int + 1):
         y = int(track_bottom - (tick / max_v) * track_h)
         draw.line([(track_left - 6, y), (track_left - 2, y)], fill=(120, 120, 120), width=1)
         draw.text((2, y - 5), str(tick), fill=(80, 80, 80), font=font)
@@ -1695,3 +1698,221 @@ class VisualizerWithLLM:
     def clear_frames(self):
         """Очищает список кадров для новой визуализации."""
         self.frames = []
+
+
+def build_per_action_prompt_display_text(
+    prompts: Sequence[str],
+    action_names: Sequence[str],
+    per_action_returns: Sequence[float],
+    per_action_tokens: Sequence[str] | None = None,
+    *,
+    max_obs_chars: int = 1200,
+    max_legend_chars: int = 500,
+) -> str:
+    """Format LLM prompt + decoded per-action returns for validation panel."""
+    if not prompts:
+        return "(no prompts)"
+
+    prompt_body = str(prompts[0]).strip()
+    if len(prompts) == 1:
+        shared = prompt_body
+    else:
+        shared = prompt_body
+    if len(shared) > max_obs_chars:
+        shared = shared[: max_obs_chars - 3] + "..."
+
+    lines = [
+        "LLM user prompt (chat template applied at tokenization)",
+        "Single forward on actor — 17 consecutive return tokens (one per action, in order).",
+        "",
+        shared,
+        "",
+        "Decoded per action:",
+    ]
+    names = list(action_names)[: len(per_action_returns)]
+    returns = [float(r) for r in per_action_returns]
+    tokens = list(per_action_tokens) if per_action_tokens else [""] * len(returns)
+    for i, (name, ret) in enumerate(zip(names, returns)):
+        tok = tokens[i] if i < len(tokens) else ""
+        tok_part = f"{tok} -> " if tok else ""
+        lines.append(f"  {name}: {tok_part}{ret:.2f}")
+
+    reply_marker = "Reply with exactly"
+    if reply_marker in prompt_body and len(prompt_body) > max_obs_chars:
+        reply_tail = prompt_body[prompt_body.find(reply_marker) :].strip()
+        if len(reply_tail) > max_legend_chars:
+            reply_tail = reply_tail[: max_legend_chars - 3] + "..."
+        lines.extend(["", reply_tail])
+    return "\n".join(lines)
+
+
+def _matplotlib_figure_to_rgb(fig) -> np.ndarray:
+    import io
+
+    import matplotlib.pyplot as plt
+    from PIL import Image as PILImage
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    out = np.asarray(PILImage.open(buf).convert("RGB"))
+    buf.close()
+    return out
+
+
+def _normalize_frame_rgb(frame_arr: np.ndarray) -> np.ndarray:
+    arr = np.asarray(frame_arr)
+    if arr.ndim == 2:
+        arr = np.stack([arr] * 3, axis=-1)
+    elif arr.ndim == 3 and arr.shape[0] == 3:
+        arr = np.transpose(arr, (1, 2, 0))
+    if arr.max() <= 1.0:
+        arr = (arr * 255).astype(np.uint8)
+    else:
+        arr = arr.astype(np.uint8)
+    return arr
+
+
+def render_validation_per_action_frame_prompt_figure(
+    frame_arr: np.ndarray,
+    *,
+    action_names: Sequence[str],
+    per_action_prompts: Sequence[str] | None = None,
+    per_action_returns: Sequence[float] | None = None,
+    per_action_tokens: Sequence[str] | None = None,
+    frame_caption: str = "First frame — per-action return prediction (t=0)",
+) -> np.ndarray:
+    """Image 1/2: env frame + LLM prompt text."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    arr = _normalize_frame_rgb(frame_arr)
+    prompt_text = ""
+    if per_action_prompts and per_action_returns is not None:
+        prompt_text = build_per_action_prompt_display_text(
+            per_action_prompts,
+            action_names,
+            per_action_returns,
+            per_action_tokens=per_action_tokens,
+        )
+
+    prompt_lines = (prompt_text or "(prompt text not available)").count("\n") + 1
+    fig_h = max(7.0, 2.5 + 0.11 * prompt_lines)
+    fig, axes = plt.subplots(2, 1, figsize=(12, fig_h), dpi=160, gridspec_kw={"height_ratios": [1.0, 1.2]})
+    axes[0].imshow(arr)
+    axes[0].axis("off")
+    axes[0].set_title(frame_caption, fontsize=10)
+    axes[1].axis("off")
+    axes[1].set_title("LLM prompt(s) for per-action return prediction", fontsize=10, loc="left")
+    axes[1].text(
+        0.01,
+        0.99,
+        prompt_text or "(prompt text not available)",
+        transform=axes[1].transAxes,
+        fontsize=6.5,
+        va="top",
+        ha="left",
+        family="monospace",
+    )
+    fig.tight_layout()
+    return _matplotlib_figure_to_rgb(fig)
+
+
+def render_validation_per_action_return_histogram(
+    per_action_returns: Sequence[float],
+    *,
+    action_names: Sequence[str] | None = None,
+    title: str = "Per-action return at episode start (Q)",
+) -> np.ndarray:
+    """Image 2/2: bar chart of predicted return per action."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from .projection import ACTION_TO_TEXT
+
+    returns = [float(r) for r in per_action_returns]
+    n = len(returns)
+    if n == 0:
+        raise ValueError("per_action_returns is empty")
+
+    if action_names is None:
+        action_names = list(ACTION_TO_TEXT)[:n]
+    else:
+        action_names = list(action_names)[:n]
+
+    fig_w = max(10.0, 0.55 * n)
+    fig, ax = plt.subplots(figsize=(fig_w, 4.5), dpi=160)
+    x = np.arange(n, dtype=np.int64)
+    colors = ["#4C78A8"] * n
+    if returns:
+        best_i = int(np.argmax(returns))
+        colors[best_i] = "#E45756"
+    bars = ax.bar(x, returns, color=colors, edgecolor="#2F3B4A", linewidth=0.6)
+    ax.set_title(title)
+    ax.set_xlabel("action")
+    ax.set_ylabel("predicted return")
+    ax.set_xticks(x)
+    ax.set_xticklabels(action_names, rotation=45, ha="right", fontsize=7)
+    ax.grid(axis="y", linestyle="--", alpha=0.35)
+    ax.set_axisbelow(True)
+    ymax = max(returns) if returns else 0.0
+    ymin = min(returns) if returns else 0.0
+    pad = max(0.2, 0.1 * (ymax - ymin + 1e-6))
+    ax.set_ylim(ymin - pad, ymax + pad)
+    for rect, val in zip(bars, returns):
+        ax.text(
+            rect.get_x() + rect.get_width() / 2.0,
+            rect.get_height(),
+            f"{val:.2f}",
+            ha="center",
+            va="bottom" if val >= 0 else "top",
+            fontsize=7,
+            color="#1B1F24",
+        )
+    fig.tight_layout()
+    return _matplotlib_figure_to_rgb(fig)
+
+
+def render_validation_per_action_return_figure(
+    frame_arr: np.ndarray,
+    per_action_returns: Sequence[float],
+    *,
+    action_names: Sequence[str] | None = None,
+    per_action_prompts: Sequence[str] | None = None,
+    per_action_tokens: Sequence[str] | None = None,
+    title: str = "Per-action return at episode start (Q)",
+    frame_caption: str = "First frame — predicted return if each action is taken next",
+) -> np.ndarray:
+    """Backward-compatible single image (frame + prompt + histogram). Prefer split helpers."""
+    if action_names is None:
+        from .projection import ACTION_TO_TEXT
+
+        action_names = list(ACTION_TO_TEXT)[: len(per_action_returns)]
+    frame_prompt = render_validation_per_action_frame_prompt_figure(
+        frame_arr,
+        action_names=action_names,
+        per_action_prompts=per_action_prompts,
+        per_action_returns=per_action_returns,
+        per_action_tokens=per_action_tokens,
+        frame_caption=frame_caption,
+    )
+    hist = render_validation_per_action_return_histogram(
+        per_action_returns,
+        action_names=action_names,
+        title=title,
+    )
+    from PIL import Image as PILImage
+
+    top = PILImage.fromarray(frame_prompt)
+    bottom = PILImage.fromarray(hist)
+    width = max(top.width, bottom.width)
+    height = top.height + bottom.height
+    out = PILImage.new("RGB", (width, height), (255, 255, 255))
+    out.paste(top, (0, 0))
+    out.paste(bottom, (0, top.height))
+    return np.asarray(out)

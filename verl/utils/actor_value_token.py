@@ -159,6 +159,53 @@ def constrained_generate_return_token(
 
 
 @torch.no_grad()
+def constrained_generate_return_token_sequence(
+    actor_module,
+    value_prompts: torch.Tensor,
+    attention_mask: torch.Tensor,
+    position_ids: torch.Tensor,
+    tokenizer,
+    *,
+    num_tokens: int,
+    temperature: float = 1.0,
+    do_sample: bool = True,
+    spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Autoregressive decode of num_tokens return-bin chars (one per action). Returns (B, T), (B, T) log_probs."""
+    from verl.utils.model import compute_position_id_with_mask
+
+    if int(num_tokens) <= 0:
+        raise ValueError(f"num_tokens must be > 0, got {num_tokens}")
+
+    device = value_prompts.device
+    return_ids_allowed = return_bin_id_tensor(tokenizer, device, spec.num_bins)
+    input_ids = value_prompts
+    attn = attention_mask
+    pos = position_ids
+    token_rows: List[torch.Tensor] = []
+    log_prob_rows: List[torch.Tensor] = []
+    actor_module.eval()
+    for _ in range(int(num_tokens)):
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+            logits = _forward_last_logits(actor_module, input_ids, attn, pos)
+            token_ids, masked = constrained_sample_token_ids(
+                logits, return_ids_allowed, temperature=temperature, do_sample=do_sample
+            )
+            log_probs = constrained_log_probs(masked, token_ids)
+        token_rows.append(token_ids.unsqueeze(-1))
+        log_prob_rows.append(log_probs)
+        input_ids = torch.cat([input_ids, token_ids.unsqueeze(-1)], dim=-1)
+        attn = torch.cat(
+            [attn, torch.ones((attn.shape[0], 1), dtype=attn.dtype, device=device)],
+            dim=-1,
+        )
+        pos = compute_position_id_with_mask(attn)
+    out_ids = torch.cat(token_rows, dim=-1)
+    out_log_probs = torch.stack(log_prob_rows, dim=-1)
+    return out_ids, out_log_probs
+
+
+@torch.no_grad()
 def constrained_decode_return_values(
     actor_module,
     value_prompts: torch.Tensor,

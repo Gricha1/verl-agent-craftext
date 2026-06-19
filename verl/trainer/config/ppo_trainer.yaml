@@ -332,6 +332,9 @@ trainer:
   test_freq: -1
   # env_val_video_freq: каждые N шагов среды запускать валидацию с записью видео траектории в Comet ML (0 = отключено)
   env_val_video_freq: 0
+  validation_per_action_q:
+    enable: true
+    max_prompt_length: 2048  # Q prompt is longer than actor prompt (512)
   critic_warmup: 0
   default_hdfs_dir: null
   del_local_ckpt_after_load: False
@@ -363,11 +366,14 @@ trainer:
     enable: False
     loss_coef: 0.1
     # craftext: (ascii state, action token) -> i/j/k/l; gsm8k: (question, full solution) -> j/k
-    prompt_style: craftext  # craftext | gsm8k
+    # gsm8k_mc_q: (question, prefix, candidate step) -> j/k (MC target = final success)
+    prompt_style: craftext  # craftext | gsm8k | gsm8k_mc_q
     reward_prompt: null  # null = default for prompt_style
     max_reward_tokens: 1
     micro_batch_size_per_gpu: null  # null = actor ppo_micro_batch_size_per_gpu
     max_prompt_length: 2048  # GSM8K: question + solution in RM prompt
+    gsm8k_mc_q_step_split: newline  # newline | sentence (split full solution into steps)
+    gsm8k_mc_q_max_steps_per_traj: 32  # cap MC-Q rows per rollout trajectory
 
 ray_init:
   num_cpus: null # `None` means using all CPUs, which might cause hang if limited in systems like SLURM. Please set to a number allowed then.

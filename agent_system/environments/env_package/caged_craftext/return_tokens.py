@@ -49,6 +49,21 @@ DEFAULT_RETURN_BIN_SPEC = ReturnBinSpec(vmin=0.0, vmax=3.0, step=0.2)
 CRAFTEXT_RETURN_BIN_SPEC = ReturnBinSpec(vmin=0.0, vmax=8.0, step=0.5)
 
 
+def return_bin_spec_from_meta(meta_info, *, actor_cfg=None) -> ReturnBinSpec:
+    """Resolve return bins for validation Q decode (meta_info from driver overrides actor cfg)."""
+    meta = meta_info or {}
+    if "return_bin_vmin" in meta and "return_bin_vmax" in meta and "return_bin_step" in meta:
+        return ReturnBinSpec(
+            vmin=float(meta["return_bin_vmin"]),
+            vmax=float(meta["return_bin_vmax"]),
+            step=float(meta["return_bin_step"]),
+        )
+    if actor_cfg is not None and actor_cfg.get("actor_value_token", False):
+        return return_bin_spec_from_actor_cfg(actor_cfg)
+    # debug_square actor-value default grid (used for cross-run Q validation)
+    return ReturnBinSpec(vmin=-5.0, vmax=6.0, step=0.4)
+
+
 def return_bin_spec_from_env(env_cfg) -> ReturnBinSpec:
     return ReturnBinSpec(
         vmin=float(getattr(env_cfg, "value_return_min", DEFAULT_RETURN_BIN_SPEC.vmin)),
@@ -96,6 +111,15 @@ def return_token_legend_for_spec(spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC) 
         val = bin_to_scalar(i, spec=spec)
         parts.append(f"{tok}={val:g}")
     return ", ".join(parts)
+
+
+def return_token_legend_compact_for_spec(spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC) -> str:
+    lo = RETURN_BIN_TO_TOKEN[0]
+    hi = RETURN_BIN_TO_TOKEN[spec.max_bin]
+    return (
+        f"{lo}={spec.vmin:g} .. {hi}={spec.vmax:g} "
+        f"(step={spec.step:g}, {spec.num_bins} tokens A..o)"
+    )
 
 
 def return_token_legend() -> str:

@@ -267,6 +267,86 @@ Reply with exactly ONE token — your estimate of total remaining reward from th
 """
 
 
+def get_per_action_return_template_no_his() -> str:
+    """Critic Q-at-first-step: one return token if the agent takes a specific action next."""
+    return """
+Your goal is to complete the following task:
+**TASK:** {task_description}
+
+This is what you currently see:
+{current_observation}
+
+If you take this action next: {action_name} (token {action_token})
+
+Estimate the total remaining reward you can collect from this state until the task ends, assuming you take this action now and then play optimally.
+
+Reply with exactly ONE token — your return estimate (no explanation):
+{return_bin_legend}
+"""
+
+
+def format_per_action_return_prompt(
+    *,
+    task_description: str,
+    current_observation: str,
+    action_name: str,
+    action_token: str,
+    return_bin_legend: str,
+    constraint: str = "",
+) -> str:
+    prompt = get_per_action_return_template_no_his().format(
+        task_description=task_description or "No task",
+        current_observation=current_observation or "(empty observation)",
+        action_name=action_name,
+        action_token=action_token,
+        return_bin_legend=return_bin_legend,
+    )
+    if constraint:
+        prompt += f"\n\n**CONSTRAINT:** {constraint}"
+    return prompt
+
+
+def get_all_actions_return_template_no_his() -> str:
+    """One critic prompt: predict return token for every action in one reply."""
+    return """
+Your goal is to complete the following task:
+**TASK:** {task_description}
+
+This is what you currently see:
+{current_observation}
+
+Estimate the total remaining reward until the task ends for each possible next action (if you take that action now, then play optimally).
+
+Actions in order (token=name):
+{action_token_legend}
+
+Reply with exactly {num_actions} consecutive tokens — one return estimate per action, in the same order as above (no spaces, no explanation):
+{return_bin_legend}
+"""
+
+
+def format_all_actions_return_prompt(
+    *,
+    task_description: str,
+    current_observation: str,
+    return_bin_legend: str,
+    num_actions: int = 17,
+    constraint: str = "",
+) -> str:
+    from .action_tokens import action_token_legend
+
+    prompt = get_all_actions_return_template_no_his().format(
+        task_description=task_description or "No task",
+        current_observation=current_observation or "(empty observation)",
+        action_token_legend=action_token_legend(),
+        num_actions=int(num_actions),
+        return_bin_legend=return_bin_legend,
+    )
+    if constraint:
+        prompt += f"\n\n**CONSTRAINT:** {constraint}"
+    return prompt
+
+
 # Невалидное действие, которое среда точно не примет.
 # Оно будет использоваться, если LLM сгенерирует что-то непонятное.
 INVALID_ACTION_ID = -1

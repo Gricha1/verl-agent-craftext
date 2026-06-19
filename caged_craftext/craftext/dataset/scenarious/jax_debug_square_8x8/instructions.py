@@ -24,7 +24,7 @@ def create_target_state(required=None, forbidden=None, level: int = 0):
     return CMDPTargetState(achievements=target_achievements, energy_level_state=energy_level_state)
 
 
-# Achievement tags only select the corner goal cell (see debug_square_rewards.py).
+# Achievement tags select goal block type (STONE/WOOD/WATER); position comes from the live map.
 # Success = orthogonally adjacent to that cell; no DO / mining required.
 easy = {
     "GO_TO_STONE": {

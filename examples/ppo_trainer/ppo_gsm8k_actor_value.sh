@@ -10,6 +10,7 @@
 # Usage:
 #   bash examples/ppo_trainer/ppo_gsm8k_actor_value.sh
 #   ACTOR_VALUE_ONLINE_REWARD_WM=true bash examples/ppo_trainer/ppo_gsm8k_actor_value.sh
+#   ACTOR_VALUE_MC_Q_WM=true bash examples/ppo_trainer/ppo_gsm8k_actor_value.sh
 #   bash examples/ppo_trainer/ppo_gsm8k_actor_value_reward_wm.sh
 
 set -e
@@ -26,10 +27,18 @@ RETURN_BIN_MIN="${RETURN_BIN_MIN:--0.2}"
 RETURN_BIN_MAX="${RETURN_BIN_MAX:-1.2}"
 RETURN_BIN_STEP="${RETURN_BIN_STEP:-0.2}"
 ACTOR_VALUE_ONLINE_REWARD_WM="${ACTOR_VALUE_ONLINE_REWARD_WM:-false}"
+ACTOR_VALUE_MC_Q_WM="${ACTOR_VALUE_MC_Q_WM:-false}"
 ACTOR_VALUE_REWARD_WM_LOSS_COEF="${ACTOR_VALUE_REWARD_WM_LOSS_COEF:-0.1}"
 ACTOR_VALUE_REWARD_WM_PROMPT_STYLE="${ACTOR_VALUE_REWARD_WM_PROMPT_STYLE:-gsm8k}"
 ACTOR_VALUE_REWARD_WM_MAX_PROMPT_LENGTH="${ACTOR_VALUE_REWARD_WM_MAX_PROMPT_LENGTH:-2048}"
+GSM8K_MC_Q_STEP_SPLIT="${GSM8K_MC_Q_STEP_SPLIT:-newline}"
+GSM8K_MC_Q_MAX_STEPS="${GSM8K_MC_Q_MAX_STEPS:-32}"
 USE_ACTOR_LORA="${USE_ACTOR_LORA:-false}"
+
+if [ "$ACTOR_VALUE_MC_Q_WM" = true ]; then
+  ACTOR_VALUE_ONLINE_REWARD_WM=true
+  ACTOR_VALUE_REWARD_WM_PROMPT_STYLE=gsm8k_mc_q
+fi
 
 echo "=========================================="
 echo "PPO GSM8K (dual-prompt actor-value)"
@@ -45,6 +54,9 @@ echo "[INFO] entropy: full vocabulary (entropy_over_valid_actions=False)"
 echo "[INFO] checkpoints: disabled (trainer.save_freq=-1)"
 echo "[INFO] USE_ACTOR_LORA=$USE_ACTOR_LORA (false -> full finetune, actor=value same weights)"
 echo "[INFO] actor_value_online_reward_wm: $ACTOR_VALUE_ONLINE_REWARD_WM (style=$ACTOR_VALUE_REWARD_WM_PROMPT_STYLE, loss_coef=$ACTOR_VALUE_REWARD_WM_LOSS_COEF)"
+if [ "$ACTOR_VALUE_MC_Q_WM" = true ]; then
+  echo "[INFO] MC-Q WM: step_split=$GSM8K_MC_Q_STEP_SPLIT max_steps_per_traj=$GSM8K_MC_Q_MAX_STEPS (target=final episode success j/k)"
+fi
 
 export RUN_NAME="${RUN_NAME:-PPO GSM8K dual-prompt actor value}"
 
@@ -85,4 +97,6 @@ bash examples/ppo_trainer/run_gsm8k_lora_job.sh \
   trainer.actor_value_online_reward_wm.loss_coef="$ACTOR_VALUE_REWARD_WM_LOSS_COEF" \
   trainer.actor_value_online_reward_wm.prompt_style="$ACTOR_VALUE_REWARD_WM_PROMPT_STYLE" \
   trainer.actor_value_online_reward_wm.max_prompt_length="$ACTOR_VALUE_REWARD_WM_MAX_PROMPT_LENGTH" \
+  trainer.actor_value_online_reward_wm.gsm8k_mc_q_step_split="$GSM8K_MC_Q_STEP_SPLIT" \
+  trainer.actor_value_online_reward_wm.gsm8k_mc_q_max_steps_per_traj="$GSM8K_MC_Q_MAX_STEPS" \
   "$@"

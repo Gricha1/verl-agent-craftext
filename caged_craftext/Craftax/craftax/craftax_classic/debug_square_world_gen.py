@@ -1,10 +1,22 @@
-"""Fixed 8x8 debug arena: tree border, grass interior, corner resource blocks, player at center."""
+"""8x8 debug arena: tree border, grass interior, resources in inner corners (shuffled each reset)."""
 
+import jax
 import jax.numpy as jnp
 
 from craftax.craftax_classic.constants import Achievement, Action, BlockType
 from craftax.craftax_classic.envs.craftax_state import EnvState, Inventory, Mobs
 from craftax.craftax_classic.game_logic import calculate_light_level
+
+# Inner 6x6 floor corners (adjacent to tree border, away from center spawn at 4,4).
+_DEBUG_CORNER_CELLS = jnp.array(
+    [
+        [1, 1],  # top-left
+        [1, 6],  # top-right
+        [6, 1],  # bottom-left
+        [6, 6],  # bottom-right
+    ],
+    dtype=jnp.int32,
+)
 
 
 def generate_debug_square_world(rng, params, static_params):
@@ -13,11 +25,7 @@ def generate_debug_square_world(rng, params, static_params):
       - Border (row/col 0 and 7): TREE
       - Inner floor: GRASS
       - Player spawn: map center (4, 4)
-      - Corner resources (one cell inside the tree ring):
-          (1, 1) STONE
-          (1, 6) WOOD
-          (6, 1) WATER
-          (6, 6) empty GRASS (unused corner tile)
+      - STONE / WOOD / WATER on three distinct inner corners (permutation each reset)
     No mobs, ores, lava, procedural noise, or starting saplings in inventory.
     """
     h, w = static_params.map_size
@@ -31,11 +39,13 @@ def generate_debug_square_world(rng, params, static_params):
     map = map.at[:, 0].set(BlockType.TREE.value)
     map = map.at[:, w - 1].set(BlockType.TREE.value)
 
-    # Corner resources (adjacent to tree wall, not on the outermost ring)
-    map = map.at[1, 1].set(BlockType.STONE.value)
-    map = map.at[1, w - 2].set(BlockType.WOOD.value)
-    map = map.at[h - 2, 1].set(BlockType.WATER.value)
-    map = map.at[h - 2, w - 2].set(BlockType.GRASS.value)
+    perm = jax.random.permutation(rng, _DEBUG_CORNER_CELLS.shape[0])
+    stone_rc = _DEBUG_CORNER_CELLS[perm[0]]
+    wood_rc = _DEBUG_CORNER_CELLS[perm[1]]
+    water_rc = _DEBUG_CORNER_CELLS[perm[2]]
+    map = map.at[stone_rc[0], stone_rc[1]].set(BlockType.STONE.value)
+    map = map.at[wood_rc[0], wood_rc[1]].set(BlockType.WOOD.value)
+    map = map.at[water_rc[0], water_rc[1]].set(BlockType.WATER.value)
 
     player_position = jnp.array([h // 2, w // 2], dtype=jnp.int32)
     map = map.at[player_position[0], player_position[1]].set(BlockType.GRASS.value)
