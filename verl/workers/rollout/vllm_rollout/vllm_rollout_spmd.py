@@ -44,6 +44,10 @@ from vllm.worker.worker_base import WorkerWrapperBase
 from verl import DataProto
 from verl.third_party.vllm import vllm_version
 from verl.utils.debug import GPUMemoryLogger
+from verl.utils.dataset.vision_utils import (
+    qwen_vl_prepare_prompt_ids_for_vllm,
+    resolve_qwen_image_pad_token_ids,
+)
 from verl.utils.torch_functional import get_response_mask, pad_2d_list_to_length
 from verl.workers.rollout.base import BaseRollout
 from vllm.lora.request import LoRARequest
@@ -88,6 +92,13 @@ class vLLMRollout(BaseRollout):
         super().__init__()
         self.config = config
         assert not (not config.enforce_eager and config.free_cache_engine), "disable CUDA graph (enforce_eager = False) if free cache engine"
+        self.tokenizer = tokenizer
+        self.processor = kwargs.pop("processor", None)
+        self._qwen_image_pad_token_ids = None
+        if self.processor is not None or self.tokenizer is not None:
+            self._qwen_image_pad_token_ids = resolve_qwen_image_pad_token_ids(
+                self.tokenizer, processor=self.processor
+            )
 
         tensor_parallel_size = self.config.get("tensor_model_parallel_size", 1)
         assert tensor_parallel_size <= torch.distributed.get_world_size(), "tensor parallel size should be less than or equal to the world size"
@@ -194,6 +205,7 @@ class vLLMRollout(BaseRollout):
         print(f"kwargs: {kwargs}")
         self.sampling_params = SamplingParams(**kwargs)
 
+        self.tokenizer = tokenizer
         self.pad_token_id = tokenizer.pad_token_id
 
     @contextmanager
@@ -237,26 +249,73 @@ class vLLMRollout(BaseRollout):
         batch_size = idx.size(0)
 
         non_tensor_batch = prompts.non_tensor_batch
+        batch_has_mm = "multi_modal_data" in non_tensor_batch
         if "raw_prompt_ids" not in non_tensor_batch:
-            non_tensor_batch["raw_prompt_ids"] = np.array([_pre_process_inputs(self.pad_token_id, idx[i]) for i in range(batch_size)], dtype=object)
+            fallback_raw = [
+                _pre_process_inputs(self.pad_token_id, idx[i]) for i in range(batch_size)
+            ]
+            if batch_has_mm:
+                fallback_raw = [
+                    qwen_vl_prepare_prompt_ids_for_vllm(
+                        raw, self.tokenizer, processor=self.processor
+                    )
+                    for raw in fallback_raw
+                ]
+            non_tensor_batch["raw_prompt_ids"] = np.array(fallback_raw, dtype=object)
 
         if batch_size != len(non_tensor_batch["raw_prompt_ids"]):
             raise RuntimeError("vllm sharding manager is not work properly.")
 
         if "multi_modal_data" in non_tensor_batch:
             vllm_inputs = []
-            for raw_prompt_ids, multi_modal_data in zip(non_tensor_batch.pop("raw_prompt_ids"), non_tensor_batch.pop("multi_modal_data")):
-                vllm_inputs.append({"prompt_token_ids": raw_prompt_ids, "multi_modal_data": multi_modal_data})
+            vllm_prompt_texts = non_tensor_batch.pop("vllm_prompt_text", None)
+            raw_prompt_ids_arr = non_tensor_batch.pop("raw_prompt_ids")
+            multi_modal_arr = non_tensor_batch.pop("multi_modal_data")
+            for i, (raw_prompt_ids, multi_modal_data) in enumerate(
+                zip(raw_prompt_ids_arr, multi_modal_arr, strict=True)
+            ):
+                if vllm_prompt_texts is not None and vllm_prompt_texts[i]:
+                    vllm_inputs.append(
+                        {"prompt": str(vllm_prompt_texts[i]), "multi_modal_data": multi_modal_data}
+                    )
+                else:
+                    vllm_inputs.append(
+                        {"prompt_token_ids": raw_prompt_ids, "multi_modal_data": multi_modal_data}
+                    )
         else:
             vllm_inputs = [{"prompt_token_ids": raw_prompt_ids} for raw_prompt_ids in non_tensor_batch.pop("raw_prompt_ids")]
 
-        # ensure the type of `prompt_token_ids` passed to vllm is list[int]
-        # https://github.com/volcengine/verl/pull/772
+        batch_has_mm = any("multi_modal_data" in inp for inp in vllm_inputs)
         for input_data in vllm_inputs:
-            if isinstance(input_data["prompt_token_ids"], np.ndarray):
-                input_data["prompt_token_ids"] = input_data["prompt_token_ids"].tolist()
-            elif not isinstance(input_data["prompt_token_ids"], list):
-                raise TypeError(f"prompt_token_ids must be a list or numpy array, got {type(input_data['prompt_token_ids'])}")
+            if "prompt_token_ids" not in input_data:
+                continue
+            prompt_token_ids = input_data["prompt_token_ids"]
+            if isinstance(prompt_token_ids, np.ndarray):
+                prompt_token_ids = prompt_token_ids.tolist()
+            elif isinstance(prompt_token_ids, torch.Tensor):
+                prompt_token_ids = prompt_token_ids.tolist()
+            elif not isinstance(prompt_token_ids, list):
+                raise TypeError(f"prompt_token_ids must be a list or numpy array, got {type(prompt_token_ids)}")
+            if batch_has_mm or "multi_modal_data" in input_data:
+                prompt_token_ids = qwen_vl_prepare_prompt_ids_for_vllm(
+                    prompt_token_ids,
+                    self.tokenizer,
+                    processor=self.processor,
+                )
+                pad_ids = self._qwen_image_pad_token_ids or resolve_qwen_image_pad_token_ids(
+                    self.tokenizer, processor=self.processor
+                )
+                pad_id_set = set(pad_ids)
+                n_pads = sum(1 for tok in prompt_token_ids if tok in pad_id_set)
+                mm_data = input_data.get("multi_modal_data") or {}
+                n_images = len(mm_data.get("image") or [])
+                if n_images and n_pads != n_images:
+                    raise RuntimeError(
+                        f"Qwen-VL vLLM prompt has {n_pads} image_pad tokens but {n_images} image(s). "
+                        f"pad_token_ids={pad_ids}. Re-run from repo root with "
+                        f"PYTHONPATH=$PWD:$PYTHONPATH or pip install -e ."
+                    )
+            input_data["prompt_token_ids"] = prompt_token_ids
 
         do_sample = prompts.meta_info.get("do_sample", True)
         is_validate = prompts.meta_info.get("validate", False)

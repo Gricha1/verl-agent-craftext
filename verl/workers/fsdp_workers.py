@@ -484,6 +484,7 @@ class ActorRolloutRefWorker(Worker):
                     model_hf_config=self.actor_model_config,
                     trust_remote_code=trust_remote_code,
                     lora_tokenizer_path=local_path,
+                    processor=self.processor,
                     **lora_kwargs)
             elif vllm_mode == "spmd":
                 from verl.workers.rollout.vllm_rollout import vLLMAsyncRollout
@@ -496,6 +497,7 @@ class ActorRolloutRefWorker(Worker):
                     model_hf_config=self.actor_model_config,
                     device_mesh=rollout_device_mesh,
                     trust_remote_code=trust_remote_code,
+                    processor=self.processor,
                     **lora_kwargs)
             else:
                 raise NotImplementedError("vllm_mode must be 'customized' or 'spmd'")
@@ -787,12 +789,17 @@ class ActorRolloutRefWorker(Worker):
 
         assert self.config.actor.get("actor_value_token", False), "actor_value_token must be enabled"
 
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.actor_module_fsdp)
+
+        prompts = prompts.to(get_torch_device().current_device())
+
         temperature = prompts.meta_info.get("temperature", self.config.rollout.temperature)
         do_sample = prompts.meta_info.get("do_sample", False)
         num_tokens = int(prompts.meta_info.get("value_num_tokens", 1))
 
-        with self.rollout_sharding_manager:
-            prompts_sharded = self.rollout_sharding_manager.preprocess_data(prompts)
+        with self.ulysses_sharding_manager:
+            prompts_sharded = self.ulysses_sharding_manager.preprocess_data(prompts)
             value_ids = prompts_sharded.batch["value_input_ids"]
             value_mask = prompts_sharded.batch.get("value_attention_mask", None)
             value_pos = prompts_sharded.batch.get("value_position_ids", None)
@@ -833,10 +840,12 @@ class ActorRolloutRefWorker(Worker):
                 tensors={"responses": responses},
                 meta_info=prompts.meta_info if hasattr(prompts, "meta_info") else {},
             )
-            output = self.rollout_sharding_manager.postprocess_data(output)
+            output = self.ulysses_sharding_manager.postprocess_data(output)
 
         output = output.to("cpu")
         get_torch_device().empty_cache()
+        if self._is_offload_param:
+            offload_fsdp_model_to_cpu(self.actor_module_fsdp)
         return output
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
@@ -851,13 +860,17 @@ class ActorRolloutRefWorker(Worker):
             constrained_generate_return_token_sequence,
         )
 
+        prompts = prompts.to(get_torch_device().current_device())
         temperature = prompts.meta_info.get("temperature", self.config.rollout.temperature)
         do_sample = prompts.meta_info.get("do_sample", False)
         num_tokens = int(prompts.meta_info.get("value_num_tokens", 1))
         spec = return_bin_spec_from_meta(prompts.meta_info, actor_cfg=self.config.actor)
 
-        with self.rollout_sharding_manager:
-            prompts_sharded = self.rollout_sharding_manager.preprocess_data(prompts)
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.actor_module_fsdp)
+
+        with self.ulysses_sharding_manager:
+            prompts_sharded = self.ulysses_sharding_manager.preprocess_data(prompts)
             value_ids = prompts_sharded.batch["value_input_ids"]
             value_mask = prompts_sharded.batch.get("value_attention_mask", None)
             value_pos = prompts_sharded.batch.get("value_position_ids", None)
@@ -897,10 +910,12 @@ class ActorRolloutRefWorker(Worker):
                 tensors={"responses": responses},
                 meta_info=prompts.meta_info if hasattr(prompts, "meta_info") else {},
             )
-            output = self.rollout_sharding_manager.postprocess_data(output)
+            output = self.ulysses_sharding_manager.postprocess_data(output)
 
         output = output.to("cpu")
         get_torch_device().empty_cache()
+        if self._is_offload_param:
+            offload_fsdp_model_to_cpu(self.actor_module_fsdp)
         return output
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
@@ -1430,42 +1445,60 @@ class CriticWorker(Worker):
         torch_dtype = self.config.model.fsdp_config.get("model_dtype", "fp32")
         torch_dtype = PrecisionType.to_dtype(torch_dtype)
 
-        from transformers import AutoConfig, AutoModelForTokenClassification
+        from transformers import AutoConfig, AutoModelForTokenClassification, AutoModelForVision2Seq
 
         # Используем flash_attention_2 только если CUDA доступна
         attn_impl = "flash_attention_2" if is_cuda_available else "eager"
         critic_model_config = AutoConfig.from_pretrained(local_path, attn_implementation=attn_impl, trust_remote_code=config.model.get("trust_remote_code", False))
-        critic_model_config.num_labels = 1
+        is_vlm_critic = type(critic_model_config) in AutoModelForVision2Seq._model_mapping.keys()
+        if not is_vlm_critic:
+            critic_model_config.num_labels = 1
         # patch for kimi-vl
         if getattr(critic_model_config, "model_type", None) == "kimi_vl":
             critic_model_config.text_config.topk_method = "greedy"
 
-        init_context = get_init_weight_context_manager(use_meta_tensor=not critic_model_config.tie_word_embeddings, mesh=self.device_mesh)
+        tie_word_embeddings = getattr(critic_model_config, "tie_word_embeddings", False)
+        init_context = get_init_weight_context_manager(use_meta_tensor=not tie_word_embeddings, mesh=self.device_mesh)
+
+        use_remove_padding = config.model.get("use_remove_padding", False)
 
         with init_context(), warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            critic_model_config.classifier_dropout = 0.0
-            critic_model_config.hidden_dropout = "0"
-            critic_module = AutoModelForTokenClassification.from_pretrained(
-                pretrained_model_name_or_path=local_path,
-                torch_dtype=torch_dtype,
-                config=critic_model_config,
-                trust_remote_code=config.model.get("trust_remote_code", False),
-            )
+            if is_vlm_critic:
+                from verl.models.transformers.vl_value import wrap_vl_backbone_for_critic
 
-            use_remove_padding = config.model.get("use_remove_padding", False)
-
-            apply_monkey_patch(
-                model=critic_module,
-                use_remove_padding=use_remove_padding,
-                ulysses_sp_size=self.ulysses_sequence_parallel_size,
-            )
-
-            # some parameters may not in torch_dtype
-            critic_module.to(torch_dtype)
-
-            if config.model.get("enable_gradient_checkpointing", False):
-                critic_module.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+                backbone = AutoModelForVision2Seq.from_pretrained(
+                    pretrained_model_name_or_path=local_path,
+                    torch_dtype=torch_dtype,
+                    config=critic_model_config,
+                    trust_remote_code=config.model.get("trust_remote_code", False),
+                )
+                apply_monkey_patch(
+                    model=backbone,
+                    use_remove_padding=use_remove_padding,
+                    ulysses_sp_size=self.ulysses_sequence_parallel_size,
+                )
+                backbone.to(torch_dtype)
+                if config.model.get("enable_gradient_checkpointing", False):
+                    backbone.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+                critic_module = wrap_vl_backbone_for_critic(backbone)
+            else:
+                critic_model_config.classifier_dropout = 0.0
+                critic_model_config.hidden_dropout = "0"
+                critic_module = AutoModelForTokenClassification.from_pretrained(
+                    pretrained_model_name_or_path=local_path,
+                    torch_dtype=torch_dtype,
+                    config=critic_model_config,
+                    trust_remote_code=config.model.get("trust_remote_code", False),
+                )
+                apply_monkey_patch(
+                    model=critic_module,
+                    use_remove_padding=use_remove_padding,
+                    ulysses_sp_size=self.ulysses_sequence_parallel_size,
+                )
+                critic_module.to(torch_dtype)
+                if config.model.get("enable_gradient_checkpointing", False):
+                    critic_module.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         
         if self._is_lora:
             print("Applying LoRA to critic module")
@@ -1478,7 +1511,10 @@ class CriticWorker(Worker):
                 'target_modules': convert_to_regular_types(self.config.model.target_modules),
                 'bias': "none",
             }
-            critic_module = get_peft_model(critic_module, LoraConfig(**lora_config))
+            if is_vlm_critic:
+                critic_module.backbone = get_peft_model(critic_module.backbone, LoraConfig(**lora_config))
+            else:
+                critic_module = get_peft_model(critic_module, LoraConfig(**lora_config))
 
         if self.rank == 0:
             print_model_size(critic_module)

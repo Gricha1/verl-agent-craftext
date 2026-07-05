@@ -1746,6 +1746,129 @@ def build_per_action_prompt_display_text(
     return "\n".join(lines)
 
 
+def build_plan_q_prompt_display_text(
+    prompts: Sequence[str],
+    horizons: Sequence[int],
+    pred_returns: Sequence[float],
+    target_returns: Sequence[float],
+    pred_tokens: Sequence[str] | None = None,
+    *,
+    max_prompt_chars: int = 900,
+) -> str:
+    """Format plan-Q prompts + pred vs MC target for validation panel."""
+    lines = [
+        "Plan-Q validation at t=0 (rollout prefix as candidate plan)",
+        "One actor forward per horizon — single return token each.",
+        "",
+    ]
+    tokens = list(pred_tokens) if pred_tokens else [""] * len(pred_returns)
+    for i, h in enumerate(horizons):
+        prompt = str(prompts[i]).strip() if i < len(prompts) else ""
+        if len(prompt) > max_prompt_chars:
+            prompt = prompt[: max_prompt_chars - 3] + "..."
+        pred_t = tokens[i] if i < len(tokens) else ""
+        pred_r = float(pred_returns[i]) if i < len(pred_returns) else 0.0
+        tgt_r = float(target_returns[i]) if i < len(target_returns) else 0.0
+        tok_part = f"{pred_t} -> " if pred_t else ""
+        lines.extend(
+            [
+                f"--- Horizon h={int(h)} ---",
+                prompt,
+                f"Pred: {tok_part}{pred_r:.2f}  |  MC target: {tgt_r:.2f}",
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip()
+
+
+def render_validation_plan_q_frame_prompt_figure(
+    frame_arr: np.ndarray | None,
+    *,
+    plan_q_prompts: Sequence[str],
+    plan_q_horizons: Sequence[int],
+    plan_q_returns: Sequence[float],
+    plan_q_targets: Sequence[float],
+    plan_q_tokens: Sequence[str] | None = None,
+    frame_caption: str = "First frame — plan-Q prediction (t=0)",
+) -> np.ndarray:
+    """Env frame (optional) + plan-Q prompt text."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    prompt_text = build_plan_q_prompt_display_text(
+        plan_q_prompts,
+        plan_q_horizons,
+        plan_q_returns,
+        plan_q_targets,
+        pred_tokens=plan_q_tokens,
+    )
+    prompt_lines = (prompt_text or "").count("\n") + 1
+    fig_h = max(8.0, 2.5 + 0.1 * prompt_lines)
+    if frame_arr is not None:
+        arr = _normalize_frame_rgb(frame_arr)
+        fig, axes = plt.subplots(2, 1, figsize=(12, fig_h), dpi=160, gridspec_kw={"height_ratios": [1.0, 1.4]})
+        axes[0].imshow(arr)
+        axes[0].axis("off")
+        axes[0].set_title(frame_caption, fontsize=10)
+        text_ax = axes[1]
+    else:
+        fig, text_ax = plt.subplots(1, 1, figsize=(12, fig_h), dpi=160)
+    text_ax.axis("off")
+    text_ax.set_title("LLM prompt for plan-Q prediction", fontsize=10, loc="left")
+    text_ax.text(
+        0.01,
+        0.99,
+        prompt_text or "(prompt text not available)",
+        transform=text_ax.transAxes,
+        fontsize=6.5,
+        va="top",
+        ha="left",
+        family="monospace",
+    )
+    fig.tight_layout()
+    return _matplotlib_figure_to_rgb(fig)
+
+
+def render_validation_plan_q_horizon_chart(
+    plan_q_returns: Sequence[float],
+    plan_q_targets: Sequence[float],
+    *,
+    plan_q_horizons: Sequence[int] | None = None,
+    title: str = "Plan-Q at t=0: pred vs MC target",
+) -> np.ndarray:
+    """Bar chart: predicted vs target return per plan horizon."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    preds = [float(r) for r in plan_q_returns]
+    tgts = [float(r) for r in plan_q_targets]
+    n = len(preds)
+    if n == 0:
+        raise ValueError("plan_q_returns is empty")
+    if plan_q_horizons is not None and len(plan_q_horizons) >= n:
+        labels = [f"h={int(h)}" for h in plan_q_horizons[:n]]
+    else:
+        labels = [f"h={i + 1}" for i in range(n)]
+
+    x = np.arange(n, dtype=np.int64)
+    width = 0.35
+    fig, ax = plt.subplots(figsize=(max(8.0, 1.2 * n), 4.5), dpi=160)
+    ax.bar(x - width / 2, preds, width, label="pred", color="#4C78A8")
+    ax.bar(x + width / 2, tgts, width, label="MC target", color="#F58518")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=0)
+    ax.set_ylabel("return")
+    ax.set_title(title)
+    ax.legend(loc="upper right", fontsize=8)
+    ax.grid(axis="y", alpha=0.25)
+    fig.tight_layout()
+    return _matplotlib_figure_to_rgb(fig)
+
+
 def _matplotlib_figure_to_rgb(fig) -> np.ndarray:
     import io
 

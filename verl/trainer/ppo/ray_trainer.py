@@ -470,6 +470,10 @@ class RayPPOTrainer:
         av = self.config.trainer.get("actor_value_online_reward_wm", {})
         return bool(av.get("enable", False)) and self.use_actor_value_token
 
+    def _actor_value_online_plan_q_wm_enabled(self) -> bool:
+        pq = self.config.trainer.get("actor_value_online_plan_q_wm", {})
+        return bool(pq.get("enable", False)) and self.use_actor_value_token
+
     def _world_model_reward_enabled(self) -> bool:
         wm = self.config.trainer.get("world_model", {})
         return bool(wm.get("enable", False)) and str(wm.get("task", "latent")) == "reward"
@@ -491,6 +495,12 @@ class RayPPOTrainer:
         if self._actor_value_online_reward_wm_enabled():
             return self.config.trainer.actor_value_online_reward_wm.get("micro_batch_size_per_gpu")
         return self.config.trainer.world_model.get("micro_batch_size_per_gpu")
+
+    def _online_plan_q_wm_loss_coef(self) -> float:
+        return float(self.config.trainer.actor_value_online_plan_q_wm.get("loss_coef", 0.1))
+
+    def _online_plan_q_wm_micro_batch_size(self):
+        return self.config.trainer.actor_value_online_plan_q_wm.get("micro_batch_size_per_gpu")
 
     @staticmethod
     def _remap_metrics_prefix(metrics: Dict[str, float], prefix: str) -> Dict[str, float]:
@@ -634,6 +644,7 @@ class RayPPOTrainer:
             )
 
         av_rm = bool(config.trainer.get("actor_value_online_reward_wm", {}).get("enable", False))
+        av_pq = bool(config.trainer.get("actor_value_online_plan_q_wm", {}).get("enable", False))
         wm_reward = bool(
             config.trainer.get("world_model", {}).get("enable", False)
             and str(config.trainer.world_model.get("task", "latent")) == "reward"
@@ -643,8 +654,15 @@ class RayPPOTrainer:
                 "Enable only one online reward model path: "
                 "trainer.world_model (task=reward) OR trainer.actor_value_online_reward_wm"
             )
+        if av_rm and av_pq:
+            raise ValueError(
+                "Enable only one of trainer.actor_value_online_reward_wm or "
+                "trainer.actor_value_online_plan_q_wm (step-reward vs plan-Q)"
+            )
         if av_rm and not algo_actor_value:
             raise ValueError("trainer.actor_value_online_reward_wm requires use_actor_value_token=True")
+        if av_pq and not algo_actor_value:
+            raise ValueError("trainer.actor_value_online_plan_q_wm requires use_actor_value_token=True")
 
         print("[validate_config] All configuration checks passed successfully!")
 
@@ -1185,6 +1203,64 @@ class RayPPOTrainer:
                                 except Exception as e:
                                     print(f"[WARNING] Failed to log per-action return panel: {e}")
 
+                                # Plan-Q at t=0: rollout prefix -> n-step return prompts.
+                                try:
+                                    plan_q_returns = video_out.meta_info.get("validation_video_plan_q_returns")
+                                    plan_q_targets = video_out.meta_info.get("validation_video_plan_q_targets")
+                                    plan_q_prompts = video_out.meta_info.get("validation_video_plan_q_prompts")
+                                    plan_q_tokens = video_out.meta_info.get("validation_video_plan_q_tokens")
+                                    plan_q_horizons = video_out.meta_info.get("validation_video_plan_q_horizons")
+                                    if plan_q_returns and len(plan_q_returns) > 0:
+                                        from agent_system.environments.env_package.caged_craftext.utility import (
+                                            render_validation_plan_q_frame_prompt_figure,
+                                            render_validation_plan_q_horizon_chart,
+                                        )
+
+                                        val_frame = frames[0] if frames and len(frames) > 0 else None
+                                        pq_frame_panel = render_validation_plan_q_frame_prompt_figure(
+                                            val_frame,
+                                            plan_q_prompts=plan_q_prompts or [],
+                                            plan_q_horizons=plan_q_horizons or list(range(1, len(plan_q_returns) + 1)),
+                                            plan_q_returns=plan_q_returns,
+                                            plan_q_targets=plan_q_targets or [],
+                                            plan_q_tokens=plan_q_tokens,
+                                        )
+                                        pq_chart = render_validation_plan_q_horizon_chart(
+                                            plan_q_returns,
+                                            plan_q_targets or [],
+                                            plan_q_horizons=plan_q_horizons,
+                                        )
+                                        import imageio
+
+                                        pq_fp_name = f"{self._validation_file_stem('val_plan_q_frame_prompt', task_slug)}.png"
+                                        pq_fp_path = os.path.join(gif_dir, pq_fp_name)
+                                        imageio.imwrite(pq_fp_path, pq_frame_panel)
+                                        logger.log_image(
+                                            pq_fp_path,
+                                            step=self.total_env_steps,
+                                            name=self._validation_artifact_name(
+                                                "validation_plan_q_frame_prompt", task_slug
+                                            ),
+                                        )
+
+                                        pq_hist_name = f"{self._validation_file_stem('val_plan_q_horizon_chart', task_slug)}.png"
+                                        pq_hist_path = os.path.join(gif_dir, pq_hist_name)
+                                        imageio.imwrite(pq_hist_path, pq_chart)
+                                        logger.log_image(
+                                            pq_hist_path,
+                                            step=self.total_env_steps,
+                                            name=self._validation_artifact_name(
+                                                "validation_plan_q_horizon_chart", task_slug
+                                            ),
+                                        )
+                                        slug_note = f" ({task_slug})" if task_slug else ""
+                                        print(
+                                            f"[INFO] Validation plan-Q panels{slug_note} saved: "
+                                            f"{pq_fp_path}, {pq_hist_path}"
+                                        )
+                                except Exception as e:
+                                    print(f"[WARNING] Failed to log plan-Q validation panel: {e}")
+
                                 # World model inverse-action accuracy table (when WM enabled).
                                 try:
                                     if (
@@ -1514,6 +1590,63 @@ class RayPPOTrainer:
 
             print('validation generation end')
 
+            if (
+                batch_idx == 0
+                and logger is not None
+                and test_output_gen_batch is not None
+                and self._actor_value_online_plan_q_wm_enabled()
+                and "gsm8k" in str(self.config.env.env_name).lower()
+            ):
+                try:
+                    plan_q_returns = test_output_gen_batch.meta_info.get("validation_video_plan_q_returns")
+                    plan_q_targets = test_output_gen_batch.meta_info.get("validation_video_plan_q_targets")
+                    plan_q_prompts = test_output_gen_batch.meta_info.get("validation_video_plan_q_prompts")
+                    plan_q_tokens = test_output_gen_batch.meta_info.get("validation_video_plan_q_tokens")
+                    plan_q_horizons = test_output_gen_batch.meta_info.get("validation_video_plan_q_horizons")
+                    if plan_q_returns and len(plan_q_returns) > 0:
+                        from agent_system.environments.env_package.caged_craftext.utility import (
+                            render_validation_plan_q_frame_prompt_figure,
+                            render_validation_plan_q_horizon_chart,
+                        )
+                        import imageio
+                        import tempfile
+
+                        gif_dir = tempfile.gettempdir()
+                        pq_frame_panel = render_validation_plan_q_frame_prompt_figure(
+                            None,
+                            plan_q_prompts=plan_q_prompts or [],
+                            plan_q_horizons=plan_q_horizons or [],
+                            plan_q_returns=plan_q_returns,
+                            plan_q_targets=plan_q_targets or [],
+                            plan_q_tokens=plan_q_tokens,
+                        )
+                        pq_chart = render_validation_plan_q_horizon_chart(
+                            plan_q_returns,
+                            plan_q_targets or [],
+                            plan_q_horizons=plan_q_horizons,
+                        )
+                        pq_fp_name = f"{self._validation_file_stem('val_plan_q_prompt', 'gsm8k')}.png"
+                        pq_fp_path = os.path.join(gif_dir, pq_fp_name)
+                        imageio.imwrite(pq_fp_path, pq_frame_panel)
+                        logger.log_image(
+                            pq_fp_path,
+                            step=self.total_env_steps,
+                            name=self._validation_artifact_name("validation_plan_q_prompt", "gsm8k"),
+                        )
+                        pq_hist_name = f"{self._validation_file_stem('val_plan_q_chart', 'gsm8k')}.png"
+                        pq_hist_path = os.path.join(gif_dir, pq_hist_name)
+                        imageio.imwrite(pq_hist_path, pq_chart)
+                        logger.log_image(
+                            pq_hist_path,
+                            step=self.total_env_steps,
+                            name=self._validation_artifact_name("validation_plan_q_chart", "gsm8k"),
+                        )
+                        print(
+                            f"[INFO] Validation GSM8K plan-Q panels saved: {pq_fp_path}, {pq_hist_path}"
+                        )
+                except Exception as e:
+                    print(f"[WARNING] Failed to log GSM8K plan-Q validation panel: {e}")
+
             if record_video and batch_idx == 0 and hasattr(self.val_envs, 'set_record_video'):
                 self.val_envs.set_record_video(False)
 
@@ -1708,6 +1841,7 @@ class RayPPOTrainer:
         
         # Initialize world model / online reward WM trainer if enabled
         self.world_model_trainer = None
+        self.plan_q_trainer = None
         self.world_model_loss_coef = 1.0
         if self._actor_value_online_reward_wm_enabled():
             av_rm_config = self.config.trainer.actor_value_online_reward_wm
@@ -1728,6 +1862,36 @@ class RayPPOTrainer:
                 f"loss_coef={self.world_model_loss_coef} "
                 f"prompt_style={av_rm_config.get('prompt_style', 'craftext')} "
                 f"(online SFT on PPO rollout -> reward token j/k or i/j/k/l)"
+            )
+        elif self._actor_value_online_plan_q_wm_enabled():
+            from agent_system.environments.env_package.caged_craftext.return_tokens import (
+                return_bin_spec_from_actor_cfg,
+            )
+            from verl.trainer.world_model import PlanQWorldModelTrainer
+
+            pq_cfg = self.config.trainer.actor_value_online_plan_q_wm
+            self.plan_q_trainer = PlanQWorldModelTrainer(
+                actor_rollout_wg=self.actor_rollout_wg,
+                tokenizer=self.tokenizer,
+                plan_horizon=int(pq_cfg.get("plan_horizon", 6)),
+                gamma=float(pq_cfg.get("gamma", 1.0)),
+                max_steps_per_traj=int(pq_cfg.get("max_steps_per_traj", 50)),
+                max_rows_per_batch=int(pq_cfg.get("max_rows_per_batch", 512)),
+                max_prompt_length=int(pq_cfg.get("max_prompt_length", 2048)),
+                return_spec=return_bin_spec_from_actor_cfg(self.config.actor_rollout_ref.actor),
+                prompt_style=str(pq_cfg.get("prompt_style", "craftext")),
+                fixed_horizon_only=bool(pq_cfg.get("fixed_horizon_only", False)),
+                gsm8k_step_split=str(pq_cfg.get("gsm8k_step_split", "newline")),
+                device=self.device_name,
+            )
+            print(
+                "[init_workers] actor_value_online_plan_q_wm: "
+                f"loss_coef={pq_cfg.get('loss_coef', 0.1)} "
+                f"style={pq_cfg.get('prompt_style', 'craftext')} "
+                f"horizon={pq_cfg.get('plan_horizon', 6)} "
+                f"fixed_horizon_only={pq_cfg.get('fixed_horizon_only', False)} "
+                f"gamma={pq_cfg.get('gamma', 1.0)} "
+                f"(online SFT: Q(s_t, plan) -> return bin)"
             )
         elif self.config.trainer.get("world_model", {}).get("enable", False):
             world_model_config = self.config.trainer.world_model
@@ -2203,6 +2367,10 @@ class RayPPOTrainer:
                         if _verbose_phases:
                             self._ppo_phase_log(f"■ POST-ROLLOUT done in {time.monotonic() - _t_post:.1f}s")
 
+                    # vLLM-only PIL / prompt text; actor update needs multi_modal_inputs tensors only.
+                    for _drop_key in ("multi_modal_data", "vllm_prompt_text"):
+                        batch.non_tensor_batch.pop(_drop_key, None)
+
                     self._append_wm_rollout_buffer(batch)
 
                     # update critic
@@ -2294,6 +2462,23 @@ class RayPPOTrainer:
                                 logger.log(data=world_model_metrics, step=self.total_env_steps)
                             else:
                                 print("[World Model Debug] Warning: _train_world_model returned empty dict - no metrics to log")
+
+                        if self._actor_value_online_plan_q_wm_enabled():
+                            if _verbose_phases:
+                                self._ppo_phase_log("▶ UPDATE: actor_value/plan_q_wm (after PPO) …")
+                            _t_pq = time.monotonic()
+                            with _timer("update_plan_q_wm", timing_raw):
+                                plan_q_metrics = self._train_plan_q_world_model(
+                                    batch,
+                                    loss_coef=self._online_plan_q_wm_loss_coef(),
+                                )
+                            if _verbose_phases:
+                                self._ppo_phase_log(
+                                    f"■ UPDATE actor_value/plan_q_wm done in {time.monotonic() - _t_pq:.1f}s"
+                                )
+                            if plan_q_metrics:
+                                metrics.update(plan_q_metrics)
+                                logger.log(data=plan_q_metrics, step=self.total_env_steps)
 
                     elif _verbose_phases:
                         self._ppo_phase_log(
@@ -2612,6 +2797,99 @@ class RayPPOTrainer:
             return metrics
         except Exception as e:
             print(f"Error training reward world model: {e}")
+            import traceback
+            traceback.print_exc()
+            return driver_metrics
+
+    def _train_plan_q_world_model(
+        self,
+        batch: DataProto,
+        loss_coef: float = 0.1,
+    ) -> Dict[str, float]:
+        """Train plan-Q on (s_t, plan of H actions) -> n-step return bin from on-policy rollout."""
+        driver_metrics: Dict[str, float] = {}
+        metrics_prefix = "actor_value/plan_q_wm"
+
+        if self.plan_q_trainer is None:
+            return driver_metrics
+
+        required = ("curr_obs_ascii", "wm_action_token", "traj_uid")
+        for key in required:
+            if key not in batch.non_tensor_batch:
+                print(
+                    f"[Plan-Q WM] Warning: {key} not found in batch. "
+                    f"Available keys: {list(batch.non_tensor_batch.keys())}"
+                )
+                driver_metrics[f"{metrics_prefix}/num_valid_samples"] = 0.0
+                return driver_metrics
+
+        curr_observations = batch.non_tensor_batch["curr_obs_ascii"].reshape(-1).tolist()
+        action_tokens = batch.non_tensor_batch["wm_action_token"].reshape(-1).tolist()
+        traj_uids = batch.non_tensor_batch["traj_uid"].reshape(-1).tolist()
+        task_instructions = batch.non_tensor_batch.get("wm_task_instruction")
+        if task_instructions is not None:
+            task_instructions = np.asarray(task_instructions, dtype=object).reshape(-1).tolist()
+        else:
+            task_instructions = [""] * len(curr_observations)
+        step_rewards_raw = batch.non_tensor_batch.get("wm_step_reward")
+        if step_rewards_raw is None:
+            step_rewards_raw = batch.non_tensor_batch.get("rewards")
+        if step_rewards_raw is None:
+            print("[Plan-Q WM] Warning: wm_step_reward / rewards not in batch")
+            driver_metrics[f"{metrics_prefix}/num_valid_samples"] = 0.0
+            return driver_metrics
+        step_rewards = np.asarray(step_rewards_raw, dtype=np.float64).reshape(-1).tolist()
+
+        valid_indices = []
+        for i, (curr_obs, action, uid) in enumerate(zip(curr_observations, action_tokens, traj_uids)):
+            if curr_obs and action and uid:
+                valid_indices.append(i)
+        if not valid_indices:
+            print("[Plan-Q WM] No valid plan-Q samples in batch")
+            driver_metrics[f"{metrics_prefix}/num_valid_samples"] = 0.0
+            return driver_metrics
+
+        curr_observations = [curr_observations[i] for i in valid_indices]
+        action_tokens = [action_tokens[i] for i in valid_indices]
+        traj_uids = [traj_uids[i] for i in valid_indices]
+        step_rewards = [float(step_rewards[i]) for i in valid_indices]
+        task_instructions = [str(task_instructions[i] or "") for i in valid_indices]
+
+        try:
+            pq_batch = self.plan_q_trainer.prepare_batch(
+                traj_uids=traj_uids,
+                states=curr_observations,
+                action_tokens=action_tokens,
+                step_rewards=step_rewards,
+                task_instructions=task_instructions,
+            )
+            pq_batch.meta_info["world_model_loss_coef"] = loss_coef
+            pq_batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
+            pq_micro = self._online_plan_q_wm_micro_batch_size()
+            if pq_micro is not None:
+                pq_batch.meta_info["world_model_micro_batch_size_per_gpu"] = int(pq_micro)
+            from verl.protocol import DataProtoConfig
+
+            pq_batch.meta_info[DataProtoConfig.auto_padding_key] = True
+
+            output = self.actor_rollout_wg.update_world_model(pq_batch)
+            raw_metrics = extract_metrics_from_dataproto(output)
+            metrics = self._remap_metrics_prefix(
+                normalize_worker_metrics(raw_metrics), metrics_prefix
+            )
+            n_rows = float(pq_batch.batch.batch_size[0])
+            metrics[f"{metrics_prefix}/num_valid_samples"] = n_rows
+            metrics[f"{metrics_prefix}/num_expanded_rows"] = n_rows
+            if metrics.get(f"{metrics_prefix}/loss") is not None:
+                metrics[f"{metrics_prefix}/plan_q_loss"] = metrics[f"{metrics_prefix}/loss"]
+                print(
+                    f"[Plan-Q WM] loss={metrics[f'{metrics_prefix}/loss']:.4f} "
+                    f"acc={metrics.get(f'{metrics_prefix}/reward_token_accuracy', float('nan')):.3f} "
+                    f"rows={int(n_rows)}"
+                )
+            return metrics
+        except Exception as e:
+            print(f"Error training plan-Q world model: {e}")
             import traceback
             traceback.print_exc()
             return driver_metrics

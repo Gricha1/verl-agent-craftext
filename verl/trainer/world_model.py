@@ -951,3 +951,174 @@ class RewardWorldModelTrainer:
         responses = output.batch["responses"]
         texts = self.tokenizer.batch_decode(responses, skip_special_tokens=True)
         return [t.strip() for t in texts[: len(curr_observations)]]
+
+
+class PlanQWorldModelTrainer:
+    """
+    Plan-Q head on the actor-value LLM: (task, s_t, plan of H action tokens) -> return bin.
+    Target = n-step return sum gamma^i r_{t+i} + gamma^H G_{t+H} (MC bootstrap).
+    """
+
+    def __init__(
+        self,
+        actor_rollout_wg,
+        tokenizer,
+        *,
+        plan_horizon: int = 6,
+        gamma: float = 1.0,
+        max_steps_per_traj: int = 50,
+        max_rows_per_batch: int = 512,
+        max_prompt_length: int = 2048,
+        return_spec=None,
+        prompt_style: str = "craftext",
+        fixed_horizon_only: bool = False,
+        gsm8k_step_split: str = "newline",
+        device: str = "cuda",
+    ):
+        from agent_system.environments.env_package.caged_craftext.return_tokens import (
+            DEFAULT_RETURN_BIN_SPEC,
+            ReturnBinSpec,
+        )
+
+        self.actor_rollout_wg = actor_rollout_wg
+        self.tokenizer = tokenizer
+        self.device = device
+        self.plan_horizon = max(1, int(plan_horizon))
+        self.gamma = float(gamma)
+        self.max_steps_per_traj = int(max_steps_per_traj)
+        self.max_rows_per_batch = max(0, int(max_rows_per_batch))
+        self.max_prompt_length = int(max_prompt_length)
+        self.return_spec: ReturnBinSpec = return_spec or DEFAULT_RETURN_BIN_SPEC
+        self.prompt_style = str(prompt_style).lower()
+        self.fixed_horizon_only = bool(fixed_horizon_only)
+        self.gsm8k_step_split = str(gsm8k_step_split)
+
+    def _build_training_rows(
+        self,
+        traj_uids: list[str],
+        states: list[str],
+        action_tokens: list[str],
+        step_rewards: list[float],
+        task_instructions: list[str],
+    ) -> list[tuple[str, str]]:
+        from agent_system.environments.prompts.world_model_reward_craftext_plan_q import (
+            expand_craftext_plan_q_examples,
+            format_craftext_plan_q_target,
+        )
+
+        if self.prompt_style == "gsm8k":
+            from agent_system.environments.prompts.world_model_reward_gsm8k_plan_q import (
+                expand_gsm8k_plan_q_examples,
+            )
+
+            questions = [
+                str(task or state or "").strip()
+                for task, state in zip(task_instructions, states)
+            ]
+            expanded = expand_gsm8k_plan_q_examples(
+                questions=questions,
+                solutions=action_tokens,
+                final_rewards=step_rewards,
+                plan_horizon=self.plan_horizon,
+                step_split=self.gsm8k_step_split,
+                fixed_horizon_only=self.fixed_horizon_only,
+                return_spec=self.return_spec,
+            )
+        else:
+            expanded = expand_craftext_plan_q_examples(
+                traj_uids=traj_uids,
+                states=states,
+                action_tokens=action_tokens,
+                step_rewards=step_rewards,
+                task_instructions=task_instructions,
+                plan_horizon=self.plan_horizon,
+                gamma=self.gamma,
+                max_steps_per_traj=self.max_steps_per_traj,
+                fixed_horizon_only=self.fixed_horizon_only,
+                return_spec=self.return_spec,
+            )
+        rows: list[tuple[str, str]] = []
+        for prompt, target_scalar in expanded:
+            target_token = format_craftext_plan_q_target(float(target_scalar), spec=self.return_spec)
+            rows.append((prompt, target_token))
+        if self.max_rows_per_batch > 0 and len(rows) > self.max_rows_per_batch:
+            import random
+
+            rng = random.Random(0)
+            rows = rng.sample(rows, self.max_rows_per_batch)
+        return rows
+
+    def _tokenize_sft_rows(self, rows: list[tuple[str, str]]) -> DataProto:
+        from agent_system.environments.env_package.caged_craftext.return_tokens import (
+            tokenize_return_bin_token_ids,
+        )
+
+        sequences: list[torch.Tensor] = []
+        response_rows: list[torch.Tensor] = []
+        for prompt, target_token in rows:
+            chat = [{"role": "user", "content": prompt}]
+            prompt_text = self.tokenizer.apply_chat_template(
+                chat, add_generation_prompt=True, tokenize=False
+            )
+            prompt_ids = self.tokenizer(
+                prompt_text,
+                return_tensors="pt",
+                add_special_tokens=False,
+                truncation=True,
+                max_length=self.max_prompt_length,
+            )["input_ids"][0]
+            response_ids = torch.tensor(
+                tokenize_return_bin_token_ids(self.tokenizer, target_token, add_eos=False),
+                dtype=torch.long,
+            )
+            sequences.append(torch.cat([prompt_ids, response_ids], dim=0))
+            response_rows.append(response_ids)
+
+        if not sequences:
+            raise ValueError("Plan-Q prepare_batch: no training rows after expansion")
+
+        max_len = max(seq.shape[0] for seq in sequences)
+        max_response_len = max(r.shape[0] for r in response_rows)
+        pad_id = self.tokenizer.pad_token_id
+
+        input_ids_rows = []
+        attention_rows = []
+        response_padded = []
+        for seq, resp in zip(sequences, response_rows):
+            seq_len = seq.shape[0]
+            pad_len = max_len - seq_len
+            if pad_len > 0:
+                seq = torch.cat([torch.full((pad_len,), pad_id, dtype=torch.long), seq])
+            attn = torch.zeros(max_len, dtype=torch.long)
+            attn[-seq_len:] = 1
+            input_ids_rows.append(seq)
+            attention_rows.append(attn)
+            if resp.shape[0] < max_response_len:
+                resp = torch.cat([
+                    resp,
+                    torch.full((max_response_len - resp.shape[0],), pad_id, dtype=torch.long),
+                ])
+            response_padded.append(resp)
+
+        batch_dict = {
+            "input_ids": torch.stack(input_ids_rows),
+            "attention_mask": torch.stack(attention_rows),
+            "responses": torch.stack(response_padded),
+        }
+        batch_dict["position_ids"] = compute_position_id_with_mask(batch_dict["attention_mask"])
+        return DataProto.from_dict(tensors=batch_dict, non_tensors={}, meta_info={})
+
+    def prepare_batch(
+        self,
+        traj_uids: list[str],
+        states: list[str],
+        action_tokens: list[str],
+        step_rewards: list[float],
+        task_instructions: list[str] | None = None,
+    ) -> DataProto:
+        if task_instructions is None:
+            task_instructions = [""] * len(states)
+        rows = self._build_training_rows(
+            traj_uids, states, action_tokens, step_rewards, task_instructions
+        )
+        return self._tokenize_sft_rows(rows)

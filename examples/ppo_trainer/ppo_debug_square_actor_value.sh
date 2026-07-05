@@ -36,6 +36,11 @@ RETURN_BIN_MAX="${RETURN_BIN_MAX:-6}"
 RETURN_BIN_STEP="${RETURN_BIN_STEP:-0.4}"
 ACTOR_VALUE_ONLINE_REWARD_WM="${ACTOR_VALUE_ONLINE_REWARD_WM:-false}"
 ACTOR_VALUE_REWARD_WM_LOSS_COEF="${ACTOR_VALUE_REWARD_WM_LOSS_COEF:-0.1}"
+ACTOR_VALUE_PLAN_Q_WM="${ACTOR_VALUE_PLAN_Q_WM:-false}"
+ACTOR_VALUE_PLAN_Q_LOSS_COEF="${ACTOR_VALUE_PLAN_Q_LOSS_COEF:-${ACTOR_VALUE_REWARD_WM_LOSS_COEF:-0.1}}"
+CRAFTEXT_PLAN_Q_HORIZON="${CRAFTEXT_PLAN_Q_HORIZON:-6}"
+CRAFTEXT_PLAN_Q_GAMMA="${CRAFTEXT_PLAN_Q_GAMMA:-1.0}"
+CRAFTEXT_MC_Q_MAX_STEPS="${CRAFTEXT_MC_Q_MAX_STEPS:-50}"
 USE_ACTOR_LORA="${USE_ACTOR_LORA:-true}"
 
 echo "=========================================="
@@ -57,6 +62,7 @@ echo "[INFO] entropy_band (AEnt): enable=$ENTROPY_BAND_ENABLE range=[$ENTROPY_BA
 echo "[INFO] USE_ACTOR_LORA=$USE_ACTOR_LORA (true -> LoRA rank 64, actor=value same weights)"
 echo "[INFO] auto_reset: false (one episode per env slot, max 50 steps)"
 echo "[INFO] actor_value_online_reward_wm: $ACTOR_VALUE_ONLINE_REWARD_WM (loss_coef=$ACTOR_VALUE_REWARD_WM_LOSS_COEF)"
+echo "[INFO] actor_value_online_plan_q_wm: $ACTOR_VALUE_PLAN_Q_WM (horizon=$CRAFTEXT_PLAN_Q_HORIZON gamma=$CRAFTEXT_PLAN_Q_GAMMA loss_coef=$ACTOR_VALUE_PLAN_Q_LOSS_COEF)"
 echo "[INFO] validation: every 20 PPO steps — trajectory GIF, actor Q panel (frame+prompt + return hist), action histogram"
 echo "[INFO] checkpoints: every 20 PPO steps, keep last 1 -> training_checkpoints/verl_agent_caged_craftext_debug_square_actor_value"
 
@@ -118,4 +124,9 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   trainer.max_critic_ckpt_to_keep=1 \
   trainer.default_local_dir=training_checkpoints/verl_agent_caged_craftext_debug_square_actor_value \
   trainer.actor_value_online_reward_wm.enable="$ACTOR_VALUE_ONLINE_REWARD_WM" \
-  trainer.actor_value_online_reward_wm.loss_coef="$ACTOR_VALUE_REWARD_WM_LOSS_COEF"
+  trainer.actor_value_online_reward_wm.loss_coef="$ACTOR_VALUE_REWARD_WM_LOSS_COEF" \
+  trainer.actor_value_online_plan_q_wm.enable=$(if [ "$ACTOR_VALUE_PLAN_Q_WM" = "true" ]; then echo "True"; else echo "False"; fi) \
+  trainer.actor_value_online_plan_q_wm.loss_coef="$ACTOR_VALUE_PLAN_Q_LOSS_COEF" \
+  trainer.actor_value_online_plan_q_wm.plan_horizon="$CRAFTEXT_PLAN_Q_HORIZON" \
+  trainer.actor_value_online_plan_q_wm.gamma="$CRAFTEXT_PLAN_Q_GAMMA" \
+  trainer.actor_value_online_plan_q_wm.max_steps_per_traj="$CRAFTEXT_MC_Q_MAX_STEPS"

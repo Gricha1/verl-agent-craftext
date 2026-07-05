@@ -236,3 +236,17 @@ def compute_remaining_returns(step_rewards: Sequence[float]) -> List[float]:
         out.append(total)
     out.reverse()
     return out
+
+
+def tokenize_return_bin_token_ids(tokenizer, token: str, *, add_eos: bool = False) -> List[int]:
+    """Encode one return-bin label (A..o) as a single tokenizer id."""
+    tok = str(token or "").strip()
+    if len(tok) != 1 or tok not in TOKEN_TO_RETURN_BIN:
+        raise ValueError(f"Expected one return-bin token, got {token!r}")
+    piece = tokenizer.encode(tok, add_special_tokens=False)
+    if len(piece) != 1:
+        raise ValueError(f"Return token {tok!r} must encode to one id, got {piece!r}")
+    ids = [int(piece[0])]
+    if add_eos and getattr(tokenizer, "eos_token_id", None) is not None:
+        ids.append(int(tokenizer.eos_token_id))
+    return ids

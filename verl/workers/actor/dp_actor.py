@@ -670,10 +670,16 @@ class DataParallelPPOActor(BasePPOActor):
         )
         micro_batch_size = max(micro_batch_size, 1)
         n = batch["value_input_ids"].size(0)
+        has_mm = "multi_modal_inputs" in data.non_tensor_batch
         value_chunks: list[torch.Tensor] = []
         with torch.no_grad():
             for start in range(0, n, micro_batch_size):
                 end = min(start + micro_batch_size, n)
+                mm_kwargs: dict = {}
+                if has_mm:
+                    mm_slice = data.non_tensor_batch["multi_modal_inputs"][start:end]
+                    for key in mm_slice[0].keys():
+                        mm_kwargs[key] = torch.cat([row[key] for row in mm_slice], dim=0)
                 values = per_token_values_from_critic_prompt(
                     self.actor_module,
                     value_input_ids=batch["value_input_ids"][start:end],
@@ -683,6 +689,7 @@ class DataParallelPPOActor(BasePPOActor):
                     response_mask=response_mask[start:end],
                     tokenizer=tokenizer,
                     spec=spec,
+                    multi_modal_inputs=mm_kwargs or None,
                 )
                 value_chunks.append(values)
             values = torch.cat(value_chunks, dim=0)
@@ -705,6 +712,12 @@ class DataParallelPPOActor(BasePPOActor):
         else:
             response_mask = micro_batch["attention_mask"][:, -response_length:]
         spec = return_bin_spec_from_actor_cfg(self.config)
+        mm_kwargs: dict = {}
+        if "multi_modal_inputs" in micro_batch:
+            for key in micro_batch["multi_modal_inputs"][0].keys():
+                mm_kwargs[key] = torch.cat(
+                    [inputs[key] for inputs in micro_batch["multi_modal_inputs"]], dim=0
+                )
         return forward_value_bin_logits_per_response_token(
             self.actor_module,
             value_input_ids=micro_batch["value_input_ids"],
@@ -715,6 +728,7 @@ class DataParallelPPOActor(BasePPOActor):
             tokenizer=self._get_tokenizer(),
             temperature=temperature,
             spec=spec,
+            multi_modal_inputs=mm_kwargs or None,
         )
 
     def _compute_return_token_ce_loss(

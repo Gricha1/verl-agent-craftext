@@ -40,6 +40,8 @@ max_response_length=${4:-512}
 total_epochs=${5:-6}
 USE_ACTOR_LORA=${6:-true}
 CRITIC_WARMUP=${7:-0}
+ACTOR_LORA_RANK="${ACTOR_LORA_RANK:-64}"
+ACTOR_LORA_ALPHA="${ACTOR_LORA_ALPHA:-64}"
 shift 7 2>/dev/null || shift 6 2>/dev/null || shift 5 2>/dev/null || shift 4 2>/dev/null || shift 3 2>/dev/null || shift 2 2>/dev/null || shift 1 2>/dev/null || true
 
 export VLLM_ATTENTION_BACKEND=XFORMERS
@@ -61,7 +63,7 @@ echo "[INFO] TRAIN_BATCH_SIZE: $train_data_size"
 echo "[INFO] VAL_BATCH_SIZE: $val_data_size"
 echo "[INFO] max_response_length: $max_response_length"
 echo "[INFO] total_epochs: $total_epochs"
-echo "[INFO] USE_ACTOR_LORA: $USE_ACTOR_LORA"
+echo "[INFO] USE_ACTOR_LORA: $USE_ACTOR_LORA (rank=$ACTOR_LORA_RANK alpha=$ACTOR_LORA_ALPHA when true)"
 echo "[INFO] CRITIC_WARMUP: $CRITIC_WARMUP"
 
 if [ ! -f "$GSM8K_DATA_DIR/train.parquet" ] || [ ! -f "$GSM8K_DATA_DIR/test.parquet" ]; then
@@ -81,8 +83,8 @@ python -m verl.trainer.main_ppo \
   data.truncation='error' \
   data.return_raw_chat=False \
   actor_rollout_ref.model.path=Qwen/Qwen2.5-1.5B-Instruct \
-  actor_rollout_ref.model.lora_rank=$(if [ "$USE_ACTOR_LORA" = "true" ]; then echo "64"; else echo "0"; fi) \
-  actor_rollout_ref.model.lora_alpha=$(if [ "$USE_ACTOR_LORA" = "true" ]; then echo "64"; else echo "0"; fi) \
+  actor_rollout_ref.model.lora_rank=$(if [ "$USE_ACTOR_LORA" = "true" ]; then echo "$ACTOR_LORA_RANK"; else echo "0"; fi) \
+  actor_rollout_ref.model.lora_alpha=$(if [ "$USE_ACTOR_LORA" = "true" ]; then echo "$ACTOR_LORA_ALPHA"; else echo "0"; fi) \
   actor_rollout_ref.actor.optim.lr=1e-6 \
   actor_rollout_ref.model.use_remove_padding=True \
   actor_rollout_ref.actor.ppo_mini_batch_size=64 \

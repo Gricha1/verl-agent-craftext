@@ -702,7 +702,9 @@ from agent_system.environments.env_package.caged_craftext.projection import (
     get_craftext_template_no_his,
     get_craftext_extended_template_no_his,
     get_single_token_action_template_no_his,
+    get_single_token_action_vl_template_no_his,
     get_single_token_return_template_no_his,
+    get_single_token_return_vl_template_no_his,
     CRAFTEXT_EXTENDED_TEMPLATE_NO_HIS,
     ACTION_TO_TEXT as CAGED_ACTION_TO_TEXT,
 )
@@ -943,6 +945,7 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
         # Prefer live instruction from infos (survives optimistic auto-reset).
         # Получаем тип шаблона из config (по умолчанию default_template)
         prompt_template_type = getattr(self.config.env, 'prompt_template_type', 'default_template')
+        is_vl_env = "vlenv" in str(getattr(self.config.env, "env_name", "")).lower()
         
         # Получаем параметр enable_reasoning из config (по умолчанию True для обратной совместимости)
         enable_reasoning = getattr(self.config.env, 'enable_reasoning', True)
@@ -954,7 +957,10 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
             # Для extended шаблона не используем шаблон с историей, так как он не определен
             template = template_no_his  # Fallback
         elif prompt_template_type == 'single_token_action':
-            template_no_his = get_single_token_action_template_no_his()
+            if is_vl_env:
+                template_no_his = get_single_token_action_vl_template_no_his()
+            else:
+                template_no_his = get_single_token_action_template_no_his()
             template = template_no_his
         else:
             # Используем обычные шаблоны с учетом enable_reasoning
@@ -982,11 +988,14 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
             # Для extended_template всегда используем template_no_his (так как extended шаблон определен только без истории)
             if prompt_template_type in ('extended_template', 'single_token_action') or self.config.env.history_length == 0:
                 if prompt_template_type in ('extended_template', 'single_token_action'):
-                    # Extended шаблон всегда без истории
-                    prompt = template_no_his.format(
-                        task_description=task,
-                        current_observation=text_render
-                    )
+                    # Extended / single-token / VL: no action history in prompt
+                    if is_vl_env and prompt_template_type == 'single_token_action':
+                        prompt = template_no_his.format(task_description=task)
+                    else:
+                        prompt = template_no_his.format(
+                            task_description=task,
+                            current_observation=text_render
+                        )
                 elif action_history_str:
                     # Обычный шаблон с историей (если есть)
                     prompt = template.format(
@@ -1025,10 +1034,16 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
         value_template_type = getattr(self.config.env, 'value_prompt_template_type', None)
         if not value_template_type:
             return None
-        if value_template_type != 'single_token_return':
+        is_vl_env = "vlenv" in str(getattr(self.config.env, "env_name", "")).lower()
+        if value_template_type == 'single_token_return_vl':
+            if not is_vl_env:
+                raise ValueError("single_token_return_vl requires caged_craftext/CagedCraftextVLEnv")
+            template_no_his = get_single_token_return_vl_template_no_his()
+        elif value_template_type == 'single_token_return':
+            template_no_his = get_single_token_return_template_no_his()
+        else:
             raise ValueError(f"Unsupported value_prompt_template_type: {value_template_type!r}")
 
-        template_no_his = get_single_token_return_template_no_his()
         from agent_system.environments.env_package.caged_craftext.return_tokens import (
             return_bin_spec_from_env,
             return_token_legend_for_spec,
@@ -1041,11 +1056,17 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
                 self.tasks[i] if hasattr(self, "tasks") and i < len(self.tasks) else "No instruction found"
             )
             constraint = info.get('constraint', '')
-            prompt = template_no_his.format(
-                task_description=task,
-                current_observation=text_render,
-                return_bin_legend=legend,
-            )
+            if value_template_type == 'single_token_return_vl':
+                prompt = template_no_his.format(
+                    task_description=task,
+                    return_bin_legend=legend,
+                )
+            else:
+                prompt = template_no_his.format(
+                    task_description=task,
+                    current_observation=text_render,
+                    return_bin_legend=legend,
+                )
             if constraint:
                 prompt += f"\n\n**CONSTRAINT:** {constraint}"
             final_prompts.append(prompt)

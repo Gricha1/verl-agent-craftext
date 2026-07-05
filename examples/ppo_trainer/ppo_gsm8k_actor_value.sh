@@ -28,12 +28,25 @@ RETURN_BIN_MAX="${RETURN_BIN_MAX:-1.2}"
 RETURN_BIN_STEP="${RETURN_BIN_STEP:-0.2}"
 ACTOR_VALUE_ONLINE_REWARD_WM="${ACTOR_VALUE_ONLINE_REWARD_WM:-false}"
 ACTOR_VALUE_MC_Q_WM="${ACTOR_VALUE_MC_Q_WM:-false}"
+ACTOR_VALUE_PLAN_Q_WM="${ACTOR_VALUE_PLAN_Q_WM:-false}"
 ACTOR_VALUE_REWARD_WM_LOSS_COEF="${ACTOR_VALUE_REWARD_WM_LOSS_COEF:-0.1}"
+ACTOR_VALUE_PLAN_Q_LOSS_COEF="${ACTOR_VALUE_PLAN_Q_LOSS_COEF:-${ACTOR_VALUE_REWARD_WM_LOSS_COEF:-0.1}}"
 ACTOR_VALUE_REWARD_WM_PROMPT_STYLE="${ACTOR_VALUE_REWARD_WM_PROMPT_STYLE:-gsm8k}"
 ACTOR_VALUE_REWARD_WM_MAX_PROMPT_LENGTH="${ACTOR_VALUE_REWARD_WM_MAX_PROMPT_LENGTH:-2048}"
 GSM8K_MC_Q_STEP_SPLIT="${GSM8K_MC_Q_STEP_SPLIT:-newline}"
 GSM8K_MC_Q_MAX_STEPS="${GSM8K_MC_Q_MAX_STEPS:-32}"
-USE_ACTOR_LORA="${USE_ACTOR_LORA:-false}"
+GSM8K_PLAN_Q_HORIZON="${GSM8K_PLAN_Q_HORIZON:-100}"
+GSM8K_PLAN_Q_GAMMA="${GSM8K_PLAN_Q_GAMMA:-1.0}"
+GSM8K_PLAN_Q_STEP_SPLIT="${GSM8K_PLAN_Q_STEP_SPLIT:-newline}"
+GSM8K_PLAN_Q_MAX_PROMPT_LENGTH="${GSM8K_PLAN_Q_MAX_PROMPT_LENGTH:-32768}"
+USE_ACTOR_LORA="${USE_ACTOR_LORA:-true}"
+ACTOR_LORA_RANK="${ACTOR_LORA_RANK:-128}"
+ACTOR_LORA_ALPHA="${ACTOR_LORA_ALPHA:-128}"
+
+if [ "$ACTOR_VALUE_PLAN_Q_WM" = true ]; then
+  ACTOR_VALUE_ONLINE_REWARD_WM=false
+  ACTOR_VALUE_MC_Q_WM=false
+fi
 
 if [ "$ACTOR_VALUE_MC_Q_WM" = true ]; then
   ACTOR_VALUE_ONLINE_REWARD_WM=true
@@ -52,13 +65,17 @@ echo "[INFO] critic_warmup: $CRITIC_WARMUP PPO steps"
 echo "[INFO] actor_value_loss_coef: $ACTOR_VALUE_LOSS_COEF"
 echo "[INFO] entropy: full vocabulary (entropy_over_valid_actions=False)"
 echo "[INFO] checkpoints: disabled (trainer.save_freq=-1)"
-echo "[INFO] USE_ACTOR_LORA=$USE_ACTOR_LORA (false -> full finetune, actor=value same weights)"
+echo "[INFO] USE_ACTOR_LORA=$USE_ACTOR_LORA (rank=$ACTOR_LORA_RANK alpha=$ACTOR_LORA_ALPHA, actor=value same weights)"
 echo "[INFO] actor_value_online_reward_wm: $ACTOR_VALUE_ONLINE_REWARD_WM (style=$ACTOR_VALUE_REWARD_WM_PROMPT_STYLE, loss_coef=$ACTOR_VALUE_REWARD_WM_LOSS_COEF)"
+echo "[INFO] actor_value_online_plan_q_wm: $ACTOR_VALUE_PLAN_Q_WM (horizon=$GSM8K_PLAN_Q_HORIZON fixed_only=true style=gsm8k)"
 if [ "$ACTOR_VALUE_MC_Q_WM" = true ]; then
   echo "[INFO] MC-Q WM: step_split=$GSM8K_MC_Q_STEP_SPLIT max_steps_per_traj=$GSM8K_MC_Q_MAX_STEPS (target=final episode success j/k)"
 fi
 
 export RUN_NAME="${RUN_NAME:-PPO GSM8K dual-prompt actor value}"
+
+export ACTOR_LORA_RANK
+export ACTOR_LORA_ALPHA
 
 bash examples/ppo_trainer/run_gsm8k_lora_job.sh \
   vllm \
@@ -99,4 +116,13 @@ bash examples/ppo_trainer/run_gsm8k_lora_job.sh \
   trainer.actor_value_online_reward_wm.max_prompt_length="$ACTOR_VALUE_REWARD_WM_MAX_PROMPT_LENGTH" \
   trainer.actor_value_online_reward_wm.gsm8k_mc_q_step_split="$GSM8K_MC_Q_STEP_SPLIT" \
   trainer.actor_value_online_reward_wm.gsm8k_mc_q_max_steps_per_traj="$GSM8K_MC_Q_MAX_STEPS" \
+  trainer.actor_value_online_plan_q_wm.enable="$ACTOR_VALUE_PLAN_Q_WM" \
+  trainer.actor_value_online_plan_q_wm.loss_coef="$ACTOR_VALUE_PLAN_Q_LOSS_COEF" \
+  trainer.actor_value_online_plan_q_wm.prompt_style=gsm8k \
+  trainer.actor_value_online_plan_q_wm.plan_horizon="$GSM8K_PLAN_Q_HORIZON" \
+  trainer.actor_value_online_plan_q_wm.fixed_horizon_only=True \
+  trainer.actor_value_online_plan_q_wm.gamma="$GSM8K_PLAN_Q_GAMMA" \
+  trainer.actor_value_online_plan_q_wm.gsm8k_step_split="$GSM8K_PLAN_Q_STEP_SPLIT" \
+  trainer.actor_value_online_plan_q_wm.max_prompt_length="$GSM8K_PLAN_Q_MAX_PROMPT_LENGTH" \
+  trainer.validation_plan_q.max_prompt_length="$GSM8K_PLAN_Q_MAX_PROMPT_LENGTH" \
   "$@"

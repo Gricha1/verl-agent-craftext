@@ -335,6 +335,9 @@ trainer:
   validation_per_action_q:
     enable: true
     max_prompt_length: 2048  # Q prompt is longer than actor prompt (512)
+  validation_plan_q:
+    enable: true
+    max_prompt_length: 2048
   critic_warmup: 0
   default_hdfs_dir: null
   del_local_ckpt_after_load: False
@@ -374,6 +377,21 @@ trainer:
     max_prompt_length: 2048  # GSM8K: question + solution in RM prompt
     gsm8k_mc_q_step_split: newline  # newline | sentence (split full solution into steps)
     gsm8k_mc_q_max_steps_per_traj: 32  # cap MC-Q rows per rollout trajectory
+
+  # Online plan-Q on actor-value: (s_t, a_t..a_{t+H-1}) -> return bin (n-step MC target).
+  # Trains after actor (+ value) update via update_world_model on the same LLM backbone.
+  actor_value_online_plan_q_wm:
+    enable: False
+    loss_coef: 0.1
+    prompt_style: craftext  # craftext | gsm8k
+    plan_horizon: 6
+    fixed_horizon_only: false  # true: train/val only at plan_horizon (not h=1..H)
+    gamma: 1.0
+    max_steps_per_traj: 50
+    max_rows_per_batch: 512  # subsample expanded (t,h) rows to cap RAM per PPO step
+    micro_batch_size_per_gpu: null  # null = actor ppo_micro_batch_size_per_gpu
+    max_prompt_length: 2048
+    gsm8k_step_split: newline  # newline | sentence (split rollout solution into plan steps)
 
 ray_init:
   num_cpus: null # `None` means using all CPUs, which might cause hang if limited in systems like SLURM. Please set to a number allowed then.

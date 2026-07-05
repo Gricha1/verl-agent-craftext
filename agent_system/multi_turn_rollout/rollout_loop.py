@@ -34,6 +34,9 @@ def resolve_rollout_wm_task(config) -> str | None:
         av_rm = config.trainer.get("actor_value_online_reward_wm", {}) if hasattr(config, "trainer") else {}
         if av_rm and bool(av_rm.get("enable", False)):
             return "reward"
+        av_pq = config.trainer.get("actor_value_online_plan_q_wm", {}) if hasattr(config, "trainer") else {}
+        if av_pq and bool(av_pq.get("enable", False)):
+            return "reward"
     except Exception:
         pass
     return None
@@ -55,6 +58,18 @@ class TrajectoryCollector:
         self.config = config
         self.tokenizer = tokenizer
         self.processor = processor
+
+    def _vl_mm_pixel_limits(self) -> tuple[int, int]:
+        from omegaconf import OmegaConf
+
+        mm = OmegaConf.select(
+            self.config, "actor_rollout_ref.rollout.engine_kwargs.vllm.mm_processor_kwargs", default={}
+        )
+        if mm is None:
+            mm = {}
+        max_pixels = int(mm.get("max_pixels", 280000))
+        min_pixels = int(mm.get("min_pixels", 65536))
+        return max_pixels, min_pixels
 
     def _encode_user_prompt(
         self,
@@ -88,6 +103,77 @@ class TrajectoryCollector:
             "prompt_text": prompt_text,
         }
 
+    def _encode_vl_user_prompt(
+        self,
+        prompt_text: str,
+        obs_image,
+        *,
+        max_length: int | None = None,
+        truncation: str | None = None,
+    ) -> dict:
+        """Tokenize a VL user prompt with one <image> placeholder (Qwen2-VL)."""
+        from verl.utils.dataset.vision_utils import (
+            qwen_vl_image_processor_call,
+            qwen_vl_prepare_prompt_ids_for_vllm,
+        )
+
+        max_pixels, min_pixels = self._vl_mm_pixel_limits()
+        chat = np.array([{"content": prompt_text, "role": "user"}])
+        if getattr(self.tokenizer, "chat_template", None):
+            prompt_with_chat_template = self.tokenizer.apply_chat_template(
+                chat, add_generation_prompt=True, tokenize=False
+            )
+        else:
+            prompt_with_chat_template = f"user: {prompt_text}"
+
+        multi_modal_data = {"image": [process_image(obs_image, max_pixels=max_pixels, min_pixels=min_pixels)]}
+        image_inputs = qwen_vl_image_processor_call(
+            self.processor, multi_modal_data["image"], max_pixels=max_pixels, min_pixels=min_pixels
+        )
+        image_grid_thw = image_inputs.get("image_grid_thw")
+        merge_length = self.processor.image_processor.merge_size**2
+        index = 0
+        while "<image>" in prompt_with_chat_template:
+            if image_grid_thw is not None:
+                n_placeholders = int(image_grid_thw[index].prod().item() // merge_length)
+            else:
+                n_placeholders = 1
+            prompt_with_chat_template = prompt_with_chat_template.replace(
+                "<image>",
+                "<|vision_start|>" + "<|placeholder|>" * n_placeholders + "<|vision_end|>",
+                1,
+            )
+            index += 1
+        prompt_with_chat_template = prompt_with_chat_template.replace(
+            "<|placeholder|>", self.processor.image_token
+        )
+
+        input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(
+            prompt=prompt_with_chat_template,
+            tokenizer=self.tokenizer,
+            max_length=max_length if max_length is not None else self.config.data.max_prompt_length,
+            pad_token_id=self.tokenizer.pad_token_id,
+            left_pad=True,
+            truncation=truncation if truncation is not None else self.config.data.truncation,
+        )
+        if image_grid_thw is not None:
+            position_ids = get_rope_index(
+                self.processor,
+                input_ids=input_ids[0],
+                image_grid_thw=image_grid_thw,
+                attention_mask=attention_mask[0],
+            )
+        else:
+            position_ids = compute_position_id_with_mask(attention_mask)[0]
+        mm_inputs = {key: val for key, val in image_inputs.items()}
+        return {
+            "input_ids": input_ids[0],
+            "attention_mask": attention_mask[0],
+            "position_ids": position_ids,
+            "prompt_text": prompt_text,
+            "multi_modal_inputs": mm_inputs,
+        }
+
     def _validation_per_action_q_enabled(self) -> bool:
         """Per-action Q panel on validation (actor LLM decodes 17 return tokens at t=0)."""
         from omegaconf import OmegaConf
@@ -96,6 +182,19 @@ class TrajectoryCollector:
             return False
         env_name = str(OmegaConf.select(self.config, "env.env_name", default="")).lower()
         return "caged_craftext" in env_name
+
+    def _validation_plan_q_enabled(self) -> bool:
+        """Plan-Q panel on validation (n-step return for rollout prefix at t=0)."""
+        from omegaconf import OmegaConf
+
+        if not bool(OmegaConf.select(self.config, "trainer.validation_plan_q.enable", default=True)):
+            return False
+        if not bool(
+            OmegaConf.select(self.config, "trainer.actor_value_online_plan_q_wm.enable", default=False)
+        ):
+            return False
+        env_name = str(OmegaConf.select(self.config, "env.env_name", default="")).lower()
+        return "caged_craftext" in env_name or "gsm8k" in env_name
 
     def _predict_per_action_returns_first_frame(
         self,
@@ -173,6 +272,184 @@ class TrajectoryCollector:
             tokens.append(tok)
             scalars.append(float(decode_return_token(tok, spec=spec)))
         return tokens, scalars, [prompt]
+
+    def _predict_plan_q_validation_t0(
+        self,
+        *,
+        init_state: str,
+        task: str,
+        constraint: str,
+        action_ids: list[int],
+        step_rewards: list[float],
+        actor_rollout_wg,
+        gen_batch_meta_info: dict | None,
+    ) -> tuple[list[str], list[float], list[float], list[str], list[int]]:
+        """Plan-Q at t=0: one return token per horizon for rollout action prefix."""
+        from agent_system.environments.env_package.caged_craftext.action_tokens import action_token_label
+        from agent_system.environments.env_package.caged_craftext.return_tokens import (
+            decode_return_token,
+            return_bin_spec_from_env,
+            return_token_legend_compact_for_spec,
+        )
+        from agent_system.environments.prompts.world_model_reward_craftext_plan_q import (
+            compute_nstep_plan_target,
+            format_craftext_plan_q_prompt,
+        )
+        from omegaconf import OmegaConf
+
+        pq_cfg = OmegaConf.select(self.config, "trainer.actor_value_online_plan_q_wm", default={})
+        plan_horizon = int(pq_cfg.get("plan_horizon", 6))
+        gamma = float(pq_cfg.get("gamma", 1.0))
+        spec = return_bin_spec_from_env(self.config.env)
+        legend = return_token_legend_compact_for_spec(spec)
+
+        actions: list[str] = []
+        for aid in action_ids:
+            if int(aid) < 0:
+                continue
+            actions.append(action_token_label(int(aid)))
+        if not actions:
+            return [], [], [], [], []
+
+        rewards = [float(r) for r in step_rewards]
+        fixed_horizon_only = bool(pq_cfg.get("fixed_horizon_only", False))
+        q_max_len = int(
+            OmegaConf.select(self.config, "trainer.validation_plan_q.max_prompt_length", default=2048)
+        )
+        if fixed_horizon_only:
+            if len(actions) < plan_horizon:
+                return [], [], [], [], []
+            h_values = [plan_horizon]
+        else:
+            h_values = list(range(1, min(plan_horizon, len(actions)) + 1))
+        if not h_values:
+            return [], [], [], [], []
+
+        prompts: list[str] = []
+        pred_returns: list[float] = []
+        target_returns: list[float] = []
+        pred_tokens: list[str] = []
+        horizons: list[int] = []
+
+        q_generate = getattr(actor_rollout_wg, "generate_actor_q_returns", None)
+        for h in h_values:
+            plan = actions[:h]
+            prompt = format_craftext_plan_q_prompt(
+                task=task,
+                state=init_state,
+                plan_actions=plan,
+                return_bin_legend=legend,
+                constraint=constraint,
+            )
+            enc = self._encode_user_prompt(prompt, max_length=q_max_len, truncation="left")
+            value_batch = DataProto.from_single_dict(
+                {
+                    "value_input_ids": enc["input_ids"].unsqueeze(0),
+                    "value_attention_mask": enc["attention_mask"].unsqueeze(0),
+                    "value_position_ids": enc["position_ids"].unsqueeze(0),
+                }
+            )
+            value_batch.meta_info = dict(gen_batch_meta_info or {})
+            value_batch.meta_info["value_num_tokens"] = 1
+            value_batch.meta_info["return_bin_vmin"] = float(spec.vmin)
+            value_batch.meta_info["return_bin_vmax"] = float(spec.vmax)
+            value_batch.meta_info["return_bin_step"] = float(spec.step)
+            value_padded, value_pad = pad_dataproto_to_divisor(value_batch, actor_rollout_wg.world_size)
+            if q_generate is not None:
+                value_out_padded = q_generate(value_padded)
+            else:
+                value_out_padded = actor_rollout_wg.generate_value_tokens(value_padded)
+            value_out = unpad_dataproto(value_out_padded, pad_size=value_pad)
+
+            tok_id = int(value_out.batch["responses"][0, 0].item())
+            tok = self.tokenizer.decode([tok_id], skip_special_tokens=True).strip()
+            pred = float(decode_return_token(tok, spec=spec))
+            target = float(compute_nstep_plan_target(rewards, start_t=0, horizon=h, gamma=gamma))
+
+            prompts.append(prompt)
+            pred_returns.append(pred)
+            target_returns.append(target)
+            pred_tokens.append(tok)
+            horizons.append(h)
+
+        return prompts, pred_returns, target_returns, pred_tokens, horizons
+
+    def _predict_plan_q_validation_gsm8k(
+        self,
+        *,
+        question: str,
+        solution: str,
+        final_reward: float,
+        actor_rollout_wg,
+        gen_batch_meta_info: dict | None,
+    ) -> tuple[list[str], list[float], list[float], list[str], list[int]]:
+        """Plan-Q on GSM8K val: first H reasoning lines from rollout solution."""
+        from agent_system.environments.env_package.caged_craftext.return_tokens import (
+            decode_return_token,
+            return_bin_spec_from_env,
+            return_token_legend_compact_for_spec,
+        )
+        from agent_system.environments.prompts.world_model_reward_gsm8k_plan_q import (
+            format_gsm8k_plan_q_prompt,
+        )
+        from agent_system.environments.prompts.world_model_reward_gsm8k_q import (
+            split_gsm8k_reasoning_steps,
+        )
+        from omegaconf import OmegaConf
+
+        pq_cfg = OmegaConf.select(self.config, "trainer.actor_value_online_plan_q_wm", default={})
+        plan_horizon = int(pq_cfg.get("plan_horizon", 100))
+        step_split = str(pq_cfg.get("gsm8k_step_split", "newline"))
+        fixed_horizon_only = bool(pq_cfg.get("fixed_horizon_only", False))
+        spec = return_bin_spec_from_env(self.config.env)
+        legend = return_token_legend_compact_for_spec(spec)
+        q_max_len = int(
+            OmegaConf.select(self.config, "trainer.validation_plan_q.max_prompt_length", default=2048)
+        )
+
+        steps = split_gsm8k_reasoning_steps(solution, mode=step_split)
+        if fixed_horizon_only:
+            if len(steps) < plan_horizon:
+                return [], [], [], [], []
+            plan = steps[:plan_horizon]
+            h = plan_horizon
+        else:
+            plan = steps[: min(plan_horizon, len(steps))]
+            h = len(plan)
+        if not plan:
+            return [], [], [], [], []
+
+        prompt = format_gsm8k_plan_q_prompt(
+            question=question,
+            plan_steps=plan,
+            return_bin_legend=legend,
+        )
+        enc = self._encode_user_prompt(prompt, max_length=q_max_len, truncation="left")
+        value_batch = DataProto.from_single_dict(
+            {
+                "value_input_ids": enc["input_ids"].unsqueeze(0),
+                "value_attention_mask": enc["attention_mask"].unsqueeze(0),
+                "value_position_ids": enc["position_ids"].unsqueeze(0),
+            }
+        )
+        value_batch.meta_info = dict(gen_batch_meta_info or {})
+        value_batch.meta_info["value_num_tokens"] = 1
+        value_batch.meta_info["return_bin_vmin"] = float(spec.vmin)
+        value_batch.meta_info["return_bin_vmax"] = float(spec.vmax)
+        value_batch.meta_info["return_bin_step"] = float(spec.step)
+        value_padded, value_pad = pad_dataproto_to_divisor(value_batch, actor_rollout_wg.world_size)
+        q_generate = getattr(actor_rollout_wg, "generate_actor_q_returns", None)
+        if q_generate is not None:
+            value_out_padded = q_generate(value_padded)
+        else:
+            value_out_padded = actor_rollout_wg.generate_value_tokens(value_padded)
+        value_out = unpad_dataproto(value_out_padded, pad_size=value_pad)
+
+        tok_id = int(value_out.batch["responses"][0, 0].item())
+        tok = self.tokenizer.decode([tok_id], skip_special_tokens=True).strip()
+        pred = float(decode_return_token(tok, spec=spec))
+        target = float(final_reward)
+        return [prompt], [pred], [target], [tok], [h]
 
     def preprocess_single_sample(
         self,
@@ -252,30 +529,48 @@ class TrajectoryCollector:
         
         # Process multimodal data
         if is_multi_modal:
-            # Replace image placeholder with vision tokens
-            raw_prompt = prompt_with_chat_template.replace('<image>', '<|vision_start|><|image_pad|><|vision_end|>')
-            row_dict['multi_modal_data'] = {'image': [process_image(obs_image)]}
-            image_inputs = self.processor.image_processor(row_dict['multi_modal_data']['image'], return_tensors='pt')
+            from verl.utils.dataset.vision_utils import (
+                qwen_vl_pil_for_mm,
+                qwen_vl_image_processor_call,
+                qwen_vl_prepare_prompt_ids_for_vllm,
+            )
+
+            max_pixels, min_pixels = self._vl_mm_pixel_limits()
+            pil_mm = qwen_vl_pil_for_mm(obs_image, max_pixels=max_pixels, min_pixels=min_pixels)
+            row_dict['multi_modal_data'] = {'image': [pil_mm]}
+            image_inputs = qwen_vl_image_processor_call(
+                self.processor, [pil_mm],
+                max_pixels=max_pixels, min_pixels=min_pixels,
+            )
             image_grid_thw = image_inputs['image_grid_thw']
             row_dict['multi_modal_inputs'] = {key: val for key, val in image_inputs.items()}
-            if image_grid_thw is not None:
-                merge_length = self.processor.image_processor.merge_size**2
-                index = 0
-                while '<image>' in prompt_with_chat_template:
-                    prompt_with_chat_template = prompt_with_chat_template.replace(
-                        '<image>',
-                        '<|vision_start|>' + '<|placeholder|>' * (image_grid_thw[index].prod() // merge_length) +
-                        '<|vision_end|>',
+            merge_length = self.processor.image_processor.merge_size**2
+            index = 0
+            vllm_prompt_text = prompt_with_chat_template
+            while '<image>' in prompt_with_chat_template:
+                n_image_tokens = int(image_grid_thw[index].prod().item() // merge_length)
+                vision_span = (
+                    "<|vision_start|>"
+                    + "<|placeholder|>" * n_image_tokens
+                    + "<|vision_end|>"
+                )
+                prompt_with_chat_template = prompt_with_chat_template.replace("<image>", vision_span, 1)
+                if '<image>' in vllm_prompt_text:
+                    vllm_prompt_text = vllm_prompt_text.replace(
+                        "<image>",
+                        "<|vision_start|><|image_pad|><|vision_end|>",
                         1,
                     )
-                    index += 1
+                index += 1
 
-                prompt_with_chat_template = prompt_with_chat_template.replace('<|placeholder|>',
-                                                                                self.processor.image_token)
+            prompt_with_chat_template = prompt_with_chat_template.replace(
+                "<|placeholder|>", self.processor.image_token
+            )
 
         else:
             # If dataset did not provide `raw_prompt`, fall back to the prompt we just built.
             raw_prompt = raw_prompt if raw_prompt is not None else prompt_with_chat_template
+            vllm_prompt_text = raw_prompt
         
         input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(prompt=prompt_with_chat_template,
                                                                             tokenizer=self.tokenizer,
@@ -299,7 +594,11 @@ class TrajectoryCollector:
         else:
             position_ids = compute_position_id_with_mask(attention_mask)
 
-        raw_prompt_ids = self.tokenizer.encode(raw_prompt, add_special_tokens=False)
+        raw_prompt_ids = self.tokenizer.encode(vllm_prompt_text, add_special_tokens=False)
+        if is_multi_modal:
+            raw_prompt_ids = qwen_vl_prepare_prompt_ids_for_vllm(
+                raw_prompt_ids, self.tokenizer, processor=self.processor
+            )
         if len(raw_prompt_ids) > self.config.data.max_prompt_length:
             if self.config.data.truncation == "left":
                 raw_prompt_ids = raw_prompt_ids[-self.config.data.max_prompt_length :]
@@ -311,6 +610,9 @@ class TrajectoryCollector:
                 raw_prompt_ids = raw_prompt_ids[:left_half] + raw_prompt_ids[-right_half:]
             elif self.config.data.truncation == "error":
                 raise RuntimeError(f"Prompt length {len(raw_prompt_ids)} is longer than {self.config.data.max_prompt_length}.")
+
+        if is_multi_modal:
+            row_dict["vllm_prompt_text"] = vllm_prompt_text
 
         # Build final output dict
         row_dict.update({
@@ -328,7 +630,11 @@ class TrajectoryCollector:
 
         value_texts = obs.get('value_text', None)
         if value_texts is not None and item < len(value_texts) and value_texts[item]:
-            value_enc = self._encode_user_prompt(value_texts[item])
+            vt = value_texts[item]
+            if is_multi_modal and "<image>" in vt:
+                value_enc = self._encode_vl_user_prompt(vt, obs_image)
+            else:
+                value_enc = self._encode_user_prompt(vt)
             row_dict['value_input_ids'] = value_enc['input_ids']
             row_dict['value_attention_mask'] = value_enc['attention_mask']
             row_dict['value_position_ids'] = value_enc['position_ids']
@@ -428,6 +734,9 @@ class TrajectoryCollector:
                     # success_rate
                     for key, value in success_rate.items():
                         data[key] = value
+                    # vLLM-only PIL payloads; PPO update uses multi_modal_inputs tensors only.
+                    data.pop('multi_modal_data', None)
+                    data.pop('vllm_prompt_text', None)
 
                     effective_batch.append(data)
             
@@ -482,6 +791,12 @@ class TrajectoryCollector:
         validation_video_per_action_return_tokens = None
         validation_video_per_action_returns = None
         validation_video_per_action_prompts = None
+        validation_video_step_rewards = [] if record_video_env_idx is not None else None
+        validation_video_plan_q_prompts = None
+        validation_video_plan_q_returns = None
+        validation_video_plan_q_targets = None
+        validation_video_plan_q_tokens = None
+        validation_video_plan_q_horizons = None
         from omegaconf import OmegaConf
 
         use_actor_value_token = bool(
@@ -717,6 +1032,8 @@ class TrajectoryCollector:
             non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
             if "multi_modal_data" in batch.non_tensor_batch:
                 non_tensor_batch_keys_to_pop.append("multi_modal_data")
+            if "vllm_prompt_text" in batch.non_tensor_batch:
+                non_tensor_batch_keys_to_pop.append("vllm_prompt_text")
             if "raw_prompt" in batch.non_tensor_batch:
                 non_tensor_batch_keys_to_pop.append("raw_prompt")
             if "tools_kwargs" in batch.non_tensor_batch:
@@ -956,6 +1273,12 @@ class TrajectoryCollector:
                         validation_video_action_ids.append(int(infos[record_video_env_idx].get("action_id", -1)))
                     except Exception:
                         validation_video_action_ids.append(-1)
+                    if validation_video_step_rewards is not None:
+                        try:
+                            step_r = float(np.asarray(rewards).reshape(-1)[record_video_env_idx])
+                        except Exception:
+                            step_r = 0.0
+                        validation_video_step_rewards.append(step_r)
 
                     inverse_display = ""
                     inverse_action_id = -1
@@ -1111,6 +1434,90 @@ class TrajectoryCollector:
                 completed_episode_costs.append(float(episode_costs[i]))
                 completed_episode_wons.append(0.0)
         
+        if (
+            self._validation_plan_q_enabled()
+            and not is_train
+            and validation_video_frames
+            and validation_video_step_rewards
+            and validation_video_action_ids
+        ):
+            try:
+                init_state = str(validation_video_curr_ascii[0] or "") if validation_video_curr_ascii else ""
+                task = (
+                    str(validation_video_task_instructions[0] or "")
+                    if validation_video_task_instructions
+                    else ""
+                )
+                constraint = ""
+                if validation_video_prompts and validation_video_prompts[0]:
+                    p0 = validation_video_prompts[0]
+                    if "**CONSTRAINT:**" in p0:
+                        constraint = p0.split("**CONSTRAINT:**", 1)[1].strip().split("\n")[0]
+                action_ids = [int(a) for a in validation_video_action_ids[1:] if int(a) >= 0]
+                (
+                    validation_video_plan_q_prompts,
+                    validation_video_plan_q_returns,
+                    validation_video_plan_q_targets,
+                    validation_video_plan_q_tokens,
+                    validation_video_plan_q_horizons,
+                ) = self._predict_plan_q_validation_t0(
+                    init_state=init_state,
+                    task=task,
+                    constraint=constraint,
+                    action_ids=action_ids,
+                    step_rewards=validation_video_step_rewards,
+                    actor_rollout_wg=actor_rollout_wg,
+                    gen_batch_meta_info=gen_batch.meta_info,
+                )
+                if validation_video_plan_q_returns:
+                    print(
+                        f"[validation] plan-Q at t=0: horizons={validation_video_plan_q_horizons}, "
+                        f"pred={[round(r, 2) for r in validation_video_plan_q_returns]}, "
+                        f"target={[round(r, 2) for r in validation_video_plan_q_targets]}",
+                        flush=True,
+                    )
+            except Exception as exc:
+                print(f"[validation] plan-Q prediction at t=0 failed: {exc}", flush=True)
+
+        env_name_lower = str(getattr(self.config.env, "env_name", "")).lower()
+        if (
+            self._validation_plan_q_enabled()
+            and not is_train
+            and "gsm8k" in env_name_lower
+            and total_batch_list
+            and total_batch_list[0]
+        ):
+            try:
+                step0 = total_batch_list[0][0]
+                question = str(step0.get("wm_task_instruction") or step0.get("curr_obs_ascii") or "")
+                solution = str(step0.get("wm_action_token") or "")
+                try:
+                    final_reward = float(step0.get("wm_step_reward", step0.get("rewards", 0.0)))
+                except Exception:
+                    final_reward = 0.0
+                (
+                    validation_video_plan_q_prompts,
+                    validation_video_plan_q_returns,
+                    validation_video_plan_q_targets,
+                    validation_video_plan_q_tokens,
+                    validation_video_plan_q_horizons,
+                ) = self._predict_plan_q_validation_gsm8k(
+                    question=question,
+                    solution=solution,
+                    final_reward=final_reward,
+                    actor_rollout_wg=actor_rollout_wg,
+                    gen_batch_meta_info=gen_batch.meta_info,
+                )
+                if validation_video_plan_q_returns:
+                    print(
+                        f"[validation] GSM8K plan-Q h={validation_video_plan_q_horizons}: "
+                        f"pred={[round(r, 2) for r in validation_video_plan_q_returns]}, "
+                        f"target={[round(r, 2) for r in validation_video_plan_q_targets]}",
+                        flush=True,
+                    )
+            except Exception as exc:
+                print(f"[validation] GSM8K plan-Q prediction failed: {exc}", flush=True)
+
         success: Dict[str, np.ndarray] = envs.success_evaluator(
                     total_infos=total_infos,
                     total_batch_list=total_batch_list,
@@ -1142,6 +1549,11 @@ class TrajectoryCollector:
             validation_video_per_action_return_tokens,
             validation_video_per_action_returns,
             validation_video_per_action_prompts,
+            validation_video_plan_q_prompts,
+            validation_video_plan_q_returns,
+            validation_video_plan_q_targets,
+            validation_video_plan_q_tokens,
+            validation_video_plan_q_horizons,
             completed_episode_returns,
             completed_episode_lengths,
             completed_episode_costs,
@@ -1211,6 +1623,16 @@ class TrajectoryCollector:
                 _vtr,
                 _vpr,
                 _vti,
+                _vvp,
+                _vvt,
+                _vpat,
+                _vpar,
+                _vpap,
+                _vpqp,
+                _vpqr,
+                _vpqt,
+                _vpqtk,
+                _vpqh,
                 completed_returns,
                 completed_lengths,
                 completed_costs,
@@ -1300,6 +1722,11 @@ class TrajectoryCollector:
             validation_video_per_action_return_tokens = None
             validation_video_per_action_returns = None
             validation_video_per_action_prompts = None
+            validation_video_plan_q_prompts = None
+            validation_video_plan_q_returns = None
+            validation_video_plan_q_targets = None
+            validation_video_plan_q_tokens = None
+            validation_video_plan_q_horizons = None
         else:
             # Vanilla Sampling   
             (
@@ -1326,6 +1753,11 @@ class TrajectoryCollector:
                 validation_video_per_action_return_tokens,
                 validation_video_per_action_returns,
                 validation_video_per_action_prompts,
+                validation_video_plan_q_prompts,
+                validation_video_plan_q_returns,
+                validation_video_plan_q_targets,
+                validation_video_plan_q_tokens,
+                validation_video_plan_q_horizons,
                 completed_episode_returns,
                 completed_episode_lengths,
                 completed_episode_costs,
@@ -1389,6 +1821,16 @@ class TrajectoryCollector:
             gen_batch_output.meta_info['validation_video_per_action_prompts'] = validation_video_per_action_prompts
         if validation_video_per_action_return_tokens is not None:
             gen_batch_output.meta_info['validation_video_per_action_return_tokens'] = validation_video_per_action_return_tokens
+        if validation_video_plan_q_returns is not None:
+            gen_batch_output.meta_info['validation_video_plan_q_returns'] = validation_video_plan_q_returns
+        if validation_video_plan_q_targets is not None:
+            gen_batch_output.meta_info['validation_video_plan_q_targets'] = validation_video_plan_q_targets
+        if validation_video_plan_q_prompts is not None:
+            gen_batch_output.meta_info['validation_video_plan_q_prompts'] = validation_video_plan_q_prompts
+        if validation_video_plan_q_tokens is not None:
+            gen_batch_output.meta_info['validation_video_plan_q_tokens'] = validation_video_plan_q_tokens
+        if validation_video_plan_q_horizons is not None:
+            gen_batch_output.meta_info['validation_video_plan_q_horizons'] = validation_video_plan_q_horizons
         # Метрики по завершённым эпизодам (среднее по эпизодам, как в caged_craftext baselines)
         if completed_episode_returns is not None and len(completed_episode_returns) > 0:
             gen_batch_output.meta_info['completed_episode_returns'] = np.array(completed_episode_returns, dtype=np.float32)

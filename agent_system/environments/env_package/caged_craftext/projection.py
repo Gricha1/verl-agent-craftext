@@ -267,6 +267,38 @@ Reply with exactly ONE token — your estimate of total remaining reward from th
 """
 
 
+def get_single_token_action_vl_template_no_his() -> str:
+    """VL actor prompt: one action token; observation is the game frame (<image>)."""
+    from .action_tokens import action_token_legend
+
+    return f"""
+Your goal is to complete the following task:
+**TASK:** {{task_description}}
+
+You currently see visual observation:
+
+Picture 1: <image>
+
+Reply with exactly ONE token — your chosen action (no tags, no explanation):
+{action_token_legend()}
+"""
+
+
+def get_single_token_return_vl_template_no_his() -> str:
+    """VL value prompt: one return-bin token; observation is the game frame (<image>)."""
+    return """
+Your goal is to complete the following task:
+**TASK:** {task_description}
+
+You currently see visual observation:
+
+Picture 1: <image>
+
+Reply with exactly ONE token — your estimate of total remaining reward from this state (no explanation):
+{return_bin_legend}
+"""
+
+
 def get_per_action_return_template_no_his() -> str:
     """Critic Q-at-first-step: one return token if the agent takes a specific action next."""
     return """

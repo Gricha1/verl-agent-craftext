@@ -96,6 +96,10 @@ def constrained_log_probs(
     return log_probs.gather(-1, token_ids.unsqueeze(-1)).squeeze(-1)
 
 
+def _module_device(actor_module) -> torch.device:
+    return next(actor_module.parameters()).device
+
+
 def _forward_last_logits(
     actor_module,
     input_ids: torch.Tensor,
@@ -146,7 +150,10 @@ def constrained_generate_return_token(
     spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """One constrained return-bin token per critic prompt. Returns (token_ids B,), (log_probs B,)."""
-    device = value_prompts.device
+    device = _module_device(actor_module)
+    value_prompts = value_prompts.to(device)
+    attention_mask = attention_mask.to(device)
+    position_ids = position_ids.to(device)
     return_ids_allowed = return_bin_id_tensor(tokenizer, device, spec.num_bins)
     actor_module.eval()
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
@@ -177,7 +184,10 @@ def constrained_generate_return_token_sequence(
     if int(num_tokens) <= 0:
         raise ValueError(f"num_tokens must be > 0, got {num_tokens}")
 
-    device = value_prompts.device
+    device = _module_device(actor_module)
+    value_prompts = value_prompts.to(device)
+    attention_mask = attention_mask.to(device)
+    position_ids = position_ids.to(device)
     return_ids_allowed = return_bin_id_tensor(tokenizer, device, spec.num_bins)
     input_ids = value_prompts
     attn = attention_mask
@@ -199,7 +209,7 @@ def constrained_generate_return_token_sequence(
             [attn, torch.ones((attn.shape[0], 1), dtype=attn.dtype, device=device)],
             dim=-1,
         )
-        pos = compute_position_id_with_mask(attn)
+        pos = compute_position_id_with_mask(attn).to(device)
     out_ids = torch.cat(token_rows, dim=-1)
     out_log_probs = torch.stack(log_prob_rows, dim=-1)
     return out_ids, out_log_probs
@@ -216,7 +226,10 @@ def constrained_decode_return_values(
     spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC,
 ) -> torch.Tensor:
     """Greedy constrained decode of return bin from critic prompt only. Returns (B,) scalars."""
-    device = value_prompts.device
+    device = _module_device(actor_module)
+    value_prompts = value_prompts.to(device)
+    attention_mask = attention_mask.to(device)
+    position_ids = position_ids.to(device)
     return_ids_allowed = return_bin_id_tensor(tokenizer, device, spec.num_bins)
     vocab_to_bin = vocab_id_to_return_bin_tensor(tokenizer, device)
     actor_module.eval()
@@ -274,6 +287,7 @@ def forward_value_bin_logits_per_response_token(
     tokenizer,
     temperature: float = 1.0,
     spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC,
+    multi_modal_inputs: dict | None = None,
 ) -> torch.Tensor:
     """
     Per-response-token return-bin logits from critic prompt + teacher-forced response.
@@ -292,6 +306,7 @@ def forward_value_bin_logits_per_response_token(
     mrope = value_position_ids.dim() == 3
     pos = (combined_mask.cumsum(dim=-1) - 1).clamp(min=0) * combined_mask
     temp = max(float(temperature), 1e-8)
+    mm_kwargs = multi_modal_inputs or {}
 
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
         if mrope:
@@ -302,6 +317,7 @@ def forward_value_bin_logits_per_response_token(
                 attention_mask=combined_mask,
                 position_ids=pos,
                 use_cache=False,
+                **mm_kwargs,
             )
         except TypeError:
             output = actor_module(
@@ -331,6 +347,7 @@ def per_token_values_from_critic_prompt(
     tokenizer,
     temperature: float = 1.0,
     spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC,
+    multi_modal_inputs: dict | None = None,
 ) -> torch.Tensor:
     """GAE values (B, response_length) — expected return at each response position."""
     bin_logits = forward_value_bin_logits_per_response_token(
@@ -343,6 +360,7 @@ def per_token_values_from_critic_prompt(
         tokenizer=tokenizer,
         temperature=temperature,
         spec=spec,
+        multi_modal_inputs=multi_modal_inputs,
     )
     values = expected_return_from_bin_logits(bin_logits, spec=spec)
     return values * response_mask.to(values.dtype)
