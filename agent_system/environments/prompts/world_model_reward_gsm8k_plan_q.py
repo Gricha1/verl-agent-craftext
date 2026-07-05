@@ -49,7 +49,9 @@ def expand_gsm8k_plan_q_examples(
     return_spec: ReturnBinSpec | None = None,
 ) -> List[tuple[str, float]]:
     """
-    One plan-Q row per rollout sample at horizon plan_horizon (or all steps if shorter).
+    One plan-Q row per rollout sample.
+    fixed_horizon_only: one row per traj, plan = first min(plan_horizon, num_steps) lines
+    (not multi-horizon h=1..H). Does not require len(steps) >= plan_horizon.
     Target = final episode score (0/1 or format partial).
     """
     from agent_system.environments.env_package.caged_craftext.return_tokens import DEFAULT_RETURN_BIN_SPEC
@@ -67,12 +69,7 @@ def expand_gsm8k_plan_q_examples(
         steps = split_gsm8k_reasoning_steps(sol, mode=step_split)
         if not steps:
             continue
-        if fixed_horizon_only:
-            if len(steps) < max_h:
-                continue
-            plan = steps[:max_h]
-        else:
-            plan = steps[: min(max_h, len(steps))]
+        plan = steps[:max_h]
         if not plan:
             continue
         prompt = format_gsm8k_plan_q_prompt(

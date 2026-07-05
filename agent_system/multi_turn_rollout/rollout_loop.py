@@ -408,14 +408,10 @@ class TrajectoryCollector:
         )
 
         steps = split_gsm8k_reasoning_steps(solution, mode=step_split)
-        if fixed_horizon_only:
-            if len(steps) < plan_horizon:
-                return [], [], [], [], []
-            plan = steps[:plan_horizon]
-            h = plan_horizon
-        else:
-            plan = steps[: min(plan_horizon, len(steps))]
-            h = len(plan)
+        if not steps:
+            return [], [], [], [], []
+        plan = steps[:plan_horizon]
+        h = len(plan)
         if not plan:
             return [], [], [], [], []
 
