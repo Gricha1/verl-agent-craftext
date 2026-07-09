@@ -111,12 +111,107 @@ class DataParallelPPOActor(BasePPOActor):
             )
         return self._action_vocab_ids.to(device)
 
+    def _pack_admissible_vocab_ids(self, vocab_ids_batch, device: torch.device):
+        """Pad per-sample admissible vocab id lists to (B, max_n) + mask."""
+        try:
+            rows = vocab_ids_batch.tolist()
+        except AttributeError:
+            rows = list(vocab_ids_batch)
+        rows = [list(x) for x in rows]
+        batch_size = len(rows)
+        max_n = max((len(r) for r in rows), default=0)
+        if max_n == 0:
+            raise ValueError("admissible_action_vocab_ids is empty for all samples")
+        padded = torch.zeros(batch_size, max_n, dtype=torch.long, device=device)
+        mask = torch.zeros(batch_size, max_n, dtype=torch.bool, device=device)
+        for i, row in enumerate(rows):
+            n = len(row)
+            if n == 0:
+                continue
+            padded[i, :n] = torch.tensor(row, dtype=torch.long, device=device)
+            mask[i, :n] = True
+        return padded, mask
+
+    def _compute_admissible_action_log_scores(
+        self,
+        micro_batch: dict,
+        temperature: float,
+    ) -> torch.Tensor:
+        """Dynamic admissible commands (AlfWorld): one forward, gather per-sample vocab ids."""
+        from verl.utils.action_set_entropy import action_log_scores_from_dynamic_admissible_vocab
+
+        input_ids = micro_batch["input_ids"]
+        attention_mask = micro_batch["attention_mask"]
+        position_ids = micro_batch["position_ids"]
+        response_length = micro_batch["responses"].size(-1)
+        prompt_length = input_ids.shape[1] - response_length
+        temp = max(float(temperature), 1e-8)
+
+        prompt_ids = input_ids[:, :prompt_length]
+        prompt_mask = attention_mask[:, :prompt_length]
+        prompt_pos_ids = (prompt_mask.cumsum(dim=1) - 1).clamp(min=0) * prompt_mask
+        mrope = position_ids.dim() == 3
+
+        multi_modal_inputs = {}
+        if "multi_modal_inputs" in micro_batch:
+            for key in micro_batch["multi_modal_inputs"][0].keys():
+                multi_modal_inputs[key] = torch.cat(
+                    [inputs[key] for inputs in micro_batch["multi_modal_inputs"]], dim=0
+                )
+
+        with torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
+            pos = prompt_pos_ids
+            if mrope:
+                pos = pos.unsqueeze(0).expand(3, -1, -1)
+            try:
+                output = self.actor_module(
+                    input_ids=prompt_ids,
+                    attention_mask=prompt_mask,
+                    position_ids=pos,
+                    **multi_modal_inputs,
+                    use_cache=False,
+                    logits_to_keep=1,
+                )
+            except TypeError:
+                output = self.actor_module(
+                    input_ids=prompt_ids,
+                    attention_mask=prompt_mask,
+                    position_ids=pos,
+                    **multi_modal_inputs,
+                    use_cache=False,
+                )
+            if self.use_fused_kernels and hasattr(output, "logits") and output.logits is None:
+                raise NotImplementedError(
+                    "entropy_over_valid_actions requires non-fused logits path; "
+                    "set actor_rollout_ref.model.use_fused_kernels=False"
+                )
+            logits = output.logits / temp
+
+        if logits.dim() == 3:
+            next_token_logits = logits[:, -1, :]
+        else:
+            next_token_logits = logits
+        del logits, output
+
+        vocab_padded, vocab_mask = self._pack_admissible_vocab_ids(
+            micro_batch["admissible_action_vocab_ids"], next_token_logits.device
+        )
+        action_logits = action_log_scores_from_dynamic_admissible_vocab(
+            next_token_logits, vocab_padded, vocab_mask
+        )
+        del next_token_logits
+        get_torch_device().empty_cache()
+        return action_logits.float()
+
     def _compute_action_set_log_scores(
         self,
         micro_batch: dict,
         temperature: float,
     ) -> torch.Tensor:
         """Log-probability scores for each canonical <action>X</action> string. Shape (B, num_actions)."""
+        if "admissible_action_vocab_ids" in micro_batch:
+            return self._compute_admissible_action_log_scores(micro_batch, temperature)
+
         from verl.utils.action_set_entropy import (
             action_log_scores_from_next_token_logits,
             action_log_scores_one_action_batch,

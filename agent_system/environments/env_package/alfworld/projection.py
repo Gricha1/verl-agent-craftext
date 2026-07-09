@@ -16,6 +16,32 @@
 from typing import List
 import re
 
+from .action_tokens import MAX_ADMISSIBLE_ACTIONS, INVALID_ACTION_INDEX, parse_single_token_action
+
+
+def _filtered_admissible_pool(action_pool: List[str]) -> List[str]:
+    pool = [str(s).strip() for s in action_pool if str(s).strip().lower() != "help"]
+    if len(pool) > MAX_ADMISSIBLE_ACTIONS:
+        pool = pool[:MAX_ADMISSIBLE_ACTIONS]
+    return pool
+
+
+def alfworld_single_token_projection(actions: List[str], action_pools: List[List[str]]):
+    """Map one token (1..9, a..z) to the corresponding admissible command."""
+    valids = [0] * len(actions)
+    for i in range(len(actions)):
+        pool = _filtered_admissible_pool(action_pools[i])
+        action_idx = parse_single_token_action(actions[i], len(pool))
+        if action_idx == INVALID_ACTION_INDEX or action_idx >= len(pool):
+            actions[i] = (actions[i] or "")[-30:]
+            continue
+        actions[i] = pool[action_idx]
+        valids[i] = 1
+        if re.search(r"[\u4e00-\u9fff]", actions[i]):
+            valids[i] = 0
+    return actions, valids
+
+
 def alfworld_projection(actions: List[str], action_pools: List[List[str]]):
     """
     An function to process the actions

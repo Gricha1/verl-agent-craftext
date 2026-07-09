@@ -47,63 +47,76 @@ def get_obs_image(env):
 
 def compute_reward(info, multi_modal=False):
     if multi_modal:
-        reward = 10.0 * float(info['won']) + float(info['goal_condition_success_rate'])
+        raw = 10.0 * float(info['won']) + float(info['goal_condition_success_rate'])
     else:
-        reward = 10.0 * float(info['won'])
-    return reward
+        raw = 10.0 * float(info['won'])
+    # Normalize to [0, 1] so actor-value return bins (e.g. 0..1) match MC targets.
+    return raw / 10.0
+
+
+def _info_at_index(info, idx):
+    out = {}
+    for key, value in info.items():
+        if isinstance(value, (list, tuple)) and len(value) > idx:
+            out[key] = value[idx]
+        else:
+            out[key] = value
+    return out
+
 
 class AlfworldWorker:
     """
-    Ray remote actor that replaces the worker function.
-    Each actor holds one environment instance.
+    Single Ray actor with one TextWorld gym env (batch_size=N parallel slots).
+    Avoids N separate Ray processes each registering the full AlfWorld game list.
     """
-    
-    def __init__(self, config, seed, base_env):
-        self.env = base_env.init_env(batch_size=1)  # Each worker holds only one sub-environment
+
+    def __init__(self, alf_config_path, seed, is_train, eval_dataset, batch_size):
+        self.batch_size = int(batch_size)
+        config = load_config_file(alf_config_path)
+        env_type = config['env']['type']
+        train_eval = 'train' if is_train else eval_dataset
+        base_env = get_environment(env_type)(config, train_eval=train_eval)
+        self.multi_modal = env_type == 'AlfredThorEnv'
+        self.env = base_env.init_env(batch_size=self.batch_size)
         self.env.seed(seed)
-    
-    def step(self, action):
-        """Execute a step in the environment"""
-        actions = [action] 
-        
+
+    def step(self, actions):
         obs, scores, dones, infos = self.env.step(actions)
         infos['observation_text'] = obs
         return obs, scores, dones, infos
-    
+
     def reset(self):
-        """Reset the environment"""
         obs, infos = self.env.reset()
         infos['observation_text'] = obs
         return obs, infos
-    
+
     def getobs(self):
-        """Get current observation image"""
         image = get_obs_image(self.env)
-        image = image.cpu()  
-        return image
+        return image.cpu()
 
 class AlfworldEnvs(gym.Env):
     def __init__(self, alf_config_path, seed, env_num, group_n, resources_per_worker, is_train=True, env_kwargs={}):
         super().__init__()
-        
+
         # Initialize Ray if not already initialized
         if not ray.is_initialized():
             ray.init()
-            
+
         eval_dataset = env_kwargs.get('eval_dataset', 'eval_in_distribution')
         config = load_config_file(alf_config_path)
         env_type = config['env']['type']
-        base_env = get_environment(env_type)(config, train_eval='train' if is_train else eval_dataset)
         self.multi_modal = (env_type == 'AlfredThorEnv')
         self.num_processes = env_num * group_n
         self.group_n = group_n
 
-        # Create Ray remote actors instead of processes
         env_worker = ray.remote(**resources_per_worker)(AlfworldWorker)
-        self.workers = []
-        for i in range(self.num_processes):
-            worker = env_worker.remote(config, seed + (i // self.group_n), base_env)
-            self.workers.append(worker)
+        self.worker = env_worker.remote(
+            alf_config_path,
+            seed,
+            is_train,
+            eval_dataset,
+            self.num_processes,
+        )
 
         self.prev_admissible_commands = [None for _ in range(self.num_processes)]
 
@@ -111,28 +124,19 @@ class AlfworldEnvs(gym.Env):
         assert len(actions) == self.num_processes, \
             "The num of actions must be equal to the num of processes"
 
-        # Send step commands to all workers
-        futures = []
-        for i, worker in enumerate(self.workers):
-            future = worker.step.remote(actions[i])
-            futures.append(future)
+        obs, scores, dones, infos = ray.get(self.worker.step.remote(actions))
 
-        # Collect results
         text_obs_list = []
         image_obs_list = []
         rewards_list = []
         dones_list = []
         info_list = []
 
-        results = ray.get(futures)
-        for i, (obs, scores, dones, info) in enumerate(results):
-            for k in info.keys():
-                info[k] = info[k][0]
-
-            text_obs_list.append(obs[0])
-            dones_list.append(dones[0])
+        for i in range(self.num_processes):
+            info = _info_at_index(infos, i)
+            text_obs_list.append(obs[i])
+            dones_list.append(dones[i])
             info_list.append(info)
-
             self.prev_admissible_commands[i] = info['admissible_commands']
             rewards_list.append(compute_reward(info, self.multi_modal))
 
@@ -144,25 +148,15 @@ class AlfworldEnvs(gym.Env):
         return text_obs_list, image_obs_list, rewards_list, dones_list, info_list
 
     def reset(self):
-        """
-        Send the reset command to all workers at once and collect initial obs/info from each environment.
-        """
+        obs, infos = ray.get(self.worker.reset.remote())
+
         text_obs_list = []
         image_obs_list = []
         info_list = []
 
-        # Send reset commands to all workers
-        futures = []
-        for worker in self.workers:
-            future = worker.reset.remote()
-            futures.append(future)
-
-        # Collect results
-        results = ray.get(futures)
-        for i, (obs, info) in enumerate(results):
-            for k in info.keys():
-                info[k] = info[k][0] 
-            text_obs_list.append(obs[0])
+        for i in range(self.num_processes):
+            info = _info_at_index(infos, i)
+            text_obs_list.append(obs[i])
             self.prev_admissible_commands[i] = info['admissible_commands']
             info_list.append(info)
 
@@ -174,33 +168,17 @@ class AlfworldEnvs(gym.Env):
         return text_obs_list, image_obs_list, info_list
 
     def getobs(self):
-        """
-        Ask each worker to return its current frame image.
-        Usually needed only for multi-modal environments; otherwise can return None.
-        """
-        futures = []
-        for worker in self.workers:
-            future = worker.getobs.remote()
-            futures.append(future)
-
-        images = ray.get(futures)
+        images = ray.get(self.worker.getobs.remote())
+        if isinstance(images, torch.Tensor) and images.shape[0] == self.num_processes:
+            return [images[i] for i in range(self.num_processes)]
         return images
 
     @property
     def get_admissible_commands(self):
-        """
-        Simply return the prev_admissible_commands stored by the main process.
-        You could also design it to fetch after each step or another method.
-        """
         return self.prev_admissible_commands
 
     def close(self):
-        """
-        Close all workers
-        """
-        # Kill all Ray actors
-        for worker in self.workers:
-            ray.kill(worker)
+        ray.kill(self.worker)
 
 def build_alfworld_envs(alf_config_path, seed, env_num, group_n, resources_per_worker, is_train=True, env_kwargs={}):
     return AlfworldEnvs(alf_config_path, seed, env_num, group_n, resources_per_worker, is_train, env_kwargs)

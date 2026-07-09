@@ -564,9 +564,11 @@ class TrajectoryCollector:
             )
 
         else:
-            # If dataset did not provide `raw_prompt`, fall back to the prompt we just built.
-            raw_prompt = raw_prompt if raw_prompt is not None else prompt_with_chat_template
-            vllm_prompt_text = raw_prompt
+            # vLLM/log-prob need a string. Parquet `raw_prompt` with return_raw_chat=True is a chat
+            # message list (often empty placeholder for agent envs) — always use env-built text.
+            vllm_prompt_text = prompt_with_chat_template
+            if raw_prompt is None:
+                raw_prompt = prompt_with_chat_template
         
         input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(prompt=prompt_with_chat_template,
                                                                             tokenizer=self.tokenizer,
@@ -635,6 +637,19 @@ class TrajectoryCollector:
             row_dict['value_attention_mask'] = value_enc['attention_mask']
             row_dict['value_position_ids'] = value_enc['position_ids']
             row_dict['value_prompt_text'] = value_enc['prompt_text']
+
+        prompt_template_type = getattr(self.config.env, "prompt_template_type", "default_template")
+        adm_pools = obs.get("admissible_commands")
+        if prompt_template_type == "single_token_action" and adm_pools is not None and item < len(adm_pools):
+            from agent_system.environments.env_package.alfworld.action_tokens import (
+                MAX_ADMISSIBLE_ACTIONS,
+                vocab_ids_for_labels,
+            )
+
+            pool = [s for s in adm_pools[item] if s != "help"]
+            n = min(len(pool), MAX_ADMISSIBLE_ACTIONS)
+            if n > 0:
+                row_dict["admissible_action_vocab_ids"] = vocab_ids_for_labels(self.tokenizer, n)
         
         return row_dict
 

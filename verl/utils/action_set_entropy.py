@@ -175,6 +175,17 @@ def action_log_scores_from_next_token_logits(
     return log_probs.index_select(dim=-1, index=action_vocab_ids.to(log_probs.device))
 
 
+def action_log_scores_from_dynamic_admissible_vocab(
+    next_token_logits: torch.Tensor,
+    admissible_vocab_ids: torch.Tensor,
+    admissible_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Per-sample admissible action sets (AlfWorld). Invalid padded slots use -1e9."""
+    log_probs = F.log_softmax(next_token_logits, dim=-1)
+    gathered = log_probs.gather(-1, admissible_vocab_ids.to(log_probs.device))
+    return gathered.masked_fill(~admissible_mask.to(gathered.device), -1e9)
+
+
 def action_log_scores_one_action_batch(
     logits: torch.Tensor,
     input_ids: torch.Tensor,

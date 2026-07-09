@@ -1024,6 +1024,23 @@ class PlanQWorldModelTrainer:
                 fixed_horizon_only=self.fixed_horizon_only,
                 return_spec=self.return_spec,
             )
+        elif self.prompt_style == "alfworld":
+            from agent_system.environments.prompts.world_model_reward_alfworld_plan_q import (
+                expand_alfworld_plan_q_examples,
+            )
+
+            expanded = expand_alfworld_plan_q_examples(
+                traj_uids=traj_uids,
+                states=states,
+                action_tokens=action_tokens,
+                step_rewards=step_rewards,
+                task_instructions=task_instructions,
+                plan_horizon=self.plan_horizon,
+                gamma=self.gamma,
+                max_steps_per_traj=self.max_steps_per_traj,
+                fixed_horizon_only=self.fixed_horizon_only,
+                return_spec=self.return_spec,
+            )
         else:
             expanded = expand_craftext_plan_q_examples(
                 traj_uids=traj_uids,

@@ -233,8 +233,18 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
         self.pre_text_obs = text_obs
         self.extract_task(text_obs)
 
-        full_text_obs = self.build_text_obs(text_obs, self.envs.get_admissible_commands, init=True)
-        return {'text': full_text_obs, 'image': image_obs, 'anchor': text_obs}, infos
+        admissible_commands = self.envs.get_admissible_commands
+        full_text_obs = self.build_text_obs(text_obs, admissible_commands, init=True)
+        observations = {
+            'text': full_text_obs,
+            'image': image_obs,
+            'anchor': text_obs,
+            'admissible_commands': admissible_commands,
+        }
+        value_text = self.build_value_text_obs(text_obs, init=True)
+        if value_text is not None:
+            observations['value_text'] = value_text
+        return observations, infos
     
     def step(self, text_actions: List[str]):
         actions, valids = self.projection_f(text_actions, self.envs.get_admissible_commands)
@@ -242,7 +252,8 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
         self.memory.store({'text_obs': self.pre_text_obs, 'action': actions})
         self.pre_text_obs = text_obs
 
-        full_text_obs = self.build_text_obs(text_obs, self.envs.get_admissible_commands)
+        admissible_commands = self.envs.get_admissible_commands
+        full_text_obs = self.build_text_obs(text_obs, admissible_commands)
         if infos[0].get("extra.gamefile") is None:
             infos = set_gamefile(infos, self.gamefile)
 
@@ -250,11 +261,49 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
         for i, info in enumerate(infos):
             info['is_action_valid'] = to_numpy(valids[i])
 
-        next_observations = {'text': full_text_obs, 'image': image_obs, 'anchor': text_obs}
+        next_observations = {
+            'text': full_text_obs,
+            'image': image_obs,
+            'anchor': text_obs,
+            'admissible_commands': admissible_commands,
+        }
+        value_text = self.build_value_text_obs(text_obs)
+        if value_text is not None:
+            next_observations['value_text'] = value_text
         rewards = to_numpy(rewards)
         dones = to_numpy(dones)
 
         return next_observations, rewards, dones, infos
+
+    def build_value_text_obs(self, text_obs: List[str], init: bool = False) -> Optional[List[str]]:
+        del init
+        value_template_type = getattr(self.config.env, "value_prompt_template_type", None)
+        if not value_template_type:
+            return None
+        if value_template_type != "single_token_return":
+            raise ValueError(f"Unsupported value_prompt_template_type: {value_template_type!r}")
+
+        from agent_system.environments.env_package.caged_craftext.projection import (
+            get_single_token_return_template_no_his,
+        )
+        from agent_system.environments.env_package.caged_craftext.return_tokens import (
+            return_bin_spec_from_env,
+            return_token_legend_for_spec,
+        )
+
+        template_no_his = get_single_token_return_template_no_his()
+        legend = return_token_legend_for_spec(return_bin_spec_from_env(self.config.env))
+        prompts = []
+        for i, obs in enumerate(text_obs):
+            task = self.tasks[i] if i < len(self.tasks) else "No task"
+            prompts.append(
+                template_no_his.format(
+                    task_description=task,
+                    current_observation=self._observation_for_prompt(obs, task),
+                    return_bin_legend=legend,
+                )
+            )
+        return prompts
     
     def extract_task(self, text_obs: List[str]):
         for obs in text_obs:
@@ -264,38 +313,66 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
                 self.tasks.append(obs[task_start + len('Your task is to: '):].strip())
             else:
                 raise ValueError("Task description not found in text observation.")
+
+    def _observation_for_prompt(self, raw_obs: str, task: str) -> str:
+        """Drop task line and TextWorld banner — task is already in the prompt header."""
+        obs = raw_obs or ""
+        task_marker = "Your task is to: "
+        if task_marker in obs:
+            obs = obs.replace(f"{task_marker}{task}", "", 1)
+            if task_marker in obs:
+                obs = obs.partition(task_marker)[0]
+        obs = obs.replace("-= Welcome to TextWorld, ALFRED! =-", "").strip()
+        return obs.strip()
         
 
     def build_text_obs(self, text_obs: List[str], admissible_actions: List[List[str]], init: bool = False) -> List[str]:
         """
         This function builds the text observation for the agent.
         """
+        prompt_template_type = getattr(self.config.env, "prompt_template_type", "default_template")
         postprocess_text_obs = []
         if not init and self.config.env.history_length > 0:
             memory_contexts, valid_lens = self.memory.fetch(
                     self.config.env.history_length,
                     obs_key="text_obs",
                     action_key="action")
-            
-        for i in range(len(text_obs)):
-            # exclude 'help' in admissible_actions[i]
-            reformatted_admissible_actions = "\n ".join(f"'{s}'" for s in admissible_actions[i] if s != 'help')
 
-            if init or self.config.env.history_length <= 0:
-                obs = ALFWORLD_TEMPLATE_NO_HIS.format(
-                    current_observation=text_obs[i],
-                    admissible_actions=reformatted_admissible_actions
+        for i in range(len(text_obs)):
+            if prompt_template_type == "single_token_action":
+                from agent_system.environments.prompts.alfworld_single_token import (
+                    ALFWORLD_SINGLE_TOKEN_ACTION_TEMPLATE,
+                )
+                from agent_system.environments.env_package.alfworld.action_tokens import (
+                    build_admissible_legend,
+                )
+
+                pool = [s for s in admissible_actions[i] if s != "help"]
+                task = self.tasks[i] if i < len(self.tasks) else "No task"
+                obs = ALFWORLD_SINGLE_TOKEN_ACTION_TEMPLATE.format(
+                    task_description=task,
+                    current_observation=self._observation_for_prompt(text_obs[i], task),
+                    action_legend=build_admissible_legend(pool),
                 )
             else:
-                obs = ALFWORLD_TEMPLATE.format(
-                    task_description=self.tasks[i],
-                    step_count=len(self.memory[i]),
-                    history_length=valid_lens[i],
-                    action_history=memory_contexts[i],
-                    current_step=len(self.memory[i]) + 1,
-                    current_observation=text_obs[i],
-                    admissible_actions=reformatted_admissible_actions
+                reformatted_admissible_actions = "\n ".join(
+                    f"'{s}'" for s in admissible_actions[i] if s != "help"
                 )
+                if init or self.config.env.history_length <= 0:
+                    obs = ALFWORLD_TEMPLATE_NO_HIS.format(
+                        current_observation=text_obs[i],
+                        admissible_actions=reformatted_admissible_actions,
+                    )
+                else:
+                    obs = ALFWORLD_TEMPLATE.format(
+                        task_description=self.tasks[i],
+                        step_count=len(self.memory[i]),
+                        history_length=valid_lens[i],
+                        action_history=memory_contexts[i],
+                        current_step=len(self.memory[i]) + 1,
+                        current_observation=text_obs[i],
+                        admissible_actions=reformatted_admissible_actions,
+                    )
 
             postprocess_text_obs.append(obs)
         return postprocess_text_obs
@@ -1257,8 +1334,16 @@ def make_envs(config):
         _envs = build_alfworld_envs(alf_config_path, config.env.seed, config.data.train_batch_size, group_n, is_train=True, env_kwargs=env_kwargs, resources_per_worker=resources_per_worker)
         _val_envs = build_alfworld_envs(alf_config_path, config.env.seed + 1000, config.data.val_batch_size, 1, is_train=False, env_kwargs=env_kwargs, resources_per_worker=resources_per_worker)
         
-        projection_f = partial(alfworld_projection)
-        
+        prompt_template_type = getattr(config.env, "prompt_template_type", "default_template")
+        if prompt_template_type == "single_token_action":
+            from agent_system.environments.env_package.alfworld.projection import (
+                alfworld_single_token_projection,
+            )
+
+            projection_f = partial(alfworld_single_token_projection)
+        else:
+            projection_f = partial(alfworld_projection)
+
         # Check if we should use subtask-based GiGPO
         use_subtask_manager = config.env.get('use_subtask_gigpo', False)
         
