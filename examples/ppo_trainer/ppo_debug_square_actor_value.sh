@@ -5,7 +5,7 @@
 #   actor prompt (single_token_action)  -> 1 action token
 #   critic prompt (single_token_return) -> 1 return bin token ([-5,6] step 0.4, 29 levels)
 #
-# GAE uses V(s) from critic forward; value loss = CE on return bin vs per-token GAE returns.
+# GAE along env trajectories (gae_by_trajectory): V targets remaining return to episode end.
 # critic_warmup: first N PPO steps train only return-token CE (policy frozen).
 #
 # Usage:
@@ -48,12 +48,12 @@ echo "PPO debug_square_8x8 (dual-prompt actor-value)"
 echo "=========================================="
 echo "[INFO] NUM_OPTIMISTIC_ENVS=$NUM_OPTIMISTIC_ENVS"
 echo "[INFO] OPTIMISTIC_RESET_RATIO=$OPTIMISTIC_RESET_RATIO"
-echo "[INFO] Map: 8x8 — stone / wood / water (adjacent = success)"
+echo "[INFO] Map: 8x8 — stone / wood / water shuffled corners (adjacent = success)"
 echo "[INFO] actor prompt: single_token_action, max_response_length=1"
 echo "[INFO] critic prompt: return bins [$RETURN_BIN_MIN,$RETURN_BIN_MAX] step=$RETURN_BIN_STEP"
 echo "[INFO] critic: token head on same LLM (no separate critic network)"
 echo "[INFO] value warmup (critic_warmup): $CRITIC_WARMUP PPO steps (return-token CE only)"
-echo "[INFO] value targets: per-token GAE returns (actor_value_target_from_returns=True)"
+echo "[INFO] GAE: by trajectory (returns to episode end); value CE on those GAE returns"
 echo "[INFO] actor_value_separate_optimizer_steps: $ACTOR_VALUE_SEPARATE_STEPS"
 echo "[INFO] actor_value_target_encoding: $ACTOR_VALUE_TARGET_ENCODING"
 echo "[INFO] entropy: H over 17 action tokens (1 forward + mask, entropy_over_valid_actions=True)"
@@ -92,6 +92,7 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   ++env.use_jax_gpu=False \
   ++env.jax_gpu_fraction=0.15 \
   algorithm.use_actor_value_token=True \
+  algorithm.gae_by_trajectory=True \
   actor_rollout_ref.actor.actor_value_token=True \
   actor_rollout_ref.actor.actor_value_loss_coef="$ACTOR_VALUE_LOSS_COEF" \
   actor_rollout_ref.actor.actor_value_separate_optimizer_steps="$ACTOR_VALUE_SEPARATE_STEPS" \

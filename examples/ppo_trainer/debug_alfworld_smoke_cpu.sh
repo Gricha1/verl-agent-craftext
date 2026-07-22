@@ -8,7 +8,8 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
+ALFWORLD_PKG_ROOT="$PROJECT_ROOT/agent_system/environments/env_package/alfworld"
+export PYTHONPATH="${PROJECT_ROOT}:${ALFWORLD_PKG_ROOT}:${PYTHONPATH}"
 export CUDA_VISIBLE_DEVICES=""
 
 cd "$PROJECT_ROOT"

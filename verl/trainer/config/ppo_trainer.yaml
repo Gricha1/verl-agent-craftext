@@ -288,6 +288,9 @@ algorithm:
   gamma: 1.0
   lam: 1.0
   adv_estimator: gae
+  # If True with GAE: estimate advantages/returns along env trajectories (traj_uid),
+  # not along response tokens. Needed for single-token multi-step envs (debug_square).
+  gae_by_trajectory: False
   # GAE with V(s) decoded from actor's 2nd return token (no separate critic).
   use_actor_value_token: False
   norm_adv_by_std_in_grpo: True

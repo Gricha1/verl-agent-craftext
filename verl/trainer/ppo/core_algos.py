@@ -109,6 +109,89 @@ def compute_gae_advantage_return(
     return advantages, returns
 
 
+def compute_gae_advantage_return_by_trajectory(
+    token_level_rewards: torch.Tensor,
+    values: torch.Tensor,
+    response_mask: torch.Tensor,
+    traj_uids: np.ndarray,
+    episode_step_idx: np.ndarray,
+    gamma: float,
+    lam: float,
+):
+    """
+    GAE along environment episodes (grouped by traj_uid), not along response tokens.
+
+    Used when each env step is a separate batch row (e.g. single-token actions): standard
+    response-axis GAE collapses to one-step TD, while this estimates returns to episode end.
+    Rows with the same (traj_uid, episode_step_idx) share the same GAE target (adjust_batch copies).
+    """
+    with torch.no_grad():
+        device = token_level_rewards.device
+        dtype = token_level_rewards.dtype
+        bs, resp_len = token_level_rewards.shape
+        traj_uids = np.asarray(traj_uids).reshape(-1)
+        episode_step_idx = np.asarray(episode_step_idx, dtype=np.int64).reshape(-1)
+        if traj_uids.shape[0] != bs or episode_step_idx.shape[0] != bs:
+            raise ValueError(
+                f"traj_uid/episode_step_idx length mismatch: {traj_uids.shape[0]}, "
+                f"{episode_step_idx.shape[0]} vs batch {bs}"
+            )
+
+        # Per-row step reward / value (response may be length 1 or longer).
+        step_rewards = (token_level_rewards * response_mask).sum(dim=-1)
+        # V(s_t): value on the first valid response token (single-token action => that token).
+        first_token = response_mask.argmax(dim=-1)
+        step_values = values.gather(1, first_token.unsqueeze(1)).squeeze(1)
+
+        adv_out = torch.zeros(bs, dtype=dtype, device=device)
+        ret_out = torch.zeros(bs, dtype=dtype, device=device)
+
+        for uid in np.unique(traj_uids):
+            idxs = np.where(traj_uids == uid)[0]
+            steps = episode_step_idx[idxs]
+            # Unique chronological steps; duplicates (batch padding copies) map to the same target.
+            order = np.argsort(steps, kind="stable")
+            idxs_sorted = idxs[order]
+            steps_sorted = steps[order]
+            unique_step_ids = []
+            unique_row_idxs = []
+            seen = set()
+            for row_i, step_i in zip(idxs_sorted.tolist(), steps_sorted.tolist()):
+                if int(step_i) in seen:
+                    continue
+                seen.add(int(step_i))
+                unique_step_ids.append(int(step_i))
+                unique_row_idxs.append(int(row_i))
+
+            T = len(unique_row_idxs)
+            if T == 0:
+                continue
+            row_t = torch.tensor(unique_row_idxs, device=device, dtype=torch.long)
+            r = step_rewards[row_t]
+            v = step_values[row_t]
+
+            advantages_rev = []
+            lastgaelam = torch.zeros((), dtype=dtype, device=device)
+            for t in reversed(range(T)):
+                next_v = v[t + 1] if t < T - 1 else torch.zeros((), dtype=dtype, device=device)
+                delta = r[t] + float(gamma) * next_v - v[t]
+                lastgaelam = delta + float(gamma) * float(lam) * lastgaelam
+                advantages_rev.append(lastgaelam)
+            traj_adv = torch.stack(advantages_rev[::-1])
+            traj_ret = traj_adv + v
+
+            step_to_pos = {s: p for p, s in enumerate(unique_step_ids)}
+            for row_i in idxs.tolist():
+                pos = step_to_pos[int(episode_step_idx[row_i])]
+                adv_out[row_i] = traj_adv[pos]
+                ret_out[row_i] = traj_ret[pos]
+
+        advantages = adv_out.unsqueeze(1).expand(-1, resp_len) * response_mask
+        returns = ret_out.unsqueeze(1).expand(-1, resp_len) * response_mask
+        advantages = verl_F.masked_whiten(advantages, response_mask)
+    return advantages, returns
+
+
 # NOTE(sgm): this implementation only consider outcome supervision, where the reward is a scalar.
 def compute_grpo_outcome_advantage(
     token_level_rewards: torch.Tensor,

@@ -263,6 +263,48 @@ def concat_value_prompt_and_response(
     return combined_ids, combined_mask
 
 
+def _gather_response_logits_rmpad(
+    logits_rmpad: torch.Tensor,
+    attention_mask: torch.Tensor,
+    response_length: int,
+) -> torch.Tensor:
+    """Map varlen logits (total_nnz, V) to (B, response_length, V) at pre-response positions."""
+    batch_size, seqlen = attention_mask.shape
+    vocab_size = logits_rmpad.size(-1)
+    valid_lens = attention_mask.sum(dim=1).to(torch.long)
+    flat_cumsum = attention_mask.reshape(-1).cumsum(0)
+    out = torch.empty(
+        batch_size,
+        response_length,
+        vocab_size,
+        device=logits_rmpad.device,
+        dtype=logits_rmpad.dtype,
+    )
+    for b in range(batch_size):
+        valid_len = int(valid_lens[b].item())
+        for t in range(response_length):
+            col = valid_len - response_length - 1 + t
+            flat_idx = b * seqlen + col
+            rmpad_idx = int(flat_cumsum[flat_idx].item()) - 1
+            out[b, t] = logits_rmpad[rmpad_idx]
+    return out
+
+
+def _response_bin_logits(
+    logits: torch.Tensor,
+    response_length: int,
+    return_ids_allowed: torch.Tensor,
+    temperature: float,
+) -> torch.Tensor:
+    """(B, response_length, V) or (B, S, V) -> (B, response_length, num_bins)."""
+    if logits.dim() == 2:
+        logits = logits.unsqueeze(1)
+    elif logits.size(1) != response_length:
+        logits = logits[:, -response_length - 1 : -1, :]
+    temp = max(float(temperature), 1e-8)
+    return logits.index_select(-1, return_ids_allowed).float() / temp
+
+
 def expected_return_from_bin_logits(
     bin_logits: torch.Tensor,
     *,
@@ -288,6 +330,7 @@ def forward_value_bin_logits_per_response_token(
     temperature: float = 1.0,
     spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC,
     multi_modal_inputs: dict | None = None,
+    use_remove_padding: bool = False,
 ) -> torch.Tensor:
     """
     Per-response-token return-bin logits from critic prompt + teacher-forced response.
@@ -305,10 +348,49 @@ def forward_value_bin_logits_per_response_token(
 
     mrope = value_position_ids.dim() == 3
     pos = (combined_mask.cumsum(dim=-1) - 1).clamp(min=0) * combined_mask
-    temp = max(float(temperature), 1e-8)
+    logits_to_keep = int(response_length) + 1
     mm_kwargs = multi_modal_inputs or {}
 
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
+        if use_remove_padding:
+            try:
+                from flash_attn.bert_padding import index_first_axis, rearrange, unpad_input
+            except ImportError:
+                from transformers.integrations.npu_flash_attention import (
+                    index_first_axis,
+                    rearrange,
+                    unpad_input,
+                )
+
+            if mrope:
+                pos = pos.unsqueeze(0).expand(3, -1, -1)
+            input_ids_rmpad, indices, *_ = unpad_input(combined_ids.unsqueeze(-1), combined_mask)
+            input_ids_rmpad = input_ids_rmpad.transpose(0, 1)
+            if mrope:
+                position_ids_rmpad = index_first_axis(
+                    rearrange(pos, "c b s ... -> (b s) c ..."),
+                    indices,
+                ).transpose(0, 1).unsqueeze(1)
+            else:
+                position_ids_rmpad = index_first_axis(
+                    rearrange(pos.unsqueeze(-1), "b s ... -> (b s) ..."),
+                    indices,
+                ).transpose(0, 1)
+            output = actor_module(
+                input_ids=input_ids_rmpad,
+                attention_mask=None,
+                position_ids=position_ids_rmpad,
+                use_cache=False,
+                **mm_kwargs,
+            )
+            if getattr(output, "logits", None) is None:
+                raise RuntimeError("actor_value per-token forward requires model logits")
+            logits_rmpad = output.logits.squeeze(0)
+            if logits_rmpad.dim() != 2:
+                raise RuntimeError(f"Expected rmpad logits (total_nnz, V), got {tuple(logits_rmpad.shape)}")
+            response_logits = _gather_response_logits_rmpad(logits_rmpad, combined_mask, response_length)
+            return _response_bin_logits(response_logits, response_length, return_ids_allowed, temperature)
+
         if mrope:
             pos = pos.unsqueeze(0).expand(3, -1, -1)
         try:
@@ -317,6 +399,7 @@ def forward_value_bin_logits_per_response_token(
                 attention_mask=combined_mask,
                 position_ids=pos,
                 use_cache=False,
+                logits_to_keep=logits_to_keep,
                 **mm_kwargs,
             )
         except TypeError:
@@ -325,15 +408,14 @@ def forward_value_bin_logits_per_response_token(
                 attention_mask=combined_mask,
                 position_ids=pos,
                 use_cache=False,
+                **mm_kwargs,
             )
         if getattr(output, "logits", None) is None:
             raise RuntimeError("actor_value per-token forward requires model logits")
-        logits = output.logits.float() / temp
+        logits = output.logits
         if logits.dim() != 3:
             raise RuntimeError(f"Expected logits (B, S, V), got shape {tuple(logits.shape)}")
-        next_token_logits = logits[:, -response_length - 1 : -1, :]
-        bin_logits = next_token_logits.index_select(-1, return_ids_allowed)
-    return bin_logits
+        return _response_bin_logits(logits, response_length, return_ids_allowed, temperature)
 
 
 def per_token_values_from_critic_prompt(
@@ -348,6 +430,7 @@ def per_token_values_from_critic_prompt(
     temperature: float = 1.0,
     spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC,
     multi_modal_inputs: dict | None = None,
+    use_remove_padding: bool = False,
 ) -> torch.Tensor:
     """GAE values (B, response_length) — expected return at each response position."""
     bin_logits = forward_value_bin_logits_per_response_token(
@@ -361,6 +444,7 @@ def per_token_values_from_critic_prompt(
         temperature=temperature,
         spec=spec,
         multi_modal_inputs=multi_modal_inputs,
+        use_remove_padding=use_remove_padding,
     )
     values = expected_return_from_bin_logits(bin_logits, spec=spec)
     return values * response_mask.to(values.dtype)

@@ -29,7 +29,23 @@ fi
 
 export COMET_API_KEY="${COMET_API_KEY:-3OfuYHwcRgIwG7DzgzJ190igY}"
 export RAY_TEMP_DIR="${RAY_TEMP_DIR:-/tmp/ray_temp}"
+# Host RAM ~126GB; avoid Ray OOM-killer during FSDP+vLLM+AlfWorld workers.
+export RAY_memory_usage_threshold="${RAY_memory_usage_threshold:-0.98}"
+export COMET_EXPERIMENT_KEY_FILE="${COMET_EXPERIMENT_KEY_FILE:-$RAY_TEMP_DIR/comet_experiment_key.txt}"
+export GPU_PROFILER_ENABLED="${GPU_PROFILER_ENABLED:-1}"
+export GPU_PROFILER_INTERVAL_SEC="${GPU_PROFILER_INTERVAL_SEC:-5}"
+export COMET_PROJECT_NAME="${COMET_PROJECT_NAME:-verl_agent_alfworld}"
 mkdir -p "$RAY_TEMP_DIR"
+
+GPU_PROFILER_PID=""
+cleanup_gpu_profiler() {
+  if [ -n "$GPU_PROFILER_PID" ] && kill -0 "$GPU_PROFILER_PID" 2>/dev/null; then
+    kill "$GPU_PROFILER_PID" 2>/dev/null || true
+    wait "$GPU_PROFILER_PID" 2>/dev/null || true
+    echo "[INFO] GPU profiler stopped (pid=$GPU_PROFILER_PID)"
+  fi
+}
+trap cleanup_gpu_profiler EXIT INT TERM
 
 python -c "import comet_ml" 2>/dev/null || pip install -q comet_ml
 
@@ -48,13 +64,36 @@ export VLLM_ATTENTION_BACKEND=XFORMERS
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
+# Vendored package lives at .../env_package/alfworld/alfworld; its imports are `import alfworld`.
+ALFWORLD_PKG_ROOT="$PROJECT_ROOT/agent_system/environments/env_package/alfworld"
+export PYTHONPATH="${PROJECT_ROOT}:${ALFWORLD_PKG_ROOT}:${PYTHONPATH}"
 
 ALFWORLD_DATA_DIR="${ALFWORLD_DATA_DIR:-$HOME/data/verl-agent/text}"
 val_data_size=${VAL_DATA_SIZE:-64}
 num_cpus_per_env_worker=0.1
 
 export RUN_NAME="${RUN_NAME:-run_ppo_alfworld_qwen2.5_1.5b_$(date +%Y%m%d-%H%M%S)}"
+
+rm -f "$COMET_EXPERIMENT_KEY_FILE"
+python3 "$PROJECT_ROOT/scripts/init_comet_experiment.py" \
+  --project "$COMET_PROJECT_NAME" \
+  --experiment "$RUN_NAME" \
+  --key-file "$COMET_EXPERIMENT_KEY_FILE" || true
+
+if [ "$GPU_PROFILER_ENABLED" = "1" ] && command -v nvidia-smi >/dev/null 2>&1; then
+  export GPU_PROFILER_LOG="${GPU_PROFILER_LOG:-$RAY_TEMP_DIR/gpu_profiler.log}"
+  python3 "$PROJECT_ROOT/scripts/gpu_profiler.py" \
+    --interval "$GPU_PROFILER_INTERVAL_SEC" \
+    --comet-project "$COMET_PROJECT_NAME" \
+    --comet-experiment "$RUN_NAME" \
+    --comet-key-file "$COMET_EXPERIMENT_KEY_FILE" \
+    >>"$GPU_PROFILER_LOG" 2>&1 &
+  GPU_PROFILER_PID=$!
+  echo "[INFO] GPU profiler started (pid=$GPU_PROFILER_PID, interval=${GPU_PROFILER_INTERVAL_SEC}s, log=$GPU_PROFILER_LOG)"
+  echo "[INFO] GPU metrics in Comet: gpu/0/utilization_pct, gpu/0/memory_used_gb (tail -f $GPU_PROFILER_LOG)"
+else
+  echo "[INFO] GPU profiler disabled or nvidia-smi unavailable (GPU_PROFILER_ENABLED=$GPU_PROFILER_ENABLED)"
+fi
 
 echo "[INFO] PROJECT_ROOT: $PROJECT_ROOT"
 echo "[INFO] ALFWORLD_DATA_DIR: $ALFWORLD_DATA_DIR"
@@ -72,6 +111,17 @@ if [ ! -f "$ALFWORLD_DATA_DIR/train.parquet" ] || [ ! -f "$ALFWORLD_DATA_DIR/tes
     --mode text \
     --train_data_size "$train_data_size" \
     --val_data_size "$val_data_size"
+else
+  # Rebuild if placeholder size no longer matches requested batch sizes.
+  cur_train=$(python3 -c "import pandas as pd; print(len(pd.read_parquet('$ALFWORLD_DATA_DIR/train.parquet')))" 2>/dev/null || echo 0)
+  cur_val=$(python3 -c "import pandas as pd; print(len(pd.read_parquet('$ALFWORLD_DATA_DIR/test.parquet')))" 2>/dev/null || echo 0)
+  if [ "$cur_train" -lt "$train_data_size" ] || [ "$cur_val" -lt "$val_data_size" ]; then
+    echo "[INFO] Regenerating parquet: train=$cur_train->$train_data_size val=$cur_val->$val_data_size"
+    python3 "$PROJECT_ROOT/examples/data_preprocess/prepare.py" \
+      --mode text \
+      --train_data_size "$train_data_size" \
+      --val_data_size "$val_data_size"
+  fi
 fi
 
 python -m verl.trainer.main_ppo \

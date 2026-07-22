@@ -19,7 +19,7 @@ from craftax.craftax_classic.debug_square_world_gen import generate_debug_square
 
 
 def _params_for_debug_square(base: EnvParams) -> EnvParams:
-    """Disable mob spawning on the fixed 8x8 debug arena."""
+    """Disable mob spawning on the fixed debug arena (8x8 / 16x16)."""
     return base.replace(
         spawn_cow_chance=0.0,
         spawn_zombie_base_chance=0.0,
@@ -29,7 +29,7 @@ def _params_for_debug_square(base: EnvParams) -> EnvParams:
 
 
 def _is_debug_square_map(static_env_params: StaticEnvParams) -> bool:
-    return tuple(static_env_params.map_size) == (8, 8)
+    return tuple(static_env_params.map_size) in ((8, 8), (16, 16))
 
 
 class CraftaxClassicPixelsEnvNoAutoReset(EnvironmentNoAutoReset):

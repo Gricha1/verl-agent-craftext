@@ -19,7 +19,21 @@ export COMET_API_KEY="${COMET_API_KEY:-3OfuYHwcRgIwG7DzgzJ190igY}"
 # Regenerate Craftax texture pickle when JAX version changes (avoids ShapedArray/named_shape pickle errors).
 export CRAFTAX_RELOAD_TEXTURES="${CRAFTAX_RELOAD_TEXTURES:-True}"
 export RAY_TEMP_DIR="${RAY_TEMP_DIR:-/tmp/ray_temp}"
+export COMET_EXPERIMENT_KEY_FILE="${COMET_EXPERIMENT_KEY_FILE:-$RAY_TEMP_DIR/comet_experiment_key.txt}"
+export GPU_PROFILER_ENABLED="${GPU_PROFILER_ENABLED:-1}"
+export GPU_PROFILER_INTERVAL_SEC="${GPU_PROFILER_INTERVAL_SEC:-5}"
+export COMET_PROJECT_NAME="${COMET_PROJECT_NAME:-verl_agent_caged_craftext}"
 mkdir -p "$RAY_TEMP_DIR"
+
+GPU_PROFILER_PID=""
+cleanup_gpu_profiler() {
+  if [ -n "$GPU_PROFILER_PID" ] && kill -0 "$GPU_PROFILER_PID" 2>/dev/null; then
+    kill "$GPU_PROFILER_PID" 2>/dev/null || true
+    wait "$GPU_PROFILER_PID" 2>/dev/null || true
+    echo "[INFO] GPU profiler stopped (pid=$GPU_PROFILER_PID)"
+  fi
+}
+trap cleanup_gpu_profiler EXIT INT TERM
 
 # comet_ml is installed in Docker image via setup_caged_craftext_deps.sh
 python -c "import comet_ml" 2>/dev/null || pip install -q comet_ml
@@ -102,6 +116,27 @@ val_data_size=${VAL_DATA_SIZE:-16}
 # export RUN_NAME="run_ppo_qwen2.5_1.5b_caged_craftext_budgetary_water_$(date +%Y%m%d-%H%M%S)"
 export RUN_NAME="${RUN_NAME:-run_ppo_qwen2.5_1.5b_caged_craftext_energy_collect_wood_$(date +%Y%m%d-%H%M%S)}"
 
+rm -f "$COMET_EXPERIMENT_KEY_FILE"
+python3 "$PROJECT_ROOT/scripts/init_comet_experiment.py" \
+  --project "$COMET_PROJECT_NAME" \
+  --experiment "$RUN_NAME" \
+  --key-file "$COMET_EXPERIMENT_KEY_FILE" || true
+
+if [ "$GPU_PROFILER_ENABLED" = "1" ] && command -v nvidia-smi >/dev/null 2>&1; then
+  export GPU_PROFILER_LOG="${GPU_PROFILER_LOG:-$RAY_TEMP_DIR/gpu_profiler.log}"
+  python3 "$PROJECT_ROOT/scripts/gpu_profiler.py" \
+    --interval "$GPU_PROFILER_INTERVAL_SEC" \
+    --comet-project "$COMET_PROJECT_NAME" \
+    --comet-experiment "$RUN_NAME" \
+    --comet-key-file "$COMET_EXPERIMENT_KEY_FILE" \
+    >>"$GPU_PROFILER_LOG" 2>&1 &
+  GPU_PROFILER_PID=$!
+  echo "[INFO] GPU profiler started (pid=$GPU_PROFILER_PID, interval=${GPU_PROFILER_INTERVAL_SEC}s, log=$GPU_PROFILER_LOG)"
+  echo "[INFO] GPU metrics in Comet: gpu/0/utilization_pct, gpu/0/memory_used_gb (tail -f $GPU_PROFILER_LOG)"
+else
+  echo "[INFO] GPU profiler disabled or nvidia-smi unavailable (GPU_PROFILER_ENABLED=$GPU_PROFILER_ENABLED)"
+fi
+
 python -m examples.data_preprocess.prepare \
     --mode 'text' \
     --train_data_size $train_data_size \
@@ -174,7 +209,7 @@ python -m verl.trainer.main_ppo \
     env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
     trainer.critic_warmup=$CRITIC_WARMUP \
     trainer.logger=['console','comet'] \
-    trainer.project_name='verl_agent_caged_craftext' \
+    trainer.project_name="$COMET_PROJECT_NAME" \
     trainer.experiment_name="$RUN_NAME" \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \

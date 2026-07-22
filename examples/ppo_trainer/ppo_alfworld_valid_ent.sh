@@ -8,7 +8,7 @@
 set -e
 
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-64}"
-VAL_DATA_SIZE="${VAL_DATA_SIZE:-64}"
+VAL_DATA_SIZE="${VAL_DATA_SIZE:-16}"
 MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-1}"
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-150}"
 USE_ACTOR_LORA="${USE_ACTOR_LORA:-true}"
@@ -39,14 +39,24 @@ bash examples/ppo_trainer/run_alfworld_lora_job.sh \
   0 \
   +env.prompt_template_type=single_token_action \
   actor_rollout_ref.actor.single_token_actions=True \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.35 \
-  actor_rollout_ref.rollout.enforce_eager=True \
+  actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+  actor_rollout_ref.rollout.enable_chunked_prefill=True \
+  actor_rollout_ref.rollout.enforce_eager=False \
+  actor_rollout_ref.rollout.free_cache_engine=False \
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=128 \
+  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=128 \
+  actor_rollout_ref.ref.fsdp_config.param_offload=False \
+  actor_rollout_ref.actor.fsdp_config.param_offload=False \
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=128 \
+  actor_rollout_ref.actor.ppo_mini_batch_size=256 \
   actor_rollout_ref.actor.entropy_coeff=0.01 \
   actor_rollout_ref.actor.entropy_over_valid_actions=True \
   critic.model.lora_rank="$CRITIC_LORA_RANK" \
   critic.model.lora_alpha="$CRITIC_LORA_ALPHA" \
-  critic.model.fsdp_config.param_offload=True \
-  trainer.val_before_train=False \
+  critic.ppo_micro_batch_size_per_gpu=128 \
+  critic.ppo_mini_batch_size=256 \
+  critic.model.fsdp_config.param_offload=False \
+  trainer.val_before_train=True \
   trainer.resume_mode=disable \
   trainer.save_freq=-1 \
   trainer.test_freq=5 \

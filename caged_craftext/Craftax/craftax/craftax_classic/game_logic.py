@@ -5,7 +5,7 @@ from craftax.craftax_classic.envs.craftax_state import *
 
 
 def _is_debug_square_map(static_params):
-    return tuple(static_params.map_size) == (8, 8)
+    return tuple(static_params.map_size) in ((8, 8), (16, 16))
 
 
 def _strip_all_mobs(state, static_params):

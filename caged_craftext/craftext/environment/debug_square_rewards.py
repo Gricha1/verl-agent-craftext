@@ -1,4 +1,4 @@
-"""Reward shaping and goal checks for the 8x8 debug_square map (resources may move each reset)."""
+"""Reward shaping and goal checks for debug_square maps (resources may move each reset)."""
 from __future__ import annotations
 
 import jax
@@ -15,6 +15,7 @@ _DEBUG_ACHIEVEMENT_IDS = jnp.array(
     ],
     dtype=jnp.int32,
 )
+# Fallback goal cells for 8x8 when live map is unavailable (stone/wood/water order).
 _DEBUG_TARGET_CELLS = jnp.array(
     [
         [1, 1],  # stone
@@ -32,7 +33,7 @@ _DEBUG_GOAL_BLOCK_TYPES = jnp.array(
     ],
     dtype=jnp.int32,
 )
-# Fixed task order when use_paraphrases=False (see jax_debug_square_8x8/instructions.py).
+# Fixed task order when use_paraphrases=False (see jax_debug_square_*/instructions.py).
 _DEBUG_GOAL_BLOCK_BY_IDX = jnp.array([4, 6, 3], dtype=jnp.int32)
 _DEBUG_TARGET_CELLS_BY_IDX = jnp.array(
     [
@@ -62,7 +63,7 @@ TASK_COMPLETION_REWARD = jnp.float32(1.0)
 
 
 def is_debug_square_config(config_name) -> bool:
-    """True for debug_square_8x8 scenario configs (Hydra/OmegaConf-safe)."""
+    """True for debug_square_* scenario configs (Hydra/OmegaConf-safe)."""
     return config_name is not None and "debug_square" in str(config_name)
 
 
@@ -239,7 +240,7 @@ def debug_square_step_reward(
     game_map=None,
 ) -> jnp.ndarray:
     """
-    debug_square_8x8:
+    debug_square (8x8 / 16x16):
       - Craftax achievement reward disabled
       - navigation reward (distance decrease)
       - bonus when adjacent to the goal cell

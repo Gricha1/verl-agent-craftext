@@ -25,6 +25,28 @@ import uuid
 from verl.models.transformers.qwen2_vl import get_rope_index
 
 
+def format_text_validation_trajectory(states: list, actions: list) -> str:
+    """Format env states and executed actions for validation logging."""
+    lines = []
+    for i, state in enumerate(states):
+        lines.append(f"state {i}: {state}")
+        if i < len(actions):
+            lines.append(f"action {i}: {actions[i]}")
+    return "\n\n".join(lines)
+
+
+def _obs_text_for_validation(obs: dict, env_idx: int) -> str:
+    if isinstance(obs, dict) and obs.get("anchor") is not None:
+        anchor = obs["anchor"]
+        if env_idx < len(anchor):
+            return str(anchor[env_idx] or "")
+    if isinstance(obs, dict) and obs.get("text") is not None:
+        text = obs["text"]
+        if env_idx < len(text):
+            return str(text[env_idx] or "")
+    return ""
+
+
 def resolve_rollout_wm_task(config) -> str | None:
     """Which WM transition fields to store during rollout (reward | inverse_action | latent)."""
     try:
@@ -731,9 +753,13 @@ class TrajectoryCollector:
         effective_batch = []
         for bs in range(batch_size):
             # sum the rewards for each data in total_batch_list[bs]
+            episode_step_idx = 0
             for data in total_batch_list[bs]:
                 assert traj_uid[bs] == data['traj_uid'], "data is not from the same trajectory"
                 if data['active_masks']:
+                    # Chronological step index within the episode (needed for traj-level GAE after shuffle).
+                    data['episode_step_idx'] = int(episode_step_idx)
+                    episode_step_idx += 1
                     # episode_rewards
                     data['episode_rewards'] = episode_rewards[bs]
                     # episode_lengths
@@ -764,6 +790,7 @@ class TrajectoryCollector:
             envs: EnvironmentManagerBase,
             world_model_trainer=None,
             record_video_env_idx: Optional[int] = None,
+            record_text_trajectory_env_idx: Optional[int] = None,
             is_train: bool = True,
             ):
         """
@@ -803,6 +830,9 @@ class TrajectoryCollector:
         validation_video_per_action_returns = None
         validation_video_per_action_prompts = None
         validation_video_step_rewards = [] if record_video_env_idx is not None else None
+        validation_text_states = [] if record_text_trajectory_env_idx is not None else None
+        validation_text_actions = [] if record_text_trajectory_env_idx is not None else None
+        validation_text_recording_done = False
         validation_video_plan_q_prompts = None
         validation_video_plan_q_returns = None
         validation_video_plan_q_targets = None
@@ -838,6 +868,15 @@ class TrajectoryCollector:
 
         # Initial observations from the environment
         obs, infos = envs.reset(kwargs=gen_batch.non_tensor_batch.pop('env_kwargs', None))
+
+        if (
+            validation_text_states is not None
+            and record_text_trajectory_env_idx is not None
+            and record_text_trajectory_env_idx < batch_size
+        ):
+            validation_text_states.append(
+                _obs_text_for_validation(obs, record_text_trajectory_env_idx)
+            )
 
         if is_train:
             print(
@@ -1092,6 +1131,22 @@ class TrajectoryCollector:
             text_actions = self.tokenizer.batch_decode(batch.batch['responses'], skip_special_tokens=True)
             
             next_obs, rewards, dones, infos = envs.step(text_actions)
+
+            if (
+                validation_text_states is not None
+                and validation_text_actions is not None
+                and record_text_trajectory_env_idx is not None
+                and not validation_text_recording_done
+            ):
+                traj_idx = record_text_trajectory_env_idx
+                if traj_idx < len(infos):
+                    executed = infos[traj_idx].get("executed_action")
+                    if executed is None and traj_idx < len(text_actions):
+                        executed = text_actions[traj_idx]
+                    validation_text_actions.append(str(executed or ""))
+                    validation_text_states.append(_obs_text_for_validation(next_obs, traj_idx))
+                    if traj_idx < len(dones) and bool(dones[traj_idx]):
+                        validation_text_recording_done = True
 
             _rollout_iter += 1
             if is_train and (_rollout_iter == 1 or _rollout_iter % 10 == 0):
@@ -1565,6 +1620,8 @@ class TrajectoryCollector:
             validation_video_plan_q_targets,
             validation_video_plan_q_tokens,
             validation_video_plan_q_horizons,
+            validation_text_states,
+            validation_text_actions,
             completed_episode_returns,
             completed_episode_lengths,
             completed_episode_costs,
@@ -1644,6 +1701,8 @@ class TrajectoryCollector:
                 _vpqt,
                 _vpqtk,
                 _vpqh,
+                _vtext_states,
+                _vtext_actions,
                 completed_returns,
                 completed_lengths,
                 completed_costs,
@@ -1693,6 +1752,7 @@ class TrajectoryCollector:
             is_train: bool = True,
             world_model_trainer=None,
             record_video_env_idx: Optional[int] = None,
+            record_text_trajectory_env_idx: Optional[int] = None,
             ) -> DataProto:
         """
         Select and run the appropriate rollout loop (dynamic or vanilla).
@@ -1738,6 +1798,8 @@ class TrajectoryCollector:
             validation_video_plan_q_targets = None
             validation_video_plan_q_tokens = None
             validation_video_plan_q_horizons = None
+            validation_text_states = None
+            validation_text_actions = None
         else:
             # Vanilla Sampling   
             (
@@ -1769,6 +1831,8 @@ class TrajectoryCollector:
                 validation_video_plan_q_targets,
                 validation_video_plan_q_tokens,
                 validation_video_plan_q_horizons,
+                validation_text_states,
+                validation_text_actions,
                 completed_episode_returns,
                 completed_episode_lengths,
                 completed_episode_costs,
@@ -1779,6 +1843,7 @@ class TrajectoryCollector:
                 envs=envs,
                 world_model_trainer=world_model_trainer,
                 record_video_env_idx=record_video_env_idx,
+                record_text_trajectory_env_idx=record_text_trajectory_env_idx,
                 is_train=is_train,
             )
         assert len(total_batch_list) == len(total_episode_rewards)
@@ -1842,6 +1907,10 @@ class TrajectoryCollector:
             gen_batch_output.meta_info['validation_video_plan_q_tokens'] = validation_video_plan_q_tokens
         if validation_video_plan_q_horizons is not None:
             gen_batch_output.meta_info['validation_video_plan_q_horizons'] = validation_video_plan_q_horizons
+        if validation_text_states is not None:
+            gen_batch_output.meta_info['validation_text_states'] = validation_text_states
+        if validation_text_actions is not None:
+            gen_batch_output.meta_info['validation_text_actions'] = validation_text_actions
         # Метрики по завершённым эпизодам (среднее по эпизодам, как в caged_craftext baselines)
         if completed_episode_returns is not None and len(completed_episode_returns) > 0:
             gen_batch_output.meta_info['completed_episode_returns'] = np.array(completed_episode_returns, dtype=np.float32)

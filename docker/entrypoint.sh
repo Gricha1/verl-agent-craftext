@@ -17,6 +17,16 @@ if [ -f /opt/conda/etc/profile.d/conda.sh ]; then
 fi
 export CRAFTAX_RELOAD_TEXTURES=True
 
+# flash-attn is required by verl (use_remove_padding); wheel must match runtime torch.
+if ! python -c "import flash_attn" >/dev/null 2>&1; then
+  echo "=== Installing flash-attn (missing in env) ==="
+  WHL="flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl"
+  curl -fL "https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/${WHL}" -o "/tmp/${WHL}" \
+    && pip install --no-cache-dir "/tmp/${WHL}" \
+    || pip install --no-deps flash-attn==2.7.4.post1 --no-build-isolation \
+    || echo "WARN: flash-attn install failed"
+fi
+
 if [ "${SKIP_CAGED_CRAFTEXT_SETUP}" = "1" ]; then
   :
 elif [ "${FORCE_CAGED_CRAFTEXT_SETUP}" = "1" ]; then

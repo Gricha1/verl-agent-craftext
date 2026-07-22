@@ -1,4 +1,7 @@
-"""8x8 debug arena: tree border, grass interior, resources in inner corners (shuffled each reset)."""
+"""Debug arena: tree border, grass interior, resources in inner corners (shuffled each reset).
+
+Supported map sizes: 8x8 and 16x16.
+"""
 
 import jax
 import jax.numpy as jnp
@@ -7,29 +10,35 @@ from craftax.craftax_classic.constants import Achievement, Action, BlockType
 from craftax.craftax_classic.envs.craftax_state import EnvState, Inventory, Mobs
 from craftax.craftax_classic.game_logic import calculate_light_level
 
-# Inner 6x6 floor corners (adjacent to tree border, away from center spawn at 4,4).
-_DEBUG_CORNER_CELLS = jnp.array(
-    [
-        [1, 1],  # top-left
-        [1, 6],  # top-right
-        [6, 1],  # bottom-left
-        [6, 6],  # bottom-right
-    ],
-    dtype=jnp.int32,
-)
+_SUPPORTED_MAP_SIZES = ((8, 8), (16, 16))
+
+
+def debug_square_inner_corner_cells(h: int, w: int) -> jnp.ndarray:
+    """Four inner corners just inside the tree border (away from center spawn)."""
+    return jnp.array(
+        [
+            [1, 1],  # top-left
+            [1, w - 2],  # top-right
+            [h - 2, 1],  # bottom-left
+            [h - 2, w - 2],  # bottom-right
+        ],
+        dtype=jnp.int32,
+    )
 
 
 def generate_debug_square_world(rng, params, static_params):
     """
-    Layout (8x8, 0-indexed):
-      - Border (row/col 0 and 7): TREE
+    Layout (NxN with N in {8, 16}, 0-indexed):
+      - Border (row/col 0 and N-1): TREE
       - Inner floor: GRASS
-      - Player spawn: map center (4, 4)
+      - Player spawn: map center (N//2, N//2)
       - STONE / WOOD / WATER on three distinct inner corners (permutation each reset)
     No mobs, ores, lava, procedural noise, or starting saplings in inventory.
     """
     h, w = static_params.map_size
-    assert (h, w) == (8, 8), f"debug square world requires map_size (8, 8), got {(h, w)}"
+    assert (h, w) in _SUPPORTED_MAP_SIZES, (
+        f"debug square world requires map_size in {_SUPPORTED_MAP_SIZES}, got {(h, w)}"
+    )
 
     map = jnp.full((h, w), BlockType.GRASS.value, dtype=jnp.int32)
 
@@ -39,10 +48,11 @@ def generate_debug_square_world(rng, params, static_params):
     map = map.at[:, 0].set(BlockType.TREE.value)
     map = map.at[:, w - 1].set(BlockType.TREE.value)
 
-    perm = jax.random.permutation(rng, _DEBUG_CORNER_CELLS.shape[0])
-    stone_rc = _DEBUG_CORNER_CELLS[perm[0]]
-    wood_rc = _DEBUG_CORNER_CELLS[perm[1]]
-    water_rc = _DEBUG_CORNER_CELLS[perm[2]]
+    corners = debug_square_inner_corner_cells(h, w)
+    perm = jax.random.permutation(rng, corners.shape[0])
+    stone_rc = corners[perm[0]]
+    wood_rc = corners[perm[1]]
+    water_rc = corners[perm[2]]
     map = map.at[stone_rc[0], stone_rc[1]].set(BlockType.STONE.value)
     map = map.at[wood_rc[0], wood_rc[1]].set(BlockType.WOOD.value)
     map = map.at[water_rc[0], water_rc[1]].set(BlockType.WATER.value)

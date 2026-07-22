@@ -137,6 +137,17 @@ class Tracking:
         if "comet" in self.logger and hasattr(self.logger["comet"], "log_video"):
             self.logger["comet"].log_video(gif_path, step=step, name=name)
 
+    def log_validation_text_trajectory(
+        self,
+        text: str,
+        step: int,
+        name: str = "validation_text_trajectory",
+        file_path: str | None = None,
+    ):
+        """Log a text validation trajectory to backends that support it (e.g. Comet ML)."""
+        if "comet" in self.logger and hasattr(self.logger["comet"], "log_text_trajectory"):
+            self.logger["comet"].log_text_trajectory(text, step=step, name=name, file_path=file_path)
+
     def log_image(self, image_path: str, step: int, name: str):
         """Log an image asset to backends that support it (e.g. Comet ML)."""
         if "comet" in self.logger and hasattr(self.logger["comet"], "log_image"):
@@ -216,7 +227,7 @@ class CometMLLogger:
     def __init__(self, project_name: str, experiment_name: str, config):
         import os
 
-        from comet_ml import Experiment
+        from comet_ml import Experiment, ExistingExperiment
 
         # Get API key from environment or use default
         api_key = os.environ.get("COMET_API_KEY", None)
@@ -227,17 +238,47 @@ class CometMLLogger:
         run_name = os.environ.get("RUN_NAME", None)
         final_experiment_name = run_name if run_name else experiment_name
         
-        # Initialize Comet experiment
-        # Set display_summary_level=0 to reduce console output
-        self.experiment = Experiment(
-            api_key=api_key,
-            workspace=workspace,
-            project_name=project_name,
-            experiment_name=final_experiment_name,
-            auto_param_logging=False,  # We'll log params manually
-            auto_metric_logging=False,  # We'll log metrics manually
-            display_summary_level=0,
+        key_file = os.environ.get(
+            "COMET_EXPERIMENT_KEY_FILE",
+            os.path.join(os.environ.get("RAY_TEMP_DIR", "/tmp/ray_temp"), "comet_experiment_key.txt"),
         )
+        existing_key = None
+        if os.path.isfile(key_file):
+            try:
+                with open(key_file, encoding="utf-8") as f:
+                    existing_key = f.read().strip() or None
+            except Exception:
+                existing_key = None
+
+        if existing_key:
+            attach_kwargs = {"previous_experiment": existing_key}
+            if api_key:
+                attach_kwargs["api_key"] = api_key
+            if workspace:
+                attach_kwargs["workspace"] = workspace
+            self.experiment = ExistingExperiment(**attach_kwargs)
+            print(
+                f"[comet] attached to existing experiment via {key_file} (name={final_experiment_name})",
+                flush=True,
+            )
+        else:
+            # Initialize Comet experiment
+            # Set display_summary_level=0 to reduce console output
+            self.experiment = Experiment(
+                api_key=api_key,
+                workspace=workspace,
+                project_name=project_name,
+                experiment_name=final_experiment_name,
+                auto_param_logging=False,  # We'll log params manually
+                auto_metric_logging=False,  # We'll log metrics manually
+                display_summary_level=0,
+            )
+            try:
+                os.makedirs(os.path.dirname(key_file) or ".", exist_ok=True)
+                with open(key_file, "w", encoding="utf-8") as f:
+                    f.write(self.experiment.get_key())
+            except Exception as exc:
+                print(f"[comet] failed to write experiment key file {key_file}: {exc}", flush=True)
         
         # Explicitly set the experiment name to ensure it's used
         # This is a safeguard in case the constructor parameter doesn't work as expected
@@ -284,6 +325,20 @@ class CometMLLogger:
         import os
         if os.path.isfile(image_path):
             self.experiment.log_image(image_path, name=name, step=step)
+
+    def log_text_trajectory(
+        self,
+        text: str,
+        step: int,
+        name: str = "validation_text_trajectory",
+        file_path: str | None = None,
+    ):
+        """Log validation text trajectory to Comet ML."""
+        import os
+
+        self.experiment.log_text(text, step=step, metadata={"type": name})
+        if file_path and os.path.isfile(file_path):
+            self.experiment.log_asset(file_path, file_name=f"{name}.txt", step=step)
 
     def log_parameters(self, params: Dict[str, Any]) -> None:
         """Log or update Comet experiment parameters (paths, flags, etc.)."""

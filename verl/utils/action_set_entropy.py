@@ -180,9 +180,12 @@ def action_log_scores_from_dynamic_admissible_vocab(
     admissible_vocab_ids: torch.Tensor,
     admissible_mask: torch.Tensor,
 ) -> torch.Tensor:
-    """Per-sample admissible action sets (AlfWorld). Invalid padded slots use -1e9."""
-    log_probs = F.log_softmax(next_token_logits, dim=-1)
-    gathered = log_probs.gather(-1, admissible_vocab_ids.to(log_probs.device))
+    """Per-sample admissible action logits (AlfWorld).
+
+    Gather raw logits first (like CrafText single_token_fastpath), then mask padded
+    slots with -1e9 so entropy_loss_over_action_scores softmaxes only over admissible.
+    """
+    gathered = next_token_logits.gather(-1, admissible_vocab_ids.to(next_token_logits.device))
     return gathered.masked_fill(~admissible_mask.to(gathered.device), -1e9)
 
 

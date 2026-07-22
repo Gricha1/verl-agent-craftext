@@ -268,13 +268,32 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
     # prepare response group
     # TODO: add other ways to estimate advantages
     if adv_estimator == AdvantageEstimator.GAE:
-        advantages, returns = core_algos.compute_gae_advantage_return(
-            token_level_rewards=data.batch["token_level_rewards"],
-            values=data.batch["values"],
-            response_mask=data.batch["response_mask"],
-            gamma=gamma,
-            lam=lam,
-        )
+        gae_by_trajectory = bool(kwargs.get("gae_by_trajectory", False))
+        if gae_by_trajectory:
+            traj_uids = data.non_tensor_batch.get("traj_uid")
+            episode_step_idx = data.non_tensor_batch.get("episode_step_idx")
+            if traj_uids is None or episode_step_idx is None:
+                raise ValueError(
+                    "algorithm.gae_by_trajectory=True requires non_tensor_batch "
+                    "['traj_uid'] and ['episode_step_idx'] from multi-turn rollout"
+                )
+            advantages, returns = core_algos.compute_gae_advantage_return_by_trajectory(
+                token_level_rewards=data.batch["token_level_rewards"],
+                values=data.batch["values"],
+                response_mask=data.batch["response_mask"],
+                traj_uids=traj_uids,
+                episode_step_idx=episode_step_idx,
+                gamma=gamma,
+                lam=lam,
+            )
+        else:
+            advantages, returns = core_algos.compute_gae_advantage_return(
+                token_level_rewards=data.batch["token_level_rewards"],
+                values=data.batch["values"],
+                response_mask=data.batch["response_mask"],
+                gamma=gamma,
+                lam=lam,
+            )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
         if kwargs.get("use_pf_ppo", False):
@@ -845,6 +864,32 @@ class RayPPOTrainer:
         """Pixel envs (e.g. Craftext) expose set_record_video + render_frame; text-only envs do not."""
         return hasattr(self.val_envs, "set_record_video")
 
+    def _env_supports_text_trajectory_validation(self) -> bool:
+        env_name = str(getattr(self.config.env, "env_name", "")).lower()
+        return "alfworld" in env_name
+
+    def _log_validation_text_trajectory(self, out, logger, task_slug: str | None = None) -> None:
+        states = out.meta_info.get("validation_text_states")
+        actions = out.meta_info.get("validation_text_actions")
+        if not states:
+            return
+        from agent_system.multi_turn_rollout.rollout_loop import format_text_validation_trajectory
+
+        trajectory_text = format_text_validation_trajectory(states, actions or [])
+        artifact_name = self._validation_artifact_name("validation_text_trajectory", task_slug)
+        text_dir = os.path.join(os.getcwd(), "validation_text")
+        os.makedirs(text_dir, exist_ok=True)
+        text_path = os.path.join(text_dir, f"{artifact_name}.txt")
+        with open(text_path, "w", encoding="utf-8") as f:
+            f.write(trajectory_text)
+        print(f"[INFO] Validation text trajectory ({len(actions or [])} actions):\n{trajectory_text}")
+        if logger is not None:
+            logger.log_validation_text_trajectory(
+                trajectory_text,
+                step=self.total_env_steps,
+                name=artifact_name,
+                file_path=text_path,
+            )
 
     def _is_debug_square_env(self) -> bool:
         cs = str(getattr(self.config.env, "craftext_settings", "") or "")
@@ -949,6 +994,9 @@ class RayPPOTrainer:
                         self.val_envs.set_validation_scenario_idx(scenario_idx)
 
                     record_video_env_idx = 0 if (record_video and batch_idx == 0) else None
+                    record_text_trajectory_env_idx = (
+                        0 if (batch_idx == 0 and self._env_supports_text_trajectory_validation()) else None
+                    )
                     out = self.traj_collector.multi_turn_loop(
                         gen_batch=test_gen_batch,
                         actor_rollout_wg=self.actor_rollout_wg,
@@ -956,9 +1004,13 @@ class RayPPOTrainer:
                         is_train=False,
                         world_model_trainer=self.world_model_trainer,
                         record_video_env_idx=record_video_env_idx,
+                        record_text_trajectory_env_idx=record_text_trajectory_env_idx,
                     )
                     if spec_i == 0:
                         test_output_gen_batch = out
+
+                    if record_text_trajectory_env_idx is not None and batch_idx == 0:
+                        self._log_validation_text_trajectory(out, logger, task_slug=task_slug)
 
                     if record_video and batch_idx == 0 and logger is not None:
                         video_out = out
@@ -2363,6 +2415,7 @@ class RayPPOTrainer:
                             gigpo_mode=self.config.algorithm.gigpo.mode,
                             gigpo_enable_similarity= self.config.algorithm.gigpo.enable_similarity,
                             gigpo_similarity_thresh=self.config.algorithm.gigpo.similarity_thresh,
+                            gae_by_trajectory=bool(self.config.algorithm.get("gae_by_trajectory", False)),
                         )
                         if _verbose_phases:
                             self._ppo_phase_log(f"■ POST-ROLLOUT done in {time.monotonic() - _t_post:.1f}s")

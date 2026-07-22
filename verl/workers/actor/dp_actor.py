@@ -785,6 +785,7 @@ class DataParallelPPOActor(BasePPOActor):
                     tokenizer=tokenizer,
                     spec=spec,
                     multi_modal_inputs=mm_kwargs or None,
+                    use_remove_padding=self.use_remove_padding,
                 )
                 value_chunks.append(values)
             values = torch.cat(value_chunks, dim=0)
@@ -824,6 +825,7 @@ class DataParallelPPOActor(BasePPOActor):
             temperature=temperature,
             spec=spec,
             multi_modal_inputs=mm_kwargs or None,
+            use_remove_padding=self.use_remove_padding,
         )
 
     def _compute_return_token_ce_loss(

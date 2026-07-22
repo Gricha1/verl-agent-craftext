@@ -94,11 +94,11 @@ def _is_debug_square_craftax_state(state) -> bool:
     m = getattr(state, "map", None)
     if m is None:
         return False
-    return tuple(np.asarray(m).shape) == (8, 8)
+    return tuple(np.asarray(m).shape) in ((8, 8), (16, 16))
 
 
 def _strip_all_mobs_for_state(state):
-    """Remove mobs from an EnvState when on the fixed 8x8 debug map (JAX or numpy)."""
+    """Remove mobs from an EnvState when on the fixed debug map (JAX or numpy)."""
     if not _is_debug_square_craftax_state(state):
         return state
     map_shape = tuple(np.asarray(state.map).shape)
@@ -149,9 +149,14 @@ def _attach_debug_square_fields(
         ach_mask = None
         if target_state is not None:
             ach_mask = getattr(getattr(target_state, "achievements", None), "achievement_mask", None)
+        game_map = getattr(craftax_state, "map", None)
         target = np.asarray(
             jax.device_get(
-                debug_square_resolve_target_cell(ach_mask, instruction_idx=int(instruction_idx))
+                debug_square_resolve_target_cell(
+                    ach_mask,
+                    instruction_idx=int(instruction_idx),
+                    game_map=game_map,
+                )
             ),
             dtype=np.int32,
         )
@@ -164,14 +169,23 @@ def _attach_debug_square_fields(
         pass
 
 
+def _debug_square_map_size(env_kwargs: dict):
+    """Map size from config_name; default 8x8 for legacy debug_square configs."""
+    name = str(env_kwargs.get("config_name", "") or "")
+    if "16x16" in name:
+        return (16, 16)
+    return (8, 8)
+
+
 def _make_craftax_classic_pixels_env(env_kwargs: dict):
-    """Classic Craftax env; optional fixed 8x8 debug square map."""
+    """Classic Craftax env; optional fixed debug square map (8x8 / 16x16)."""
     if env_kwargs.get("use_debug_square_map", False):
         from craftax.craftax_classic.envs.craftax_pixels_env import CraftaxClassicPixelsEnvNoAutoReset
         from craftax.craftax_classic.envs.craftax_state import StaticEnvParams
 
         generate_debug_square_world = _import_generate_debug_square_world()
-        static_params = StaticEnvParams(map_size=(8, 8))
+        map_size = _debug_square_map_size(env_kwargs)
+        static_params = StaticEnvParams(map_size=map_size)
         env = CraftaxClassicPixelsEnvNoAutoReset(static_env_params=static_params)
 
         # No mob spawns on the tiny debug arena (pip craftax may lack map_size hook in default_params).
@@ -182,11 +196,12 @@ def _make_craftax_classic_pixels_env(env_kwargs: dict):
             spawn_skeleton_chance=0.0,
         )
         print(
-            "[CagedCraftext] debug_square_8x8: fixed 8x8 map, no mob spawn, "
+            f"[CagedCraftext] {env_kwargs.get('config_name', 'debug_square')}: "
+            f"fixed {map_size[0]}x{map_size[1]} map, no mob spawn, "
             "no random grass sapling drops (use repo Craftax on sys.path)."
         )
 
-        # Pip-installed craftax has no debug generator; patch reset (procedural gen breaks on 8x8).
+        # Pip-installed craftax has no debug generator; patch reset (procedural gen breaks on small maps).
         def reset_env(rng, params):
             state = generate_debug_square_world(rng, params, env.static_env_params)
             state = _strip_all_mobs_state(state, env.static_env_params)
@@ -198,13 +213,17 @@ def _make_craftax_classic_pixels_env(env_kwargs: dict):
         import craftax.craftax_classic.game_logic as _craftax_gl
 
         _orig_craftax_step = _craftax_gl.craftax_step
+        _debug_sizes = ((8, 8), (16, 16))
 
         def _craftax_step_debug_safe(rng, state, action, params, static_params):
             state, reward = _orig_craftax_step(rng, state, action, params, static_params)
-            if tuple(static_params.map_size) == (8, 8) or _is_debug_square_craftax_state(state):
+            size = tuple(static_params.map_size)
+            if size in _debug_sizes or _is_debug_square_craftax_state(state):
                 sp = static_params
-                if tuple(static_params.map_size) != (8, 8):
-                    sp = StaticEnvParams(map_size=(8, 8))
+                if size not in _debug_sizes:
+                    # Prefer live map shape if static params drifted.
+                    live = tuple(np.asarray(state.map).shape)
+                    sp = StaticEnvParams(map_size=live if live in _debug_sizes else map_size)
                 state = _strip_all_mobs_state(state, sp)
             return state, reward
 

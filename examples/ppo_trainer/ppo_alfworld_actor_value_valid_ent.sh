@@ -15,7 +15,7 @@
 set -e
 
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-64}"
-VAL_DATA_SIZE="${VAL_DATA_SIZE:-64}"
+VAL_DATA_SIZE="${VAL_DATA_SIZE:-16}"
 MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-1}"
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-150}"
 CRITIC_WARMUP="${CRITIC_WARMUP:-0}"
@@ -78,13 +78,21 @@ bash examples/ppo_trainer/run_alfworld_lora_job.sh \
   actor_rollout_ref.actor.actor_value_return_min="$RETURN_BIN_MIN" \
   actor_rollout_ref.actor.actor_value_return_max="$RETURN_BIN_MAX" \
   actor_rollout_ref.actor.actor_value_return_bin_step="$RETURN_BIN_STEP" \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.35 \
+  actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+  actor_rollout_ref.rollout.enable_chunked_prefill=True \
   actor_rollout_ref.rollout.enforce_eager=True \
+  actor_rollout_ref.rollout.free_cache_engine=False \
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=64 \
+  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=64 \
+  actor_rollout_ref.ref.fsdp_config.param_offload=False \
+  actor_rollout_ref.actor.fsdp_config.param_offload=False \
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=64 \
+  actor_rollout_ref.actor.ppo_mini_batch_size=256 \
   actor_rollout_ref.rollout.val_kwargs.temperature=0.4 \
   actor_rollout_ref.actor.entropy_coeff=0.01 \
   actor_rollout_ref.actor.entropy_over_valid_actions=True \
   trainer.critic_warmup="$CRITIC_WARMUP" \
-  trainer.val_before_train=False \
+  trainer.val_before_train=True \
   trainer.resume_mode=disable \
   trainer.save_freq=-1 \
   trainer.test_freq=5 \
