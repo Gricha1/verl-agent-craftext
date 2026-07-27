@@ -2258,17 +2258,33 @@ class RayPPOTrainer:
 
                     batch.batch["response_mask"] = compute_response_mask(batch)
                     if self.use_actor_value_token:
-                        from verl.utils.actor_value_token import compute_remaining_return_scalars
-
-                        step_rewards_raw = batch.non_tensor_batch.get("rewards")
-                        if step_rewards_raw is None:
-                            raise ValueError(
-                                "use_actor_value_token requires non_tensor_batch['rewards'] from rollout"
-                            )
-                        step_rewards = np.asarray(step_rewards_raw, dtype=np.float64).reshape(-1).tolist()
-                        target_returns = compute_remaining_return_scalars(
-                            batch.non_tensor_batch["traj_uid"], step_rewards
+                        # Same reward постановка as dual LLM by default: full episode return
+                        # on the last response token (EpisodeRewardManager). Value CE targets
+                        # match that scalar; only with use_episode_return_as_token_reward=False
+                        # we keep per-step remaining returns (dense debug_square).
+                        use_episode_return = bool(
+                            self.config.reward_model.get("use_episode_return_as_token_reward", True)
                         )
+                        if use_episode_return:
+                            ep_raw = batch.non_tensor_batch.get("episode_rewards")
+                            if ep_raw is None:
+                                raise ValueError(
+                                    "use_actor_value_token with episode-return rewards requires "
+                                    "non_tensor_batch['episode_rewards'] from rollout"
+                                )
+                            target_returns = np.asarray(ep_raw, dtype=np.float64).reshape(-1)
+                        else:
+                            from verl.utils.actor_value_token import compute_remaining_return_scalars
+
+                            step_rewards_raw = batch.non_tensor_batch.get("rewards")
+                            if step_rewards_raw is None:
+                                raise ValueError(
+                                    "use_actor_value_token requires non_tensor_batch['rewards'] from rollout"
+                                )
+                            step_rewards = np.asarray(step_rewards_raw, dtype=np.float64).reshape(-1).tolist()
+                            target_returns = compute_remaining_return_scalars(
+                                batch.non_tensor_batch["traj_uid"], step_rewards
+                            )
                         batch.batch["actor_value_target_returns"] = torch.tensor(
                             target_returns,
                             dtype=torch.float32,
@@ -2363,17 +2379,9 @@ class RayPPOTrainer:
                         batch.batch["token_level_scores"] = reward_tensor
 
                         if self.use_actor_value_token:
-                            from verl.utils.actor_value_token import build_step_reward_tensor
-
-                            step_rewards_raw = batch.non_tensor_batch.get("rewards")
-                            if step_rewards_raw is None:
-                                raise ValueError(
-                                    "use_actor_value_token requires non_tensor_batch['rewards'] from rollout"
-                                )
-                            step_rewards = np.asarray(step_rewards_raw, dtype=np.float64).reshape(-1).tolist()
-                            batch.batch["token_level_scores"] = build_step_reward_tensor(
-                                batch.batch["responses"], step_rewards
-                            )
+                            # Do NOT overwrite token_level_scores: keep EpisodeRewardManager output
+                            # (full episode return on last token when use_episode_return_as_token_reward=True),
+                            # identical to dual LLM outcome-style PPO.
                             with _timer("values", timing_raw):
                                 values = self.actor_rollout_wg.compute_actor_token_values(batch)
                             batch = batch.union(values)

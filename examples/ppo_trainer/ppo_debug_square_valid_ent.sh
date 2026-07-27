@@ -9,7 +9,7 @@
 
 set -e
 
-NUM_OPTIMISTIC_ENVS="${NUM_OPTIMISTIC_ENVS:-64}"
+NUM_OPTIMISTIC_ENVS="${NUM_OPTIMISTIC_ENVS:-128}"
 OPTIMISTIC_RESET_RATIO="${OPTIMISTIC_RESET_RATIO:-8}"
 ENTROPY_SINGLE_TOKEN_FASTPATH="${ENTROPY_SINGLE_TOKEN_FASTPATH:-true}"
 USE_ACTOR_LORA="${USE_ACTOR_LORA:-true}"
@@ -56,7 +56,7 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   ++env.use_jax_gpu=False \
   ++env.jax_gpu_fraction=0.15 \
   algorithm.gae_by_trajectory=True \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.50 \
+  actor_rollout_ref.rollout.gpu_memory_utilization=0.9 \
   actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
   actor_rollout_ref.actor.entropy_coeff=0.01 \
   actor_rollout_ref.actor.entropy_over_valid_actions=True \

@@ -15,15 +15,19 @@ from agent_system.environments.prompts.world_model_reward_craftext_plan_q import
 
 
 def extract_alfworld_action(text: str) -> str:
-    """Parse ``<action>...</action>`` content from a rollout response."""
-    s = str(text or "").lower()
+    """Parse action text: ``<action>...</action>`` or already-projected command string."""
+    s = str(text or "").strip()
+    if not s:
+        return ""
+    lower = s.lower()
     start_tag = "<action>"
     end_tag = "</action>"
-    start_idx = s.find(start_tag)
-    end_idx = s.find(end_tag)
-    if start_idx == -1 or end_idx == -1 or end_idx <= start_idx:
-        return ""
-    return s[start_idx + len(start_tag) : end_idx].strip()
+    start_idx = lower.find(start_tag)
+    end_idx = lower.find(end_tag)
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        return s[start_idx + len(start_tag) : end_idx].strip()
+    # single_token_action: rollout stores projected admissible command (no XML tags).
+    return s
 
 
 def format_alfworld_plan_q_prompt(

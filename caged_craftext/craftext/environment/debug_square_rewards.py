@@ -67,6 +67,11 @@ def is_debug_square_config(config_name) -> bool:
     return config_name is not None and "debug_square" in str(config_name)
 
 
+def is_debug_square_sparse_config(config_name) -> bool:
+    """True when reward should be goal-only (no Manhattan navigation shaping)."""
+    return config_name is not None and "sparse" in str(config_name) and is_debug_square_config(config_name)
+
+
 def _normalize_achievement_mask(achievement_mask) -> jnp.ndarray:
     """Flax TargetState.select may leave a tuple of scalar arrays; flatten to (N,)."""
     mask = jnp.asarray(achievement_mask, dtype=jnp.int32)
@@ -238,14 +243,18 @@ def debug_square_step_reward(
     instruction_done,
     instruction_idx=None,
     game_map=None,
+    sparse: bool = False,
 ) -> jnp.ndarray:
     """
     debug_square (8x8 / 16x16):
       - Craftax achievement reward disabled
-      - navigation reward (distance decrease)
-      - bonus when adjacent to the goal cell
+      - dense (default): navigation reward (distance decrease) + +1 on goal
+      - sparse: reward only +1 when adjacent to the goal (no nav shaping)
     """
     del craftax_reward
+    task_bonus = jnp.where(instruction_done, TASK_COMPLETION_REWARD, jnp.float32(0.0))
+    if sparse:
+        return task_bonus
     nav = debug_square_navigation_reward(
         prev_player_pos,
         new_player_pos,
@@ -253,5 +262,4 @@ def debug_square_step_reward(
         instruction_idx=instruction_idx,
         game_map=game_map,
     )
-    task_bonus = jnp.where(instruction_done, TASK_COMPLETION_REWARD, jnp.float32(0.0))
     return nav + task_bonus

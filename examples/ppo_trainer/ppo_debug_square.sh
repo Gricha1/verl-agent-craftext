@@ -1,6 +1,6 @@
 #!/bin/bash
 # PPO on debug_square_8x8: dual actor+critic, vocab entropy.
-# Resources shuffled each reset; GAE along env trajectories (to episode end).
+# Resources shuffled each reset; GAE by response (one env step for single-token actions).
 #
 # Usage:
 #   bash examples/ppo_trainer/ppo_debug_square.sh
@@ -8,7 +8,7 @@
 
 set -e
 
-NUM_OPTIMISTIC_ENVS="${NUM_OPTIMISTIC_ENVS:-64}"
+NUM_OPTIMISTIC_ENVS="${NUM_OPTIMISTIC_ENVS:-128}"
 OPTIMISTIC_RESET_RATIO="${OPTIMISTIC_RESET_RATIO:-8}"
 USE_ACTOR_LORA="${USE_ACTOR_LORA:-true}"
 CRITIC_LORA_RANK="${CRITIC_LORA_RANK:-64}"
@@ -22,7 +22,7 @@ echo "[INFO] OPTIMISTIC_RESET_RATIO=$OPTIMISTIC_RESET_RATIO"
 echo "[INFO] Map: 8x8 — stone / wood / water shuffled corners (adjacent = success)"
 echo "[INFO] prompt: single_token_action, max_response_length=1"
 echo "[INFO] entropy: full vocabulary (entropy_over_valid_actions=False)"
-echo "[INFO] GAE: by trajectory (returns to episode end)"
+echo "[INFO] GAE: by response / one env step (gae_by_trajectory=False)"
 echo "[INFO] USE_ACTOR_LORA=$USE_ACTOR_LORA (actor lora_rank=64 when true)"
 echo "[INFO] CRITIC_LORA_RANK=$CRITIC_LORA_RANK CRITIC_LORA_ALPHA=$CRITIC_LORA_ALPHA"
 echo "[INFO] auto_reset: false (one episode per env slot, max 50 steps)"
@@ -52,8 +52,8 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   +env.value_return_bin_step=0.4 \
   ++env.use_jax_gpu=False \
   ++env.jax_gpu_fraction=0.15 \
-  algorithm.gae_by_trajectory=True \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.50 \
+  algorithm.gae_by_trajectory=False \
+  actor_rollout_ref.rollout.gpu_memory_utilization=0.9 \
   actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
   actor_rollout_ref.actor.entropy_coeff=0.01 \
   actor_rollout_ref.actor.entropy_over_valid_actions=False \

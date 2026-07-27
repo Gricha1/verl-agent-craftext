@@ -4,11 +4,11 @@
 #
 # Usage:
 #   bash examples/ppo_trainer/ppo_alfworld.sh
-#   TRAIN_BATCH_SIZE=64 bash examples/ppo_trainer/ppo_alfworld.sh
+#   TRAIN_BATCH_SIZE=128 bash examples/ppo_trainer/ppo_alfworld.sh
 
 set -e
 
-TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-64}"
+TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-128}"
 VAL_DATA_SIZE="${VAL_DATA_SIZE:-16}"
 MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-1}"
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-150}"
@@ -42,10 +42,11 @@ bash examples/ppo_trainer/run_alfworld_lora_job.sh \
   0 \
   +env.prompt_template_type=single_token_action \
   actor_rollout_ref.actor.single_token_actions=True \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+  actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
   actor_rollout_ref.rollout.enable_chunked_prefill=True \
   actor_rollout_ref.rollout.enforce_eager=False \
   actor_rollout_ref.rollout.free_cache_engine=False \
+  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=128 \
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=128 \
   actor_rollout_ref.ref.fsdp_config.param_offload=False \

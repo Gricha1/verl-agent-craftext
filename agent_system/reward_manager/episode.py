@@ -19,12 +19,27 @@ import numpy as np
 
 class EpisodeRewardManager:
     """The reward manager.
+
+    Args:
+        use_episode_return_as_token_reward:
+            True (default, upstream/master + dual/single LLM shared постановка):
+            put full-episode return ``episode_rewards`` on the last response
+            token of every env step.
+            False: put per-step env reward from ``rewards`` when present
+            (dense nav / step-TD style).
     """
 
-    def __init__(self, tokenizer, num_examine, normalize_by_length=False) -> None:
+    def __init__(
+        self,
+        tokenizer,
+        num_examine,
+        normalize_by_length=False,
+        use_episode_return_as_token_reward=True,
+    ) -> None:
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.normalize_by_length = normalize_by_length
+        self.use_episode_return_as_token_reward = bool(use_episode_return_as_token_reward)
 
     def __call__(self, data: DataProto, return_dict=False):
         """We will expand this function gradually based on the available datasets"""
@@ -72,15 +87,21 @@ class EpisodeRewardManager:
             episode_rewards = data_item.non_tensor_batch['episode_rewards']
             episode_lengths = data_item.non_tensor_batch['episode_lengths']
 
-            # Multi-step env rollouts attach per-step env reward in `rewards`; use it for GAE/PPO.
-            # `episode_rewards` is cumulative within the episode — only for outcome-style fallbacks.
-            step_reward = data_item.non_tensor_batch.get('rewards')
-            if step_reward is not None:
-                score = float(np.asarray(step_reward, dtype=np.float64).reshape(()))
-            elif self.normalize_by_length:
-                score = float(episode_rewards) / float(max(episode_lengths, 1))
+            if self.use_episode_return_as_token_reward:
+                # Upstream/master: same episode return on last token of every step's response.
+                if self.normalize_by_length:
+                    score = float(episode_rewards) / float(max(episode_lengths, 1))
+                else:
+                    score = float(np.asarray(episode_rewards, dtype=np.float64).reshape(()))
             else:
-                score = float(episode_rewards)
+                # Per-step env reward when present (dense debug_square / step-TD).
+                step_reward = data_item.non_tensor_batch.get('rewards')
+                if step_reward is not None:
+                    score = float(np.asarray(step_reward, dtype=np.float64).reshape(()))
+                elif self.normalize_by_length:
+                    score = float(episode_rewards) / float(max(episode_lengths, 1))
+                else:
+                    score = float(np.asarray(episode_rewards, dtype=np.float64).reshape(()))
             reward_tensor[i, valid_response_length - 1] = torch.tensor(score, dtype=torch.float32, device=prompt_ids.device)
 
             if data_source not in already_print_data_sources:

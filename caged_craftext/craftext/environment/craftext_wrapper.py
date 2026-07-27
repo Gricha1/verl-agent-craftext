@@ -27,6 +27,7 @@ from craftext.environment.debug_square_rewards import (
     debug_square_adjacent_to_goal,
     debug_square_step_reward,
     is_debug_square_config,
+    is_debug_square_sparse_config,
 )
 from typing import Union
 
@@ -163,7 +164,8 @@ class InstructionWrapper(Wrapper):
             instruction_done = generic_check(game_data_vector, ts, env_state.checker_id)
         
         if is_debug_square_config(self.config_name):
-            # No Craftax achievement reward; task completion + Manhattan navigation shaping.
+            # No Craftax achievement reward.
+            # dense: task completion + Manhattan nav; sparse (*_sparse): goal +1 only.
             prev_pos = env_state.env_state.player_position
             new_pos = state.player_position
             reward = debug_square_step_reward(
@@ -174,6 +176,7 @@ class InstructionWrapper(Wrapper):
                 instruction_done,
                 instruction_idx=env_state.idx,
                 game_map=state.map,
+                sparse=is_debug_square_sparse_config(self.config_name),
             )
         else:
             # Craftax achievement reward (scaled unless EXPLORE mode).

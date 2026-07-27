@@ -1,22 +1,12 @@
 #!/bin/bash
-# PPO on debug_square_8x8: same LLM for actor (action token) and critic (return token).
-#
-# Dual-prompt, one token per forward:
-#   actor prompt (single_token_action)  -> 1 action token
-#   critic prompt (single_token_return) -> 1 return bin token ([-5,6] step 0.4, 29 levels)
-#
-# GAE by response tokens (one env step for single-token actions), not to episode end.
-# Episode GAE: algorithm.gae_by_trajectory=True
-# critic_warmup: first N PPO steps train only return-token CE (policy frozen).
+# PPO on debug_square_8x8_sparse: same shuffled-corner map, sparse reward (+1 on goal only).
 #
 # Usage:
-#   bash examples/ppo_trainer/ppo_debug_square_actor_value.sh
-#   NUM_OPTIMISTIC_ENVS=32 bash examples/ppo_trainer/ppo_debug_square_actor_value.sh
-#   CRITIC_WARMUP=50 bash examples/ppo_trainer/ppo_debug_square_actor_value.sh
-#   ACTOR_VALUE_SEPARATE_STEPS=true bash examples/ppo_trainer/ppo_debug_square_actor_value.sh
-#   ACTOR_VALUE_TARGET_ENCODING=two_hot bash examples/ppo_trainer/ppo_debug_square_actor_value.sh
+#   bash examples/ppo_trainer/ppo_debug_square_actor_value_sparse.sh
 
 set -e
+
+export RUN_NAME="${RUN_NAME:-PPO Debug Square 8x8 sparse (single-LLM actor-value)}"
 
 NUM_OPTIMISTIC_ENVS="${NUM_OPTIMISTIC_ENVS:-128}"
 OPTIMISTIC_RESET_RATIO="${OPTIMISTIC_RESET_RATIO:-8}"
@@ -32,9 +22,10 @@ ACTOR_VALUE_LOSS_COEF="${ACTOR_VALUE_LOSS_COEF:-1.0}"
 ACTOR_VALUE_SEPARATE_STEPS="${ACTOR_VALUE_SEPARATE_STEPS:-true}"
 ACTOR_VALUE_TARGET_ENCODING="${ACTOR_VALUE_TARGET_ENCODING:-two_hot}"
 ACTOR_VALUE_ENTROPY_COEF="${ACTOR_VALUE_ENTROPY_COEF:-0.1}"
-RETURN_BIN_MIN="${RETURN_BIN_MIN:--5}"
-RETURN_BIN_MAX="${RETURN_BIN_MAX:-6}"
-RETURN_BIN_STEP="${RETURN_BIN_STEP:-0.4}"
+# Sparse step reward is 0 or +1 → episode return in {0,1}
+RETURN_BIN_MIN="${RETURN_BIN_MIN:-0}"
+RETURN_BIN_MAX="${RETURN_BIN_MAX:-1}"
+RETURN_BIN_STEP="${RETURN_BIN_STEP:-1}"
 ACTOR_VALUE_ONLINE_REWARD_WM="${ACTOR_VALUE_ONLINE_REWARD_WM:-false}"
 ACTOR_VALUE_REWARD_WM_LOSS_COEF="${ACTOR_VALUE_REWARD_WM_LOSS_COEF:-0.1}"
 ACTOR_VALUE_PLAN_Q_WM="${ACTOR_VALUE_PLAN_Q_WM:-false}"
@@ -45,29 +36,12 @@ CRAFTEXT_MC_Q_MAX_STEPS="${CRAFTEXT_MC_Q_MAX_STEPS:-50}"
 USE_ACTOR_LORA="${USE_ACTOR_LORA:-true}"
 
 echo "=========================================="
-echo "PPO debug_square_8x8 (dual-prompt actor-value)"
+echo "PPO debug_square_8x8_sparse (single-LLM actor-value, sparse reward)"
 echo "=========================================="
-echo "[INFO] NUM_OPTIMISTIC_ENVS=$NUM_OPTIMISTIC_ENVS"
-echo "[INFO] OPTIMISTIC_RESET_RATIO=$OPTIMISTIC_RESET_RATIO"
-echo "[INFO] Map: 8x8 — stone / wood / water shuffled corners (adjacent = success)"
-echo "[INFO] actor prompt: single_token_action, max_response_length=1"
-echo "[INFO] critic prompt: return bins [$RETURN_BIN_MIN,$RETURN_BIN_MAX] step=$RETURN_BIN_STEP"
-echo "[INFO] critic: token head on same LLM (no separate critic network)"
-echo "[INFO] value warmup (critic_warmup): $CRITIC_WARMUP PPO steps (return-token CE only)"
-echo "[INFO] GAE: by response / one env step (gae_by_trajectory=False); value CE on those returns"
-echo "[INFO] actor_value_separate_optimizer_steps: $ACTOR_VALUE_SEPARATE_STEPS"
-echo "[INFO] actor_value_target_encoding: $ACTOR_VALUE_TARGET_ENCODING"
-echo "[INFO] entropy: H over 17 action tokens (1 forward + mask, entropy_over_valid_actions=True)"
-echo "[INFO] entropy_action_single_token_fastpath: $ENTROPY_SINGLE_TOKEN_FASTPATH"
-echo "[INFO] entropy_band (AEnt): enable=$ENTROPY_BAND_ENABLE range=[$ENTROPY_BAND_LOW, $ENTROPY_BAND_HIGH]"
-echo "[INFO] USE_ACTOR_LORA=$USE_ACTOR_LORA (true -> LoRA rank 64, actor=value same weights)"
-echo "[INFO] auto_reset: false (one episode per env slot, max 50 steps)"
-echo "[INFO] actor_value_online_reward_wm: $ACTOR_VALUE_ONLINE_REWARD_WM (loss_coef=$ACTOR_VALUE_REWARD_WM_LOSS_COEF)"
-echo "[INFO] actor_value_online_plan_q_wm: $ACTOR_VALUE_PLAN_Q_WM (horizon=$CRAFTEXT_PLAN_Q_HORIZON gamma=$CRAFTEXT_PLAN_Q_GAMMA loss_coef=$ACTOR_VALUE_PLAN_Q_LOSS_COEF)"
-echo "[INFO] validation: every 20 PPO steps — trajectory GIF, actor Q panel (frame+prompt + return hist), action histogram"
-echo "[INFO] checkpoints: every 20 PPO steps, keep last 1 -> training_checkpoints/verl_agent_caged_craftext_debug_square_actor_value"
-
-export RUN_NAME="${RUN_NAME:-PPO Debug Square 8x8 dual-prompt actor value}"
+echo "[INFO] Map: 8x8 shuffled corners (same as dense)"
+echo "[INFO] Reward: +1 only on goal adjacency (no nav shaping)"
+echo "[INFO] GAE: by response / one env step (gae_by_trajectory=False)"
+echo "[INFO] return bins: [$RETURN_BIN_MIN,$RETURN_BIN_MAX] step=$RETURN_BIN_STEP"
 
 bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   vllm \
@@ -82,7 +56,7 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   single_token_action \
   "$CRITIC_WARMUP" \
   ascii \
-  ++env.craftext_settings='debug_square_8x8' \
+  ++env.craftext_settings='debug_square_8x8_sparse' \
   +env.use_optimistic_parallel=True \
   +env.optimistic_reset_ratio="$OPTIMISTIC_RESET_RATIO" \
   +env.use_ray_text_render_workers=False \
@@ -107,7 +81,6 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
   actor_rollout_ref.actor.entropy_coeff=0.01 \
   actor_rollout_ref.actor.entropy_coeff_schedule.enable=False \
-  actor_rollout_ref.actor.entropy_coeff_schedule.schedule=log \
   actor_rollout_ref.actor.entropy_band.enable="$ENTROPY_BAND_ENABLE" \
   actor_rollout_ref.actor.entropy_band.low="$ENTROPY_BAND_LOW" \
   actor_rollout_ref.actor.entropy_band.high="$ENTROPY_BAND_HIGH" \
@@ -124,7 +97,7 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   trainer.test_freq=20 \
   trainer.max_actor_ckpt_to_keep=1 \
   trainer.max_critic_ckpt_to_keep=1 \
-  trainer.default_local_dir=training_checkpoints/verl_agent_caged_craftext_debug_square_actor_value \
+  trainer.default_local_dir=training_checkpoints/verl_agent_caged_craftext_debug_square_actor_value_sparse \
   trainer.actor_value_online_reward_wm.enable="$ACTOR_VALUE_ONLINE_REWARD_WM" \
   trainer.actor_value_online_reward_wm.loss_coef="$ACTOR_VALUE_REWARD_WM_LOSS_COEF" \
   trainer.actor_value_online_plan_q_wm.enable=$(if [ "$ACTOR_VALUE_PLAN_Q_WM" = "true" ]; then echo "True"; else echo "False"; fi) \

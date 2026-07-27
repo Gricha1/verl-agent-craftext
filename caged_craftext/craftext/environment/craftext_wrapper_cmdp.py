@@ -115,6 +115,7 @@ class CMDPInstructionWrapper(InstructionWrapper):
             "achievements_safe_budget_energy_collect_wood",
             "achievements_wood",
             "debug_square_8x8",
+            "debug_square_8x8_sparse",
             "debug_square_16x16",
         ):
             cost = checker_budget_energy_level(game_data_vector, ts.energy_level_state.level).astype(float)

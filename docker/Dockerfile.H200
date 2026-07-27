@@ -1,0 +1,64 @@
+# H200 (Hopper / sm_90): CUDA 12.4 + torch 2.6 + full runtime deps in the image.
+# On another machine: bash docker/build_h200.sh && bash docker/start_h200.sh
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ENV TZ=America/San_Francisco
+ENV PYTHONUNBUFFERED=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_NO_CACHE_DIR=1
+ENV CRAFTAX_RELOAD_TEXTURES=True
+ENV TORCH_CUDA_ARCH_LIST="9.0"
+ENV ALFWORLD_DATA=/root/.cache/alfworld
+
+# Faster apt mirror (archive.ubuntu.com is often very slow / retries with Ign:)
+ARG APT_MIRROR=https://mirror.yandex.ru/ubuntu/
+RUN sed -i "s|http://archive.ubuntu.com/ubuntu/|${APT_MIRROR}|g; s|http://security.ubuntu.com/ubuntu/|${APT_MIRROR}|g" /etc/apt/sources.list \
+  && (test -f /etc/apt/sources.list.d/ubuntu.sources && sed -i "s|http://archive.ubuntu.com/ubuntu|${APT_MIRROR}|g; s|http://security.ubuntu.com/ubuntu|${APT_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources || true)
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  ca-certificates tzdata \
+  ffmpeg git python3-pip vim \
+  xvfb curl wget pkg-config zip unzip \
+  libhdf5-dev libfreetype6-dev \
+  python3-dev \
+  libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
+  && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN curl -L -o ~/miniconda.sh -O https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh \
+  && chmod +x ~/miniconda.sh \
+  && ~/miniconda.sh -b -p /opt/conda \
+  && rm ~/miniconda.sh
+RUN /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+RUN /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+RUN /opt/conda/bin/conda install -y numpy scipy ipython mkl mkl-include \
+  && /opt/conda/bin/conda clean -ya
+ENV PATH=/opt/conda/bin:$PATH
+
+RUN conda create -n verl-agent-311 python==3.11 -y
+
+SHELL ["/bin/bash", "--login", "-c"]
+RUN echo ". /opt/conda/etc/profile.d/conda.sh" >> ~/.bashrc \
+  && echo "conda activate verl-agent-311" >> ~/.bashrc \
+  && echo "export CRAFTAX_RELOAD_TEXTURES=True" >> ~/.bashrc
+
+SHELL ["conda", "run", "-n", "verl-agent-311", "/bin/bash", "-c"]
+RUN pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
+  --index-url https://download.pytorch.org/whl/cu124
+RUN pip install alfworld
+
+# Optional local flash-attn wheel (build_h200.sh downloads into .wheels/ if missing).
+# Script also falls back to downloading from GitHub during build.
+COPY docker/install_h200_base_deps.sh /tmp/install_h200_base_deps.sh
+COPY .wheels/ /opt/wheels/
+RUN chmod +x /tmp/install_h200_base_deps.sh \
+  && bash /tmp/install_h200_base_deps.sh \
+  && rm -f /tmp/install_h200_base_deps.sh
+
+WORKDIR /usr/home/workspace
+
+# Repo is mounted at runtime. Entrypoint only does editable installs from the mount.
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint-caged-craftext.sh
+RUN chmod +x /usr/local/bin/entrypoint-caged-craftext.sh
+ENTRYPOINT ["/usr/local/bin/entrypoint-caged-craftext.sh"]
+CMD ["bash", "--login"]

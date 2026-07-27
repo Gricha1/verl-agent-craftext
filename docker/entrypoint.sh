@@ -1,5 +1,7 @@
 #!/bin/bash
-# Run once per workspace (marker on host volume). Rebuild image only when base stack changes.
+# Runtime entrypoint:
+# - base pip stack is in the image (docker/install_h200_base_deps.sh during build)
+# - here we only install editable packages from the mounted repo (once per workspace)
 set -e
 
 WORKSPACE="${WORKSPACE:-/usr/home/workspace}"
@@ -17,30 +19,71 @@ if [ -f /opt/conda/etc/profile.d/conda.sh ]; then
 fi
 export CRAFTAX_RELOAD_TEXTURES=True
 
-# flash-attn is required by verl (use_remove_padding); wheel must match runtime torch.
-if ! python -c "import flash_attn" >/dev/null 2>&1; then
-  echo "=== Installing flash-attn (missing in env) ==="
-  WHL="flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl"
-  curl -fL "https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/${WHL}" -o "/tmp/${WHL}" \
-    && pip install --no-cache-dir "/tmp/${WHL}" \
-    || pip install --no-deps flash-attn==2.7.4.post1 --no-build-isolation \
-    || echo "WARN: flash-attn install failed"
+# Safety net: if image was built without base deps, install them once.
+if ! python -c "import gymnasium, jax, flash_attn, craftax, vllm" >/dev/null 2>&1; then
+  echo "=== Base deps missing in image — installing (docker/install_h200_base_deps.sh) ==="
+  if [ -f docker/install_h200_base_deps.sh ]; then
+    bash docker/install_h200_base_deps.sh
+  else
+    echo "ERROR: docker/install_h200_base_deps.sh not found on mount"
+    exit 1
+  fi
 fi
+
+install_workspace_editables() {
+  echo "=== Editable installs from mounted repo ==="
+  pip install -e . || echo "WARN: pip install -e . failed"
+  pip install --no-deps -e agent_system/environments/env_package/craftext/CrafText-super_igor_env_build \
+    || pip install --no-deps -e agent_system/environments/env_package/craftext/craftext \
+    || echo "WARN: craftext editable install failed"
+  if [ -d caged_craftext ]; then
+    pip install --no-deps -e caged_craftext || echo "WARN: caged_craftext editable install failed"
+  fi
+  echo "=== Verify critical imports ==="
+  python - <<'PY'
+import gymnasium, jax, flash_attn
+print("gymnasium/jax/flash_attn OK")
+from agent_system.environments.env_package.craftext import envs  # noqa: F401
+print("craftext envs OK")
+PY
+}
 
 if [ "${SKIP_CAGED_CRAFTEXT_SETUP}" = "1" ]; then
   :
 elif [ "${FORCE_CAGED_CRAFTEXT_SETUP}" = "1" ]; then
-  echo "=== FORCE_CAGED_CRAFTEXT_SETUP: full deps install ==="
-  bash setup_caged_craftext_deps.sh
+  echo "=== FORCE_CAGED_CRAFTEXT_SETUP ==="
+  install_workspace_editables
   touch "$MARKER"
 elif [ ! -f "$MARKER" ]; then
-  echo "=== First run: installing caged_craftext deps from mounted repo (~15 min) ==="
-  bash setup_caged_craftext_deps.sh
+  echo "=== First run: editable workspace deps ==="
+  install_workspace_editables
   touch "$MARKER"
 else
-  echo "=== caged_craftext deps OK (${MARKER}); skip full install ==="
-  echo "    After caged_craftext edits: bash docker/setup_caged_craftext_editable.sh"
-  echo "    Force full reinstall: FORCE_CAGED_CRAFTEXT_SETUP=1 docker/start.sh ..."
+  echo "=== Workspace editables OK (${MARKER}); skip ==="
+  echo "    Force again: FORCE_CAGED_CRAFTEXT_SETUP=1 bash docker/start_h200.sh"
+fi
+
+# AlfWorld game files (AlfredTWEnv). Persisted via host mount .cache/alfworld.
+export ALFWORLD_DATA="${ALFWORLD_DATA:-/root/.cache/alfworld}"
+ensure_alfworld_data() {
+  local need=0
+  if [ ! -d "${ALFWORLD_DATA}/json_2.1.1/train" ]; then
+    need=1
+  elif ! find "${ALFWORLD_DATA}/json_2.1.1/train" -name 'game.tw-pddl' -print -quit 2>/dev/null | grep -q .; then
+    need=1
+  fi
+  if [ "$need" = "0" ]; then
+    echo "=== AlfWorld data OK (${ALFWORLD_DATA}); skip ==="
+    return 0
+  fi
+  echo "=== AlfWorld data missing — downloading (scripts/download_alfworld_data.sh) ==="
+  bash scripts/download_alfworld_data.sh
+}
+
+if [ "${SKIP_ALFWORLD_DATA_SETUP}" = "1" ]; then
+  echo "=== SKIP_ALFWORLD_DATA_SETUP=1 — not checking AlfWorld data ==="
+else
+  ensure_alfworld_data
 fi
 
 if [ $# -eq 0 ]; then

@@ -90,10 +90,38 @@ else
     echo "Предупреждение: requirements.txt не найден"
 fi
 
-# Установка flash-attn в последнюю очередь (требуется для verl.workers.critic)
-echo "=== Установка flash-attn (последняя, обязательная) ==="
-pip install --no-deps flash-attn==2.7.4.post1 --no-build-isolation || \
-echo "ОШИБКА: не удалось установить flash-attn! Это может вызвать проблемы."
+# Установка flash-attn в последнюю очередь (требуется для verl.workers.critic).
+# ВАЖНО: только prebuilt wheel — сборка из исходников на H200 занимает часы.
+echo "=== Установка flash-attn (prebuilt wheel, без компиляции) ==="
+if python -c "import flash_attn" >/dev/null 2>&1; then
+  echo "✓ flash-attn уже установлен, пропускаем"
+else
+  _torch_mm=$(python -c "import torch; v=torch.__version__.split('+')[0].split('.'); print(v[0]+'.'+v[1])" 2>/dev/null || echo "2.6")
+  _abi=$(python -c "import torch; print('TRUE' if torch._C._GLIBCXX_USE_CXX11_ABI else 'FALSE')" 2>/dev/null || echo "FALSE")
+  _tag="cu12torch${_torch_mm}cxx11abi${_abi}"
+  _ver="2.7.4.post1"
+  # torch>=2.8 → свежий flash-attn 2.8.3
+  case "${_torch_mm}" in
+    2.8|2.9) _ver="2.8.3" ;;
+  esac
+  WHL="flash_attn-${_ver}+${_tag}-cp311-cp311-linux_x86_64.whl"
+  LOCAL_WHL="$(pwd)/.wheels/${WHL}"
+  URL="https://github.com/Dao-AILab/flash-attention/releases/download/v${_ver}/${WHL}"
+  if [ -f "$LOCAL_WHL" ]; then
+    echo "Installing flash-attn from local ${LOCAL_WHL}"
+    pip install --no-cache-dir --no-deps "$LOCAL_WHL" && echo "✓ flash-attn из local wheel OK" \
+      || echo "ОШИБКА: не удалось поставить local wheel ${LOCAL_WHL}"
+  else
+    echo "Downloading ${WHL} ..."
+    if curl -fL --retry 5 --retry-delay 2 "$URL" -o "/tmp/${WHL}" && pip install --no-cache-dir --no-deps "/tmp/${WHL}"; then
+      echo "✓ flash-attn из wheel OK"
+    else
+      echo "ОШИБКА: не удалось скачать/поставить wheel ${WHL}"
+      echo "  Скачай на хост: mkdir -p .wheels && wget -O .wheels/${WHL} '${URL}'"
+      echo "  (не компилируем из исходников — слишком долго)"
+    fi
+  fi
+fi
 
 # Проверки
 echo "=== Проверка установки ==="

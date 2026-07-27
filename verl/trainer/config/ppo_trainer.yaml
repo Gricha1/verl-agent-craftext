@@ -276,6 +276,9 @@ reward_model:
   use_dynamic_bsz: ${critic.use_dynamic_bsz}
   forward_max_token_len_per_gpu: ${critic.forward_max_token_len_per_gpu}
   reward_manager: episode
+  # True (default): put full episode_rewards on last response token (upstream AlfWorld style).
+  # False: put per-step env `rewards` when present (debug_square dense / step-TD).
+  use_episode_return_as_token_reward: True
   launch_reward_fn_async: False # custom reward function executed async on CPU, during log_prob
   sandbox_fusion:
     url: null # faas url to run code in cloud sandbox

@@ -1,3 +1,5 @@
+# Same map/tasks as debug_square_8x8 (shuffle corners each reset).
+# Reward: sparse — +1 only when adjacent to the goal; no Manhattan navigation shaping.
 dataset_key: jax_debug_square_8x8
 subset_key: easy
 base_environment: Craftax-Classic-Pixels-v1-Text

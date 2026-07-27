@@ -13,6 +13,14 @@ if [ -z "$CONDA_DEFAULT_ENV" ] || [ "$CONDA_DEFAULT_ENV" != "verl-agent-311" ]; 
 fi
 
 export COMET_API_KEY="${COMET_API_KEY:-3OfuYHwcRgIwG7DzgzJ190igY}"
+export COMET_WORKSPACE="${COMET_WORKSPACE:-gregory-gorbov}"
+# Longer timeouts: intermittent network to comet.com on some nodes
+export COMET_TIMEOUT="${COMET_TIMEOUT:-120}"
+export COMET_WS_CONNECTION_TIMEOUT="${COMET_WS_CONNECTION_TIMEOUT:-60}"
+export COMET_WS_CONNECTION_IDLE_TIMEOUT="${COMET_WS_CONNECTION_IDLE_TIMEOUT:-120}"
+# Prefer online logging; offline mode hides runs from the UI
+export COMET_OFFLINE_DIRECTORY="${COMET_OFFLINE_DIRECTORY:-}"
+unset COMET_OFFLINE_MODE 2>/dev/null || true
 
 # JAX backend: configured in main_ppo via ++env.use_jax_gpu=True (GPU if jaxlib+cuda works, else CPU fallback).
 # Do NOT set JAX_PLATFORMS=cuda here — breaks when jaxlib has no CUDA backend (vLLM can still use GPU).
@@ -158,8 +166,8 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.model.lora_alpha=$(if [ "$USE_ACTOR_LORA" = "true" ]; then echo "64"; else echo "0"; fi) \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_mini_batch_size=32 \
-    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=128 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=64 \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=0.01 \
     actor_rollout_ref.actor.clip_ratio=0.2 \
@@ -168,16 +176,16 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
-    actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=$ENGINE \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.9 \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=False \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.4 \
     actor_rollout_ref.rollout.val_kwargs.do_sample=True \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
-    actor_rollout_ref.ref.fsdp_config.param_offload=True \
+    actor_rollout_ref.ref.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.use_invalid_action_penalty=True \
     actor_rollout_ref.actor.invalid_action_penalty_coef=0.1 \
     critic.optim.lr=1e-5 \
@@ -186,8 +194,8 @@ python -m verl.trainer.main_ppo \
     critic.model.lora_rank=0 \
     critic.model.lora_alpha=16 \
     critic.model.enable_gradient_checkpointing=True \
-    critic.ppo_mini_batch_size=32 \
-    critic.ppo_micro_batch_size_per_gpu=16 \
+    critic.ppo_mini_batch_size=128 \
+    critic.ppo_micro_batch_size_per_gpu=64 \
     critic.model.fsdp_config.param_offload=False \
     critic.model.fsdp_config.optimizer_offload=False \
     algorithm.use_kl_in_reward=False \

@@ -91,6 +91,28 @@ raise SystemExit(f"[ERROR] download failed after {retries} tries: {last_err}")
 PY
 }
 
+unzip_to() {
+  local zip_path="$1"
+  local dst_dir="$2"
+  echo "[UNZIP] $zip_path -> $dst_dir"
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -o -q "$zip_path" -d "$dst_dir"
+  else
+    # Container images often lack unzip; Python zipfile is enough.
+    python - "$zip_path" "$dst_dir" <<'PY'
+import sys
+import zipfile
+from pathlib import Path
+
+zip_path, dst_dir = sys.argv[1], sys.argv[2]
+Path(dst_dir).mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(zip_path) as zf:
+    zf.extractall(dst_dir)
+print(f"[OK] extracted {len(zf.namelist())} entries")
+PY
+  fi
+}
+
 unzip_if_needed() {
   local zip_path="$1"
   local dst_dir="$2"
@@ -99,8 +121,7 @@ unzip_if_needed() {
     echo "[SKIP] already extracted: $marker"
     return 0
   fi
-  echo "[UNZIP] $zip_path -> $dst_dir"
-  unzip -o -q "$zip_path" -d "$dst_dir"
+  unzip_to "$zip_path" "$dst_dir"
 }
 
 # --- json train (required) ---
@@ -127,8 +148,7 @@ fi
 if ! find "$ALFWORLD_DATA/json_2.1.1" -name 'game.tw-pddl' -print -quit 2>/dev/null | grep -q . || [ "$FORCE" = "1" ]; then
   tmp_tw="$(mktemp -u /tmp/alfworld_tw_pddl.XXXXXX.zip)"
   download_file "$TW_PDDL_URL" "$tmp_tw" 0
-  echo "[UNZIP] $tmp_tw -> $ALFWORLD_DATA"
-  unzip -o -q "$tmp_tw" -d "$ALFWORLD_DATA"
+  unzip_to "$tmp_tw" "$ALFWORLD_DATA"
   rm -f "$tmp_tw"
 else
   echo "[SKIP] tw-pddl data present"

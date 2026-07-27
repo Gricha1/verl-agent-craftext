@@ -140,3 +140,5 @@ evaluation_results
 
 # Docker: first-run deps marker (created inside mounted repo)
 .docker_caged_deps_installed
+# flash-attn wheels downloaded by docker/build_h200.sh
+.wheels/*.whl
