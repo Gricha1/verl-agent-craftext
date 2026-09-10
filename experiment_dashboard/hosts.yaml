@@ -1,0 +1,24 @@
+# SSH fleet for GPU overview (same aliases as ~/.ssh/config / gpu_monitor).
+# ssh: null  => probe local nvidia-smi on the dashboard host.
+hosts:
+  - id: aicenteritl
+    label: aicenteritl
+    ssh: null
+  - id: aicenter1
+    label: aicenter1
+    ssh: aicenter1
+  - id: aicenter2
+    label: aicenter2
+    ssh: aicenter2
+  - id: aicenter3
+    label: aicenter3
+    ssh: aicenter3
+  - id: ml3
+    label: ml3
+    ssh: ml3
+  - id: ml4
+    label: ml4
+    ssh: ml4
+  - id: h200
+    label: h200
+    ssh: h200

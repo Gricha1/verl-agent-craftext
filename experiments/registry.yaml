@@ -1,0 +1,1185 @@
+version: 1
+updated: '2026-09-11'
+experiments:
+- id: ds8_dual_rt_h0_02e2744
+  name: dual + r_t + history0 (FINAL repro)
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: 02e2744ddcdb4573ad263487a710e956
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/02e2744ddcdb4573ad263487a710e956
+  environment: debug_square_8x8
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: r_t
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 0
+  response_len: 1
+  batch_size: 64
+  gpus: 1
+  config_path: examples/ppo_trainer/config/ppo_debug_square_8x8_dual.yaml
+  launch_script: examples/ppo_trainer/ppo_debug_square.sh
+  local_log_path: logdir/ppo_debug_square_8x8_dual_20260813_211140.log
+  git_commit: dirty-tree
+  start_date: '2026-08-13'
+  status: successful
+  success_max: 1.0
+  success_last: ~0.99
+  notes: Reproduced FINAL dual. Working baseline.
+  hypothesis: []
+  parent_experiment: ds8_dual_final_983925d3
+  tags:
+  - baseline
+  - dual
+  - r_t
+  - 8x8
+  - history0
+- id: ds8_dual_rt_h50_874bc480
+  name: dual + r_t + history50
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: 874bc480b5224efb9b92795d271ca81c
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/874bc480b5224efb9b92795d271ca81c
+  environment: debug_square_8x8
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: r_t
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 50
+  response_len: 1
+  batch_size: 64
+  gpus: 1
+  config_path: examples/ppo_trainer/config/ppo_debug_square_8x8_dual.yaml
+  launch_script: examples/ppo_trainer/ppo_debug_square.sh
+  local_log_path: logdir/ppo_debug_square_8x8_dual_20260814_140926.log
+  git_commit: dirty-tree
+  start_date: '2026-08-14'
+  status: successful
+  success_max: 0.96
+  success_last: ~0.96
+  notes: History ablation — does NOT break learning with r_t.
+  hypothesis:
+  - H7
+  parent_experiment: ds8_dual_rt_h0_02e2744
+  tags:
+  - baseline
+  - dual
+  - r_t
+  - 8x8
+  - history50
+- id: ds8_dual_gt_h50_1a064d01
+  name: dual + G_t + history50
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: 1a064d01c9ae4e8596a54d06d78f674d
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/1a064d01c9ae4e8596a54d06d78f674d
+  environment: debug_square_8x8
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: G_t
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 50
+  response_len: 1
+  batch_size: 64
+  gpus: 1
+  config_path: examples/ppo_trainer/config/ppo_debug_square_8x8_dual.yaml
+  launch_script: examples/ppo_trainer/ppo_debug_square.sh
+  local_log_path: logdir/ppo_debug_square_8x8_dual_20260811_163919.log
+  git_commit: dirty-tree
+  start_date: '2026-08-11'
+  status: failed
+  success_max: null
+  success_last: null
+  notes: 'Log header: token reward remaining G_t. Comet flag False ≠ r_t in that code path.'
+  hypothesis:
+  - H1
+  - H2
+  - H6
+  parent_experiment: ds8_dual_final_983925d3
+  tags:
+  - dual
+  - G_t
+  - 8x8
+  - history50
+  - fail
+- id: ds8_dual_gt_h50_2a42e153
+  name: dual + G_t + history50 (repeat)
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: 2a42e153bdb0448789a56140e70fdf50
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/2a42e153bdb0448789a56140e70fdf50
+  environment: debug_square_8x8
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: G_t
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 50
+  response_len: 1
+  batch_size: 64
+  gpus: 1
+  config_path: examples/ppo_trainer/config/ppo_debug_square_8x8_dual.yaml
+  launch_script: examples/ppo_trainer/ppo_debug_square.sh
+  local_log_path: logdir/ppo_debug_square_8x8_dual_20260813_010317.log
+  git_commit: dirty-tree
+  start_date: '2026-08-13'
+  status: failed
+  success_max: 0.12
+  success_last: ~0.09
+  notes: success max ~12% by step 79. Score/returns ~[-8,8], vf_explained bad.
+  hypothesis:
+  - H1
+  - H2
+  - H5
+  parent_experiment: ds8_dual_gt_h50_1a064d01
+  tags:
+  - dual
+  - G_t
+  - 8x8
+  - history50
+  - fail
+- id: ds8_dual_rt_trajgae_h50_c3a5e727
+  name: dual + r_t + traj GAE + history50
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: c3a5e727c5414fa3a4e5ff57657351b1
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/c3a5e727c5414fa3a4e5ff57657351b1
+  environment: debug_square_8x8
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: r_t
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: true
+  history_length: 50
+  response_len: 1
+  batch_size: 64
+  gpus: 1
+  config_path: examples/ppo_trainer/config/ppo_debug_square_8x8_dual.yaml
+  launch_script: examples/ppo_trainer/ppo_debug_square.sh
+  local_log_path: logdir/ppo_debug_square_8x8_dual_20260811_232728.log
+  git_commit: dirty-tree
+  start_date: '2026-08-11'
+  status: inconclusive
+  success_max: 0.06
+  success_last: null
+  notes: Better VF metrics; policy success takeoff missing. Correct traj-GAE uses r_t not G_t.
+  hypothesis:
+  - H5
+  parent_experiment: ds8_dual_rt_h50_874bc480
+  tags:
+  - dual
+  - r_t
+  - traj_gae
+  - 8x8
+  - inconclusive
+- id: ds8_dual_final_983925d3
+  name: FINAL dual 8x8 (historical)
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: 983925d38dda4ef18af90f87919fa37d
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/983925d38dda4ef18af90f87919fa37d
+  environment: debug_square_8x8
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: r_t
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 0
+  response_len: 1
+  batch_size: null
+  gpus: null
+  config_path: null
+  launch_script: null
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: successful
+  success_max: null
+  success_last: null
+  notes: Historical successful reference. User confirmed per-step r_t (not full R).
+  hypothesis: []
+  parent_experiment: null
+  tags:
+  - historical
+  - dual
+  - r_t
+  - 8x8
+  - reference
+- id: ds8_dual_valent_680dfbf1
+  name: valid-action entropy dual
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: 680dfbf1125a4397bdc8ad3726110d25
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/680dfbf1125a4397bdc8ad3726110d25
+  environment: debug_square_8x8
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: r_t
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 0
+  response_len: 1
+  batch_size: null
+  gpus: null
+  config_path: null
+  launch_script: examples/ppo_trainer/ppo_debug_square_valid_ent.sh
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: successful
+  success_max: null
+  success_last: null
+  notes: Close to FINAL with valid-action entropy.
+  hypothesis: []
+  parent_experiment: ds8_dual_final_983925d3
+  tags:
+  - historical
+  - dual
+  - entropy
+  - 8x8
+- id: ds8_av_4be19de5
+  name: actor-value 8x8
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: 4be19de5e50949359891ce852700d565
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/4be19de5e50949359891ce852700d565
+  environment: debug_square_8x8
+  architecture: actor_value
+  actor_value: true
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: r_t_or_bins
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: null
+  response_len: 1
+  batch_size: null
+  gpus: null
+  config_path: null
+  launch_script: examples/ppo_trainer/ppo_debug_square_actor_value.sh
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: inconclusive
+  success_max: null
+  success_last: null
+  notes: Separate actor-value line (uses value bins — not dual).
+  hypothesis: []
+  parent_experiment: null
+  tags:
+  - historical
+  - actor_value
+  - 8x8
+- id: ds16_dual_rt_h50_b126b453
+  name: 16x16 dual r_t history50 (2 GPU OOM)
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: b126b4532767420f9a0fd031b4d27739
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/b126b4532767420f9a0fd031b4d27739
+  environment: debug_square_16x16
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: r_t
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 50
+  response_len: 1
+  batch_size: 64
+  gpus: 2
+  config_path: examples/ppo_trainer/config/ppo_debug_square_16x16_dual.yaml
+  launch_script: examples/ppo_trainer/ppo_debug_square_16x16.sh
+  local_log_path: logdir/ppo_debug_square_16x16_dual_20260815_092438.log
+  git_commit: dirty-tree
+  start_date: '2026-08-15'
+  status: oom
+  success_max: null
+  success_last: null
+  notes: Early OOM on vLLM wake_up/kv_cache ~step 2-4.
+  hypothesis:
+  - H9
+  parent_experiment: ds8_dual_rt_h50_874bc480
+  tags:
+  - dual
+  - r_t
+  - 16x16
+  - oom
+- id: ds16_dual_rt_h50_da03a539
+  name: 16x16 dual restart (short)
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: da03a539d25e4c46882ebed96a3cafc4
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/da03a539d25e4c46882ebed96a3cafc4
+  environment: debug_square_16x16
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: r_t
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 50
+  response_len: 1
+  batch_size: 64
+  gpus: null
+  config_path: examples/ppo_trainer/config/ppo_debug_square_16x16_dual.yaml
+  launch_script: examples/ppo_trainer/ppo_debug_square_16x16.sh
+  local_log_path: logdir/ppo_debug_square_16x16_dual_20260815_103857.log
+  git_commit: dirty-tree
+  start_date: '2026-08-15'
+  status: aborted
+  success_max: null
+  success_last: null
+  notes: Restart after stop; short/aborted.
+  hypothesis:
+  - H9
+  parent_experiment: ds16_dual_rt_h50_b126b453
+  tags:
+  - dual
+  - r_t
+  - 16x16
+  - aborted
+- id: ds16_dual_rt_h50_da63a962
+  name: 16x16 dual long (1 GPU batch32)
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: da63a962175b4f1a82606c3fc0fe82d8
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/da63a962175b4f1a82606c3fc0fe82d8
+  environment: debug_square_16x16
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: r_t
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 50
+  response_len: 1
+  batch_size: 32
+  gpus: 1
+  config_path: examples/ppo_trainer/config/ppo_debug_square_16x16_dual.yaml
+  launch_script: examples/ppo_trainer/ppo_debug_square_16x16.sh
+  local_log_path: logdir/ppo_debug_square_16x16_dual_20260815_105358.log
+  git_commit: dirty-tree
+  start_date: '2026-08-15'
+  status: failed
+  success_max: 0.125
+  success_last: ~0.0
+  notes: To step ~351; no learning. Likely partial observability (H9), not G_t.
+  hypothesis:
+  - H9
+  parent_experiment: ds8_dual_rt_h50_874bc480
+  tags:
+  - dual
+  - r_t
+  - 16x16
+  - fail
+  - long
+- id: ds16_av_3f6f1518
+  name: 16x16 actor-value trajGAE over G_t (double-count)
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: 3f6f151820dc4ad69b700bff3ddae686
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/3f6f151820dc4ad69b700bff3ddae686
+  environment: debug_square_16x16
+  architecture: actor_value
+  actor_value: true
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: G_t
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: true
+  history_length: null
+  response_len: 1
+  batch_size: null
+  gpus: null
+  config_path: examples/ppo_trainer/config/ppo_debug_square_16x16_actor_value.yaml
+  launch_script: examples/ppo_trainer/ppo_debug_square_16x16_actor_value.sh
+  local_log_path: null
+  git_commit: dirty-tree
+  start_date: null
+  status: oom
+  success_max: null
+  success_last: null
+  notes: Double-count GAE; returns exploded; OOM.
+  hypothesis:
+  - H6
+  parent_experiment: null
+  tags:
+  - actor_value
+  - 16x16
+  - double_count
+  - oom
+- id: ds16_av_1ac1a602
+  name: 16x16 actor-value after gae=False
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: 1ac1a602403c44e183f13a9c340040b4
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/1ac1a602403c44e183f13a9c340040b4
+  environment: debug_square_16x16
+  architecture: actor_value
+  actor_value: true
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: unknown
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: null
+  response_len: 1
+  batch_size: null
+  gpus: null
+  config_path: examples/ppo_trainer/config/ppo_debug_square_16x16_actor_value.yaml
+  launch_script: examples/ppo_trainer/ppo_debug_square_16x16_actor_value.sh
+  local_log_path: null
+  git_commit: dirty-tree
+  start_date: null
+  status: failed
+  success_max: null
+  success_last: null
+  notes: Targets OK after GAE fix; policy weak / success low.
+  hypothesis:
+  - H9
+  parent_experiment: ds16_av_3f6f1518
+  tags:
+  - actor_value
+  - 16x16
+  - fail
+- id: ds16_av_14831ad0
+  name: 16x16 actor-value FINAL-ish
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: 14831ad097444a28ab3d2e3d2926aee6
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/14831ad097444a28ab3d2e3d2926aee6
+  environment: debug_square_16x16
+  architecture: actor_value
+  actor_value: true
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: unknown
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 0
+  response_len: 1
+  batch_size: null
+  gpus: null
+  config_path: examples/ppo_trainer/config/ppo_debug_square_16x16_actor_value.yaml
+  launch_script: examples/ppo_trainer/ppo_debug_square_16x16_actor_value.sh
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: failed
+  success_max: 0.0
+  success_last: 0.0
+  notes: success 0; returns ~[-1,1]; hist=0.
+  hypothesis:
+  - H9
+  parent_experiment: null
+  tags:
+  - actor_value
+  - 16x16
+  - historical
+- id: ds8_dual_sparse_R_h50_seed1
+  name: CONTROL sparse square + full R/G_t
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: null
+  comet_url: null
+  environment: debug_square_8x8_sparse
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: R_or_G_t_sparse
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 50
+  response_len: 1
+  batch_size: 64
+  gpus: 1
+  config_path: null
+  launch_script: null
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: planned
+  success_max: null
+  success_last: null
+  notes: 'Highest-priority control. r_t = 1_success only → G_t == R on success.
+
+    Approximates ALFWorld outcome label. Tests H1 vs exploration/prior (H3).
+
+    '
+  hypothesis:
+  - H1
+  - H3
+  parent_experiment: ds8_dual_rt_h50_874bc480
+  tags:
+  - planned
+  - dual
+  - sparse
+  - control
+  - 8x8
+  planned:
+    priority: 1
+    delta_vs_baseline: dense r_t → sparse success-only; token = full R/G_t
+    expected: If learns → telescoping H1 supported for dense G_t failure; if fails → prior/exploration
+- id: ds8_dual_gt_g099_h50_seed1
+  name: discounted G_t gamma=0.99
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: null
+  comet_url: null
+  environment: debug_square_8x8
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: G_t_discounted
+  gamma: 0.99
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 50
+  response_len: 1
+  batch_size: 64
+  gpus: 1
+  config_path: null
+  launch_script: null
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: planned
+  success_max: null
+  success_last: null
+  notes: Breaks exact telescoping; -1 + gamma*(+1) not exact cancel.
+  hypothesis:
+  - H1
+  - H2
+  parent_experiment: ds8_dual_gt_h50_2a42e153
+  tags:
+  - planned
+  - dual
+  - G_t
+  - gamma
+  - 8x8
+  planned:
+    priority: 2
+    delta_vs_baseline: token = discounted return-to-go gamma=0.99
+    expected: Better local action discrimination than gamma=1 G_t
+- id: ds8_dual_gt_g095_h50_seed1
+  name: discounted G_t gamma=0.95
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: null
+  comet_url: null
+  environment: debug_square_8x8
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: G_t_discounted
+  gamma: 0.95
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 50
+  response_len: 1
+  batch_size: 64
+  gpus: 1
+  config_path: null
+  launch_script: null
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: planned
+  success_max: null
+  success_last: null
+  notes: Stronger break of telescoping than 0.99.
+  hypothesis:
+  - H1
+  - H2
+  parent_experiment: ds8_dual_gt_h50_2a42e153
+  tags:
+  - planned
+  - dual
+  - G_t
+  - gamma
+  - 8x8
+  planned:
+    priority: 3
+    delta_vs_baseline: token = discounted return-to-go gamma=0.95
+    expected: Even stronger local credit than 0.99; may bias short-horizon
+- id: ds8_dual_nstep3_h50_seed1
+  name: n-step return n=3
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: null
+  comet_url: null
+  environment: debug_square_8x8
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: n_step
+  gamma: 1.0
+  lambda: 1.0
+  n_step: 3
+  gae_by_trajectory: false
+  history_length: 50
+  response_len: 1
+  batch_size: 64
+  gpus: 1
+  config_path: null
+  launch_script: null
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: planned
+  success_max: null
+  success_last: null
+  notes: G_t^(3) with bootstrap V; better action-level credit than full MC G_t.
+  hypothesis:
+  - H1
+  - H4
+  parent_experiment: ds8_dual_rt_h50_874bc480
+  tags:
+  - planned
+  - dual
+  - nstep
+  - 8x8
+  planned:
+    priority: 4
+    delta_vs_baseline: token/target = 3-step return (+ V bootstrap if implemented)
+    expected: Recover local discrimination vs full G_t
+- id: ds8_dual_nstep5_h50_seed1
+  name: n-step return n=5
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: null
+  comet_url: null
+  environment: debug_square_8x8
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: n_step
+  gamma: 1.0
+  lambda: 1.0
+  n_step: 5
+  gae_by_trajectory: false
+  history_length: 50
+  response_len: 1
+  batch_size: 64
+  gpus: 1
+  config_path: null
+  launch_script: null
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: planned
+  success_max: null
+  success_last: null
+  notes: Longer n-step ablation.
+  hypothesis:
+  - H1
+  - H4
+  parent_experiment: ds8_dual_rt_h50_874bc480
+  tags:
+  - planned
+  - dual
+  - nstep
+  - 8x8
+  planned:
+    priority: 5
+    delta_vs_baseline: token/target = 5-step return
+    expected: Tradeoff between bias and variance vs n=3
+- id: alfworld_import_pending
+  name: ALFWorld historical runs (import pending)
+  comet_project: gregory-gorbov/verl-agent-alfworld
+  comet_key: null
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-alfworld
+  environment: alfworld
+  architecture: mixed
+  actor_value: null
+  model: null
+  finetune: null
+  lora_rank: null
+  reward_mode: sparse_R
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: null
+  history_length: null
+  response_len: null
+  batch_size: null
+  gpus: null
+  config_path: null
+  launch_script: examples/ppo_trainer/run_alfworld.sh
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: aborted
+  success_max: null
+  success_last: null
+  notes: 'Placeholder until Comet import. Meaningful baselines/actor-value/dual/entropy
+
+    should replace this entry. Sparse R/G_t semantics differ from dense square G_t (H3).
+
+
+    Replaced by curated alf_* imports (2026-09-11).'
+  hypothesis:
+  - H3
+  parent_experiment: null
+  tags:
+  - alfworld
+  - import_pending
+- id: alf_dual_00db5bb4
+  name: PPO AlfWorld dual
+  comet_project: gregory-gorbov/verl-agent-alfworld
+  comet_key: 00db5bb4862d40d886513de3473b9977
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-alfworld/00db5bb4862d40d886513de3473b9977
+  environment: alfworld
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-1.5B-Instruct
+  finetune: lora
+  lora_rank: 128
+  reward_mode: sparse_R
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: true
+  history_length: 2
+  response_len: null
+  batch_size: null
+  gpus: 2
+  config_path: null
+  launch_script: examples/ppo_trainer/ppo_alfworld.sh
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: successful
+  success_max: 0.45
+  success_last: 0.45
+  notes: Dual baseline candidate; episode SR ~0.45.
+  hypothesis:
+  - H3
+  parent_experiment: null
+  tags:
+  - alfworld
+  - dual
+  - baseline
+- id: alf_dual_c41636ae
+  name: PPO AlfWorld dual
+  comet_project: gregory-gorbov/verl-agent-alfworld
+  comet_key: c41636aed5e14a1fb54fdd55b7053ef3
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-alfworld/c41636aed5e14a1fb54fdd55b7053ef3
+  environment: alfworld
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-1.5B-Instruct
+  finetune: lora
+  lora_rank: 128
+  reward_mode: sparse_R
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: true
+  history_length: 2
+  response_len: null
+  batch_size: null
+  gpus: 2
+  config_path: null
+  launch_script: examples/ppo_trainer/ppo_alfworld.sh
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: inconclusive
+  success_max: null
+  success_last: null
+  notes: Dual finished; empty metric summary on fetch.
+  hypothesis:
+  - H3
+  parent_experiment: null
+  tags:
+  - alfworld
+  - dual
+- id: alf_dual_st_675bd709
+  name: PPO AlfWorld dual single-token
+  comet_project: gregory-gorbov/verl-agent-alfworld
+  comet_key: 675bd70943e047acbe04faea88f3fd5c
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-alfworld/675bd70943e047acbe04faea88f3fd5c
+  environment: alfworld
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-1.5B-Instruct
+  finetune: lora
+  lora_rank: 64
+  reward_mode: sparse_R
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: true
+  history_length: 2
+  response_len: 1
+  batch_size: null
+  gpus: 2
+  config_path: null
+  launch_script: examples/ppo_trainer/ppo_alfworld.sh
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: successful
+  success_max: 0.6
+  success_last: 0.59
+  notes: Best dual single-token; SR max~0.60.
+  hypothesis:
+  - H3
+  parent_experiment: null
+  tags:
+  - alfworld
+  - dual
+  - single_token
+  - baseline
+- id: alf_dual_st_8378df7a
+  name: PPO AlfWorld dual single-token
+  comet_project: gregory-gorbov/verl-agent-alfworld
+  comet_key: 8378df7a6bd548bda5653372bd95aee6
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-alfworld/8378df7a6bd548bda5653372bd95aee6
+  environment: alfworld
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-1.5B-Instruct
+  finetune: lora
+  lora_rank: 64
+  reward_mode: sparse_R
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: true
+  history_length: 2
+  response_len: 1
+  batch_size: null
+  gpus: 2
+  config_path: null
+  launch_script: examples/ppo_trainer/ppo_alfworld.sh
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: successful
+  success_max: 0.59
+  success_last: null
+  notes: Dual ST; val SR low (~0.06).
+  hypothesis:
+  - H3
+  parent_experiment: null
+  tags:
+  - alfworld
+  - dual
+  - single_token
+- id: alf_av_ent_13cbd581
+  name: actor-value admissible entropy
+  comet_project: gregory-gorbov/verl-agent-alfworld
+  comet_key: 13cbd581567b43049c8f8ffcaa1aae46
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-alfworld/13cbd581567b43049c8f8ffcaa1aae46
+  environment: alfworld
+  architecture: actor_value
+  actor_value: true
+  model: Qwen2.5-1.5B-Instruct
+  finetune: lora
+  lora_rank: 64
+  reward_mode: sparse_R
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: true
+  history_length: 2
+  response_len: 1
+  batch_size: null
+  gpus: 2
+  config_path: null
+  launch_script: examples/ppo_trainer/ppo_alfworld_actor_value_valid_ent.sh
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: successful
+  success_max: 0.69
+  success_last: null
+  notes: Best AV+entropy so far; train SR max~0.69, val~0.17.
+  hypothesis:
+  - H3
+  parent_experiment: null
+  tags:
+  - alfworld
+  - actor_value
+  - entropy
+  - baseline
+- id: alf_av_ent_c735bae6
+  name: actor-value valid-ent 40step
+  comet_project: gregory-gorbov/verl-agent-alfworld
+  comet_key: c735bae6bd5f40ffa8c6177fce5849d9
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-alfworld/c735bae6bd5f40ffa8c6177fce5849d9
+  environment: alfworld
+  architecture: actor_value
+  actor_value: true
+  model: Qwen2.5-1.5B-Instruct
+  finetune: lora
+  lora_rank: 64
+  reward_mode: sparse_R
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: true
+  history_length: 2
+  response_len: null
+  batch_size: null
+  gpus: 2
+  config_path: null
+  launch_script: examples/ppo_trainer/ppo_alfworld_actor_value_valid_ent.sh
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: successful
+  success_max: 0.64
+  success_last: 0.36
+  notes: AV valid-ent 40-step; SR max~0.64.
+  hypothesis:
+  - H3
+  parent_experiment: null
+  tags:
+  - alfworld
+  - actor_value
+  - entropy
+- id: alf_av_ent_479c445d
+  name: actor-value valid-ent 40step
+  comet_project: gregory-gorbov/verl-agent-alfworld
+  comet_key: 479c445df59a4ed2ad7e3b41f9f7dc52
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-alfworld/479c445df59a4ed2ad7e3b41f9f7dc52
+  environment: alfworld
+  architecture: actor_value
+  actor_value: true
+  model: Qwen2.5-1.5B-Instruct
+  finetune: lora
+  lora_rank: 64
+  reward_mode: sparse_R
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: true
+  history_length: 2
+  response_len: null
+  batch_size: null
+  gpus: 2
+  config_path: null
+  launch_script: examples/ppo_trainer/ppo_alfworld_actor_value_valid_ent.sh
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: inconclusive
+  success_max: null
+  success_last: null
+  notes: AV valid-ent 40-step; empty metrics on fetch.
+  hypothesis:
+  - H3
+  parent_experiment: null
+  tags:
+  - alfworld
+  - actor_value
+  - entropy
+- id: alf_av_ent_cdf0ba2a
+  name: actor-value valid-ent 40step
+  comet_project: gregory-gorbov/verl-agent-alfworld
+  comet_key: cdf0ba2a9d6d4ce5badecc519f0e9fdf
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-alfworld/cdf0ba2a9d6d4ce5badecc519f0e9fdf
+  environment: alfworld
+  architecture: actor_value
+  actor_value: true
+  model: Qwen2.5-1.5B-Instruct
+  finetune: null
+  lora_rank: null
+  reward_mode: sparse_R
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: true
+  history_length: 2
+  response_len: null
+  batch_size: null
+  gpus: 2
+  config_path: null
+  launch_script: examples/ppo_trainer/ppo_alfworld_actor_value_valid_ent.sh
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: inconclusive
+  success_max: null
+  success_last: null
+  notes: Params fetch timed out.
+  hypothesis:
+  - H3
+  parent_experiment: null
+  tags:
+  - alfworld
+  - actor_value
+  - entropy
+- id: alf_av_ent_8d2dce4d
+  name: actor-value admissible entropy
+  comet_project: gregory-gorbov/verl-agent-alfworld
+  comet_key: 8d2dce4d6d31473fa1b631f41faeadcd
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-alfworld/8d2dce4d6d31473fa1b631f41faeadcd
+  environment: alfworld
+  architecture: actor_value
+  actor_value: true
+  model: Qwen2.5-1.5B-Instruct
+  finetune: null
+  lora_rank: null
+  reward_mode: sparse_R
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: true
+  history_length: 2
+  response_len: null
+  batch_size: null
+  gpus: 2
+  config_path: null
+  launch_script: examples/ppo_trainer/ppo_alfworld_actor_value_valid_ent.sh
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: inconclusive
+  success_max: null
+  success_last: null
+  notes: Params empty on fetch.
+  hypothesis:
+  - H3
+  parent_experiment: null
+  tags:
+  - alfworld
+  - actor_value
+  - entropy
+- id: alf_av_planq_acf4649e
+  name: actor-value + plan-Q H6 + entropy
+  comet_project: gregory-gorbov/verl-agent-alfworld
+  comet_key: acf4649e35024921994d1f9287857442
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-alfworld/acf4649e35024921994d1f9287857442
+  environment: alfworld
+  architecture: actor_value
+  actor_value: true
+  model: Qwen2.5-1.5B-Instruct
+  finetune: null
+  lora_rank: null
+  reward_mode: sparse_R
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: true
+  history_length: 2
+  response_len: null
+  batch_size: null
+  gpus: 2
+  config_path: null
+  launch_script: examples/ppo_trainer/ppo_alfworld_actor_value_plan_q_valid_ent.sh
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: failed
+  success_max: 0.0
+  success_last: 0.0
+  notes: plan_q_wm=true horizon=6; SR all 0. Inspect sibling plan-Q runs.
+  hypothesis:
+  - H3
+  parent_experiment: null
+  tags:
+  - alfworld
+  - actor_value
+  - plan_q
+- id: alf_av_planq_26f6669e
+  name: actor-value + plan-Q H6 + entropy
+  comet_project: gregory-gorbov/verl-agent-alfworld
+  comet_key: 26f6669ecf6c415bbf252fb4f3c0f789
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-alfworld/26f6669ecf6c415bbf252fb4f3c0f789
+  environment: alfworld
+  architecture: actor_value
+  actor_value: true
+  model: Qwen2.5-1.5B-Instruct
+  finetune: null
+  lora_rank: null
+  reward_mode: sparse_R
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: true
+  history_length: 2
+  response_len: null
+  batch_size: null
+  gpus: 2
+  config_path: null
+  launch_script: examples/ppo_trainer/ppo_alfworld_actor_value_plan_q_valid_ent.sh
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: inconclusive
+  success_max: null
+  success_last: null
+  notes: plan-Q line; params empty on fetch.
+  hypothesis:
+  - H3
+  parent_experiment: null
+  tags:
+  - alfworld
+  - actor_value
+  - plan_q
+- id: alf_av_planq_a701cc13
+  name: actor-value + plan-Q H6 + entropy
+  comet_project: gregory-gorbov/verl-agent-alfworld
+  comet_key: a701cc133e1445c3b4163f2992fe75e7
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-alfworld/a701cc133e1445c3b4163f2992fe75e7
+  environment: alfworld
+  architecture: actor_value
+  actor_value: true
+  model: Qwen2.5-1.5B-Instruct
+  finetune: null
+  lora_rank: null
+  reward_mode: sparse_R
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: true
+  history_length: 2
+  response_len: null
+  batch_size: null
+  gpus: 2
+  config_path: null
+  launch_script: examples/ppo_trainer/ppo_alfworld_actor_value_plan_q_valid_ent.sh
+  local_log_path: null
+  git_commit: null
+  start_date: null
+  status: inconclusive
+  success_max: null
+  success_last: null
+  notes: plan-Q line; params empty on fetch.
+  hypothesis:
+  - H3
+  parent_experiment: null
+  tags:
+  - alfworld
+  - actor_value
+  - plan_q

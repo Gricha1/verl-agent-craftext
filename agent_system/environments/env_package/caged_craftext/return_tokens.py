@@ -227,12 +227,26 @@ def tokenize_return_response_ids(tokenizer, response: str, *, add_eos: bool = Tr
     return ids
 
 
-def compute_remaining_returns(step_rewards: Sequence[float]) -> List[float]:
-    """MC remaining return G_t = r_t + r_{t+1} + ... for each step in a trajectory."""
+def compute_remaining_returns(
+    step_rewards: Sequence[float],
+    *,
+    gamma: float = 1.0,
+) -> List[float]:
+    """MC remaining return for each step in a trajectory.
+
+    gamma=1 (default, backward compatible):
+        G_t = r_t + r_{t+1} + ... + r_T
+
+    gamma in (0, 1):
+        G_t = r_t + gamma r_{t+1} + gamma^2 r_{t+2} + ...
+    """
+    g = float(gamma)
+    if g < 0.0:
+        raise ValueError(f"gamma must be >= 0, got {gamma}")
     out: List[float] = []
     total = 0.0
-    for r in reversed(step_rewards):
-        total += float(r)
+    for r in reversed(list(step_rewards)):
+        total = float(r) + g * total
         out.append(total)
     out.reverse()
     return out

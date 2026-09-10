@@ -276,9 +276,13 @@ reward_model:
   use_dynamic_bsz: ${critic.use_dynamic_bsz}
   forward_max_token_len_per_gpu: ${critic.forward_max_token_len_per_gpu}
   reward_manager: episode
-  # True (default): put full episode_rewards on last response token (upstream AlfWorld style).
-  # False: put per-step env `rewards` when present (debug_square dense / step-TD).
+  # True (default): put full episode_rewards on last response token of every step (AlfWorld).
+  # False + use_remaining_return=False: per-step r_t (FINAL dual).
+  # use_remaining_return_as_token_reward=True: G_t^remaining_return_gamma.
   use_episode_return_as_token_reward: True
+  # Explicit remaining-return mode (G_t^gamma). Prefer this over overloading False.
+  use_remaining_return_as_token_reward: False
+  remaining_return_gamma: 1.0
   launch_reward_fn_async: False # custom reward function executed async on CPU, during log_prob
   sandbox_fusion:
     url: null # faas url to run code in cloud sandbox

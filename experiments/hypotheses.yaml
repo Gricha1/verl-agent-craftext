@@ -1,0 +1,128 @@
+# Hypotheses tracked by experiment dashboard. Source of truth for H*.
+version: 1
+updated: "2026-09-11"
+
+hypotheses:
+  - id: H1
+    title: Dense potential shaping + undiscounted G_t telescopes
+    confidence: high
+    status: active
+    rationale: |
+      For r_t = (d_t - d_{t+1}) + 1_success and gamma=1,
+      G_t ≈ d_t - d_final + terminal bonus. Local action quality
+      is washed out; bad first step can recover with later +1s.
+    evidence_for:
+      - ds8_dual_rt_h0_02e2744
+      - ds8_dual_rt_h50_874bc480
+      - ds8_dual_gt_h50_1a064d01
+      - ds8_dual_gt_h50_2a42e153
+    evidence_against: []
+    experiments_testing:
+      - ds8_dual_sparse_R_h50_seed1
+      - ds8_dual_gt_g099_h50_seed1
+      - ds8_dual_gt_g095_h50_seed1
+      - ds8_dual_nstep3_h50_seed1
+      - ds8_dual_nstep5_h50_seed1
+    notes: Primary credit-assignment hypothesis for dense square.
+
+  - id: H2
+    title: G_t scale/variance harder for critic
+    confidence: high
+    status: active
+    rationale: |
+      Logs: r_t score/returns ~[-1,2], late vf_explained~+0.65;
+      G_t ~[-8,8], vf_explained ~0/negative. Noisy advantages.
+    evidence_for:
+      - ds8_dual_gt_h50_1a064d01
+      - ds8_dual_gt_h50_2a42e153
+      - ds8_dual_rt_h50_874bc480
+    evidence_against: []
+    experiments_testing:
+      - ds8_dual_gt_g099_h50_seed1
+      - ds8_dual_nstep3_h50_seed1
+    notes: Compatible with H1; not mutually exclusive.
+
+  - id: H3
+    title: ALFWorld R/G_t ≠ debug_square dense G_t
+    confidence: high
+    status: active
+    rationale: |
+      ALFWorld sparse: r=[0..0,1], G_t==R==1 on success path.
+      Dense square G_t is telescoped potential sum — different object.
+    evidence_for:
+      - ds8_dual_gt_h50_2a42e153
+    evidence_against: []
+    experiments_testing:
+      - ds8_dual_sparse_R_h50_seed1
+    notes: Import ALFWorld baselines for contrast; do not equate semantics.
+
+  - id: H4
+    title: MC G_t noisy due to stochastic future policy
+    confidence: medium
+    status: open
+    rationale: Full episode MC return depends on future actions under learning policy.
+    evidence_for: []
+    evidence_against: []
+    experiments_testing:
+      - ds8_dual_nstep3_h50_seed1
+      - ds8_dual_nstep5_h50_seed1
+    notes: n-step / discounted returns reduce future variance.
+
+  - id: H5
+    title: Critic poorly fits G_t → noisy advantages
+    confidence: medium
+    status: open
+    rationale: Poor vf_explained on G_t runs; whitened advantages from bad fit.
+    evidence_for:
+      - ds8_dual_gt_h50_2a42e153
+    evidence_against:
+      - ds8_dual_rt_trajgae_h50_c3a5e727
+    experiments_testing:
+      - ds8_dual_gt_g099_h50_seed1
+    notes: c3a5e727 shows better V with traj-GAE+r_t still weak policy.
+
+  - id: H6
+    title: Implementation bug in G_t
+    confidence: low
+    status: largely_ruled_out
+    rationale: traj_uid/step_idx grouping checked; auto_reset=False; G_t is suffix sum.
+    evidence_for: []
+    evidence_against:
+      - ds8_dual_gt_h50_1a064d01
+      - ds8_dual_gt_h50_2a42e153
+    experiments_testing: []
+    notes: Keep as low-priority; re-check if sparse R/G_t also fails oddly.
+
+  - id: H7
+    title: history=50 breaks policy
+    confidence: excluded
+    status: excluded
+    rationale: r_t + history=50 reaches ~96% success.
+    evidence_for: []
+    evidence_against:
+      - ds8_dual_rt_h50_874bc480
+    experiments_testing: []
+    notes: Ruled out for dual r_t 8x8.
+
+  - id: H8
+    title: Actor-value bin range explains dual G_t failures
+    confidence: excluded
+    status: excluded
+    rationale: Dual critic experiments do not use value bins.
+    evidence_for: []
+    evidence_against:
+      - ds8_dual_gt_h50_1a064d01
+      - ds8_dual_gt_h50_2a42e153
+    experiments_testing: []
+    notes: Not applicable to dual-LLM G_t failures.
+
+  - id: H9
+    title: 16x16 failure dominated by partial observability
+    confidence: medium
+    status: open
+    rationale: Goal often outside local ASCII window; separate from G_t credit assignment.
+    evidence_for:
+      - ds16_dual_rt_h50_da63a962
+    evidence_against: []
+    experiments_testing: []
+    notes: Observation/curriculum fixes planned later; do not conflate with H1.

@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>Safe RL Experiments</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0b0f14; --ink: #e8eef6; --muted: #8b97a8;
+      --line: rgba(148, 163, 184, 0.14); --line-strong: rgba(148, 163, 184, 0.22);
+      --ok: #3dd68c; --ok-dim: rgba(61, 214, 140, 0.14);
+      --warn: #e8b84a; --bad: #ff6b6b; --bad-dim: rgba(255, 107, 107, 0.12);
+      --accent: #5ec8c0; --shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      font-family: "DM Sans", sans-serif; color: var(--ink); background-color: var(--bg);
+      background-image:
+        radial-gradient(900px 520px at 12% -8%, rgba(94, 200, 192, 0.12), transparent 55%),
+        radial-gradient(700px 480px at 92% 8%, rgba(88, 120, 180, 0.14), transparent 50%),
+        linear-gradient(180deg, #0d131a 0%, #090c10 100%);
+      background-attachment: fixed;
+    }
+    header, main, nav.tabs, .selbar-wrap { position: relative; z-index: 1; max-width: 1600px; margin: 0 auto; }
+    header { display: flex; justify-content: space-between; align-items: end; gap: 1rem; padding: 1.5rem 1.7rem 0.8rem; }
+    .brand {
+      font-size: clamp(1.7rem, 3vw, 2.4rem); font-weight: 700; letter-spacing: -0.04em; line-height: 1;
+      background: linear-gradient(120deg, #f2f7fc 20%, #7fd4cc 95%);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .sub { color: var(--muted); margin-top: 0.4rem; font-size: 0.92rem; }
+    .meta { font-family: "JetBrains Mono", monospace; font-size: 0.75rem; color: var(--muted); text-align: right; line-height: 1.5; }
+    .meta strong { color: var(--accent); }
+    nav.tabs { display: flex; flex-wrap: wrap; gap: 0.4rem; padding: 0.4rem 1.7rem 0.55rem; }
+    .tab {
+      border: 1px solid var(--line); background: rgba(255,255,255,0.03); color: var(--ink);
+      border-radius: 9px; padding: 0.45rem 0.8rem; font: inherit; font-weight: 600; cursor: pointer;
+    }
+    .tab.active { border-color: rgba(94, 200, 192, 0.45); background: rgba(94, 200, 192, 0.14); color: #d7f5f1; }
+    .selbar-wrap { padding: 0 1.7rem 0.7rem; }
+    .selbar {
+      display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center;
+      border: 1px solid rgba(94,200,192,0.28); background: rgba(94,200,192,0.08);
+      border-radius: 12px; padding: 0.55rem 0.75rem;
+    }
+    .selbar .label { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; }
+    main { padding: 0.2rem 1.7rem 2.2rem; }
+    .panel { display: none; }
+    .panel.active { display: block; animation: fade 280ms ease both; }
+    @keyframes fade { from { opacity: 0; transform: translateY(4px);} to { opacity: 1; transform: none;} }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0.9rem; }
+    .card {
+      background: linear-gradient(165deg, rgba(22, 30, 42, 0.92), rgba(14, 18, 26, 0.88));
+      border: 1px solid var(--line); border-radius: 14px; padding: 1rem; box-shadow: var(--shadow);
+    }
+    .card.h-aicenteritl { border-color: rgba(210, 150, 80, 0.28); background: linear-gradient(165deg, rgba(52,40,28,0.95), rgba(18,14,12,0.92)); }
+    .card.h-aicenter1 { border-color: rgba(160,120,210,0.28); background: linear-gradient(165deg, rgba(44,34,54,0.95), rgba(14,12,20,0.92)); }
+    .card.h-aicenter2 { border-color: rgba(80,170,200,0.28); background: linear-gradient(165deg, rgba(28,44,58,0.95), rgba(12,16,22,0.92)); }
+    .card.h-aicenter3 { border-color: rgba(190,110,150,0.28); background: linear-gradient(165deg, rgba(48,30,42,0.95), rgba(16,12,18,0.92)); }
+    .card.h-ml3 { border-color: rgba(62,168,140,0.28); background: linear-gradient(165deg, rgba(28,52,48,0.95), rgba(12,18,20,0.92)); }
+    .card.h-ml4 { border-color: rgba(110,140,220,0.28); background: linear-gradient(165deg, rgba(36,42,62,0.95), rgba(12,14,24,0.92)); }
+    .card.h-h200 { border-color: rgba(110,190,120,0.28); background: linear-gradient(165deg, rgba(30,48,34,0.95), rgba(12,18,14,0.92)); }
+    .card h3 { margin: 0 0 0.45rem; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 700; }
+    .card .val { font-size: 1.05rem; font-weight: 600; line-height: 1.35; }
+    .mono { font-family: "JetBrains Mono", monospace; font-size: 0.82rem; }
+    .muted { color: var(--muted); }
+    .badge { display: inline-block; padding: 0.15rem 0.45rem; border-radius: 999px; font-size: 0.72rem; font-weight: 700; border: 1px solid var(--line); }
+    .badge.successful, .badge.ok { color: var(--ok); background: var(--ok-dim); }
+    .badge.failed, .badge.oom, .badge.bad { color: var(--bad); background: var(--bad-dim); }
+    .badge.planned, .badge.warn { color: var(--warn); background: rgba(232,184,74,0.12); }
+    .badge.running { color: #7eb6ff; background: rgba(126,182,255,0.12); }
+    .badge.aborted, .badge.inconclusive { color: var(--muted); background: rgba(255,255,255,0.04); }
+    .filters { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.8rem; align-items: center; }
+    input, select, button.btn {
+      border: 1px solid var(--line); background: rgba(0,0,0,0.25); color: var(--ink);
+      border-radius: 9px; padding: 0.45rem 0.65rem; font: inherit;
+    }
+    button.btn { cursor: pointer; font-weight: 600; }
+    button.btn.primary { border-color: rgba(94,200,192,0.4); background: rgba(94,200,192,0.15); }
+    button.btn.danger { border-color: rgba(255,107,107,0.35); background: rgba(255,107,107,0.12); }
+    button.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td { text-align: left; padding: 0.55rem 0.45rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    tr.row { cursor: pointer; }
+    tr.row:hover { background: rgba(94,200,192,0.06); }
+    tr.row.selected { background: rgba(94,200,192,0.12); }
+    tr.row.checked { background: rgba(94,200,192,0.09); }
+    a { color: #7fd4cc; }
+    pre.box, .box {
+      background: rgba(0,0,0,0.28); border: 1px solid var(--line); border-radius: 10px;
+      padding: 0.75rem; overflow: auto; max-height: 420px; white-space: pre-wrap; word-break: break-word;
+      font-family: "JetBrains Mono", monospace; font-size: 0.78rem; line-height: 1.45;
+    }
+    .split { display: grid; grid-template-columns: 1.35fr 1fr; gap: 0.9rem; }
+    @media (max-width: 980px) { .split { grid-template-columns: 1fr; } }
+    .warn-banner, .ok-banner {
+      border-radius: 10px; padding: 0.7rem 0.85rem; margin-bottom: 0.8rem; font-size: 0.9rem;
+    }
+    .warn-banner { border: 1px solid rgba(232,184,74,0.35); background: rgba(232,184,74,0.1); color: #ffd58a; }
+    .ok-banner { border: 1px solid rgba(61,214,140,0.3); background: rgba(61,214,140,0.08); color: #b6f5d2; }
+    .gpu-bar { height: 8px; border-radius: 999px; background: rgba(255,255,255,0.06); overflow: hidden; margin-top: 0.35rem; }
+    .gpu-bar > span { display: block; height: 100%; background: linear-gradient(90deg, #3aa89f, #e8b84a, #e35d5d); }
+    .chip {
+      display: inline-flex; gap: 0.25rem; align-items: center; border: 1px solid var(--line);
+      border-radius: 999px; padding: 0.15rem 0.5rem; font-size: 0.72rem; margin: 0.1rem; background: rgba(0,0,0,0.2);
+    }
+    .chip.x { cursor: pointer; }
+    .chip.x:hover { border-color: var(--bad); color: #ffb0b0; }
+    .detail-grid { display: grid; grid-template-columns: 140px 1fr; gap: 0.35rem 0.6rem; font-size: 0.86rem; }
+    .detail-grid .k { color: var(--muted); }
+    .proc { font-family: "JetBrains Mono", monospace; font-size: 0.7rem; color: #c8d4e4; margin-top: 0.25rem;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .section-title { margin: 1.1rem 0 0.55rem; font-size: 0.95rem; font-weight: 700; letter-spacing: -0.01em; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <div class="brand">Safe RL Experiments</div>
+      <div class="sub">Registry + fleet GPU + experiment picker · aicenteritl</div>
+    </div>
+    <div class="meta" id="headerMeta">loading…</div>
+  </header>
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="overview">Overview</button>
+    <button class="tab" data-tab="experiments">Experiments</button>
+    <button class="tab" data-tab="compare">Compare</button>
+    <button class="tab" data-tab="hypotheses">Hypotheses</button>
+    <button class="tab" data-tab="planned">Planned</button>
+    <button class="tab" data-tab="launch">Launch</button>
+  </nav>
+  <div class="selbar-wrap"><div class="selbar" id="selbar"></div></div>
+  <main>
+    <section class="panel active" id="panel-overview"></section>
+    <section class="panel" id="panel-experiments"></section>
+    <section class="panel" id="panel-compare"></section>
+    <section class="panel" id="panel-hypotheses"></section>
+    <section class="panel" id="panel-planned"></section>
+    <section class="panel" id="panel-launch"></section>
+  </main>
+<script>
+const state = {
+  tab: 'overview', experiments: [], selected: null, checked: new Set(),
+  overview: null, hyps: null, fleetOnly: null,
+};
+
+function badge(status) {
+  const s = String(status || 'unknown');
+  return `<span class="badge ${s}">${s}</span>`;
+}
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function short(s, n=80) {
+  s = String(s ?? '');
+  return s.length > n ? s.slice(0,n-1)+'…' : s;
+}
+async function api(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+function doneExps() {
+  return (state.experiments || []).filter(e => e.status !== 'planned' && e.status !== 'aborted' || (e.local_log_path || e.comet_key));
+}
+function historicalExps() {
+  return (state.experiments || []).filter(e => !['planned'].includes(e.status));
+}
+
+document.getElementById('tabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.tab');
+  if (!btn) return;
+  state.tab = btn.dataset.tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === btn));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + state.tab));
+  render();
+});
+
+function toggleCheck(id, on) {
+  if (on) state.checked.add(id); else state.checked.delete(id);
+  renderSelbar();
+}
+
+function renderSelbar() {
+  const ids = [...state.checked];
+  const el = document.getElementById('selbar');
+  el.innerHTML = `
+    <span class="label">Selected</span>
+    ${ids.length ? ids.map(id => `<span class="chip x" data-id="${esc(id)}">${esc(id)} ×</span>`).join('') : '<span class="muted">none — tick experiments below</span>'}
+    <button class="btn" id="sel-clear" ${ids.length?'' :'disabled'}>Clear</button>
+    <button class="btn primary" id="sel-compare" ${ids.length>=2?'':'disabled'}>Compare selected (${ids.length})</button>
+    <button class="btn" id="sel-done">Select all done</button>
+    <button class="btn" id="sel-rtgt">Select r_t vs G_t preset</button>
+  `;
+  el.querySelectorAll('.chip.x').forEach(c => c.onclick = () => { toggleCheck(c.dataset.id, false); render(); });
+  document.getElementById('sel-clear').onclick = () => { state.checked.clear(); render(); };
+  document.getElementById('sel-compare').onclick = () => {
+    document.querySelector('.tab[data-tab="compare"]').click();
+  };
+  document.getElementById('sel-done').onclick = () => {
+    state.checked = new Set(historicalExps().filter(e => e.status !== 'planned').map(e => e.id));
+    render();
+  };
+  document.getElementById('sel-rtgt').onclick = () => {
+    state.checked = new Set([
+      'ds8_dual_rt_h0_02e2744','ds8_dual_rt_h50_874bc480',
+      'ds8_dual_gt_h50_1a064d01','ds8_dual_gt_h50_2a42e153'
+    ]);
+    render();
+  };
+}
+
+function expCard(e, label) {
+  if (!e) return `<div class="card"><h3>${label}</h3><div class="muted">—</div></div>`;
+  return `<div class="card">
+    <h3>${label}</h3>
+    <div class="val">${esc(e.name || e.id)}</div>
+    <div class="mono muted" style="margin-top:0.35rem">${esc(e.id)} · ${badge(e.status)}</div>
+    <div class="muted" style="margin-top:0.35rem;font-size:0.85rem">
+      ${esc(e.environment)} · ${esc(e.reward_mode)} · hist=${esc(e.history_length)}
+      · success_max=${esc(e.success_max)}
+    </div>
+  </div>`;
+}
+
+function serverCard(s) {
+  const cls = 'card h-' + (s.id || '');
+  if (!s.ok) {
+    return `<div class="${cls}"><h3>${esc(s.label || s.id)}</h3>
+      <div class="badge bad">offline</div>
+      <div class="muted" style="margin-top:0.4rem;font-size:0.8rem">${esc(s.error || 'unreachable')}</div></div>`;
+  }
+  const gpus = s.gpus || [];
+  const procs = (s.processes || []).slice(0, 4);
+  const free = !s.any_busy;
+  return `<div class="${cls}">
+    <h3>${esc(s.label || s.id)} ${free ? '<span class="badge ok">free?</span>' : '<span class="badge warn">busy</span>'}
+      ${s.foreign_jobs_suspected ? '<span class="badge bad">foreign</span>' : ''}</h3>
+    ${gpus.map(g => {
+      const pct = g.memory_total_mb ? (100 * g.memory_used_mb / g.memory_total_mb) : 0;
+      return `<div style="margin-top:0.45rem">
+        <div class="mono">GPU${g.index} ${Math.round(g.memory_used_mb)}/${Math.round(g.memory_total_mb)} · ${g.util_pct}%</div>
+        <div class="gpu-bar"><span style="width:${pct.toFixed(1)}%"></span></div>
+      </div>`;
+    }).join('') || '<div class="muted">no GPUs</div>'}
+    ${procs.map(p => `<div class="proc">${esc(p.pid)} ${esc(short(p.name,42))} ${esc(p.used_memory)}</div>`).join('')}
+  </div>`;
+}
+
+function renderOverview() {
+  const o = state.overview || {};
+  const fleet = (o.fleet && o.fleet.servers) || (state.fleetOnly && state.fleetOnly.servers) || [];
+  const localBusy = (o.gpu || {}).any_busy || (o.gpu || {}).foreign_jobs_suspected;
+  const banner = localBusy
+    ? `<div class="warn-banner">aicenteritl GPU занят / чужие процессы. Смотри fleet ниже — свободные хосты подсвечены.</div>`
+    : `<div class="ok-banner">aicenteritl GPU probe OK.</div>`;
+  const hyps = (o.active_hypotheses || []).map(h =>
+    `<span class="chip"><strong>${esc(h.id)}</strong> ${esc(h.title)}</span>`
+  ).join(' ') || '<span class="muted">—</span>';
+
+  // quick picker of historical experiments
+  const hist = historicalExps().filter(e => e.status !== 'planned');
+  const picker = hist.map(e => {
+    const on = state.checked.has(e.id);
+    return `<label class="chip" style="cursor:pointer">
+      <input type="checkbox" data-id="${esc(e.id)}" ${on?'checked':''}/>
+      ${badge(e.status)} <span class="mono">${esc(e.id)}</span>
+      <span class="muted">${esc(e.reward_mode)} · ${esc(e.environment)}</span>
+    </label>`;
+  }).join('');
+
+  document.getElementById('panel-overview').innerHTML = `
+    ${banner}
+    <div class="grid" style="margin-bottom:0.9rem">
+      <div class="card" style="grid-column:1/-1">
+        <h3>Research goal</h3>
+        <div class="val" style="white-space:pre-wrap;font-size:0.95rem">${esc(o.research_goal || '')}</div>
+      </div>
+      ${expCard(o.current_baseline, 'Current baseline')}
+      ${expCard(o.current_best, 'Best run')}
+      ${expCard(o.latest_non_planned, 'Latest run')}
+      ${expCard((o.running && o.running[0]) || null, 'Running')}
+      ${expCard(o.next_planned, 'Next planned')}
+      <div class="card">
+        <h3>Active hypotheses</h3>
+        <div>${hyps}</div>
+        <div class="muted" style="margin-top:0.5rem;font-size:0.8rem">counts: ${esc(JSON.stringify(o.counts || {}))}</div>
+      </div>
+    </div>
+
+    <div class="section-title">Choose past experiments <button class="btn" id="btn-refresh-fleet" style="margin-left:0.5rem">Refresh fleet GPU</button></div>
+    <div class="card" style="margin-bottom:0.9rem">
+      <div style="display:flex;flex-wrap:wrap;gap:0.35rem">${picker || '<span class="muted">no experiments</span>'}</div>
+      <div class="muted" style="margin-top:0.55rem;font-size:0.8rem">Галочки попадают в Selected bar → Compare. Preset r_t vs G_t — кнопка в баре.</div>
+    </div>
+
+    <div class="section-title">GPU fleet <span class="muted" style="font-weight:500;font-size:0.8rem">${esc((o.fleet||{}).cache_updated_at ? ('cache '+o.fleet.cache_updated_at) : 'live SSH / local')}</span>
+      <button class="btn" id="btn-refresh-fleet" style="margin-left:0.5rem">Refresh fleet GPU</button></div>
+    <div class="grid" id="fleet-grid">${fleet.map(serverCard).join('') || '<div class="muted">loading fleet…</div>'}</div>
+    <div class="card" style="margin-top:0.9rem">
+      <h3>Docker (local dashboard host)</h3>
+      <div class="mono">safe_llm running: ${esc((o.docker||{}).safe_llm_running)} · ${((o.docker||{}).containers||[]).map(c=>c.name).join(', ')||'—'}</div>
+    </div>
+  `;
+  document.querySelectorAll('#panel-overview input[type=checkbox]').forEach(cb => {
+    cb.onchange = () => { toggleCheck(cb.dataset.id, cb.checked); };
+  });
+  document.getElementById('btn-refresh-fleet').onclick = async () => {
+    document.getElementById('fleet-grid').innerHTML = '<div class="muted">probing hosts…</div>';
+    try {
+      state.fleetOnly = await api('/api/gpu/fleet');
+      if (state.overview) state.overview.fleet = state.fleetOnly;
+      renderOverview();
+      renderSelbar();
+    } catch (err) {
+      document.getElementById('fleet-grid').innerHTML = `<div class="warn-banner">${esc(err)}</div>`;
+    }
+  };
+}
+
+function renderExperiments() {
+  const items = state.experiments || [];
+  document.getElementById('panel-experiments').innerHTML = `
+    <div class="filters">
+      <input id="f-q" placeholder="search id/name/key/notes" style="min-width:220px" />
+      <select id="f-status"><option value="">status</option>
+        ${['successful','failed','planned','aborted','oom','inconclusive','running'].map(s=>`<option>${s}</option>`).join('')}
+      </select>
+      <select id="f-env"><option value="">environment</option>
+        <option>debug_square_8x8</option><option>debug_square_16x16</option><option>alfworld</option><option>sparse</option>
+      </select>
+      <select id="f-reward"><option value="">reward</option>
+        <option>r_t</option><option>G_t</option><option>sparse</option><option>n_step</option>
+      </select>
+      <label class="chip"><input type="checkbox" id="f-done-only"/> only done (not planned)</label>
+      <button class="btn" id="btn-refresh-exp">Refresh</button>
+      <button class="btn primary" id="btn-check-visible">Check visible</button>
+    </div>
+    <div class="split">
+      <div class="card" style="padding:0.4rem 0.6rem; overflow:auto; max-height:70vh">
+        <table>
+          <thead><tr>
+            <th></th><th>status</th><th>id</th><th>env</th><th>arch</th><th>reward</th><th>γ</th><th>GAE</th><th>hist</th><th>success</th>
+          </tr></thead>
+          <tbody id="exp-tbody"></tbody>
+        </table>
+      </div>
+      <div class="card" id="exp-detail"><div class="muted">Select a row for details</div></div>
+    </div>
+  `;
+  const tbody = document.getElementById('exp-tbody');
+  let visible = items;
+  function paint(list) {
+    visible = list;
+    tbody.innerHTML = list.map(e => `
+      <tr class="row ${e.id===state.selected?'selected':''} ${state.checked.has(e.id)?'checked':''}" data-id="${esc(e.id)}">
+        <td><input type="checkbox" class="row-check" data-id="${esc(e.id)}" ${state.checked.has(e.id)?'checked':''} onclick="event.stopPropagation()"/></td>
+        <td>${badge(e.status)}</td>
+        <td class="mono">${esc(e.id)}</td>
+        <td>${esc(e.environment)}</td>
+        <td>${esc(e.architecture)}</td>
+        <td>${esc(e.reward_mode)}</td>
+        <td>${esc(e.gamma)}</td>
+        <td>${esc(e.gae_by_trajectory)}</td>
+        <td>${esc(e.history_length)}</td>
+        <td class="mono">${esc(e.success_max ?? '—')}</td>
+      </tr>`).join('');
+    tbody.querySelectorAll('.row-check').forEach(cb => {
+      cb.onchange = () => { toggleCheck(cb.dataset.id, cb.checked); paint(visible); };
+    });
+  }
+  paint(items);
+  tbody.onclick = (ev) => {
+    const tr = ev.target.closest('tr.row');
+    if (!tr) return;
+    state.selected = tr.dataset.id;
+    paint(visible);
+    showDetail(items.find(e => e.id === state.selected));
+  };
+  async function applyFilters() {
+    const q = document.getElementById('f-q').value;
+    const status = document.getElementById('f-status').value;
+    const environment = document.getElementById('f-env').value;
+    const reward_mode = document.getElementById('f-reward').value;
+    const doneOnly = document.getElementById('f-done-only').checked;
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (status) params.set('status', status);
+    if (environment) params.set('environment', environment);
+    if (reward_mode) params.set('reward_mode', reward_mode);
+    const data = await api('/api/experiments?' + params.toString());
+    let list = data.experiments;
+    if (doneOnly) list = list.filter(e => e.status !== 'planned');
+    state.experiments = (await api('/api/experiments')).experiments;
+    paint(list);
+  }
+  document.getElementById('btn-refresh-exp').onclick = applyFilters;
+  document.getElementById('btn-check-visible').onclick = () => {
+    visible.forEach(e => state.checked.add(e.id));
+    paint(visible);
+    renderSelbar();
+  };
+  ['f-q','f-status','f-env','f-reward','f-done-only'].forEach(id => {
+    const el = document.getElementById(id);
+    el.onchange = applyFilters;
+    el.onkeyup = (e) => { if (e.key==='Enter') applyFilters(); };
+  });
+  if (state.selected) showDetail(items.find(e => e.id === state.selected));
+}
+
+function showDetail(e) {
+  const el = document.getElementById('exp-detail');
+  if (!e || !el) return;
+  const checked = state.checked.has(e.id);
+  el.innerHTML = `
+    <h3 style="margin-top:0;text-transform:none;font-size:1.05rem;color:var(--ink)">${esc(e.name)}</h3>
+    <div style="margin-bottom:0.6rem">${badge(e.status)} <span class="mono muted">${esc(e.id)}</span></div>
+    <div class="detail-grid">
+      <div class="k">Comet</div><div>${e.comet_url ? `<a href="${esc(e.comet_url)}" target="_blank" rel="noopener">${esc(e.comet_key||'open')}</a>` : '—'}</div>
+      <div class="k">env / arch</div><div>${esc(e.environment)} · ${esc(e.architecture)}</div>
+      <div class="k">reward</div><div>${esc(e.reward_mode)} · γ=${esc(e.gamma)} · gae_traj=${esc(e.gae_by_trajectory)}</div>
+      <div class="k">history</div><div>${esc(e.history_length)} · response_len=${esc(e.response_len)}</div>
+      <div class="k">config</div><div class="mono">${esc(e.config_path || '—')}</div>
+      <div class="k">script</div><div class="mono">${esc(e.launch_script || '—')}</div>
+      <div class="k">log</div><div class="mono">${esc(e.local_log_path || '—')}</div>
+      <div class="k">success</div><div>max=${esc(e.success_max)} last=${esc(e.success_last)}</div>
+      <div class="k">tags</div><div>${(e.tags||[]).map(t=>`<span class="chip">${esc(t)}</span>`).join('')}</div>
+    </div>
+    <div style="margin-top:0.8rem"><h3>Notes</h3><div style="white-space:pre-wrap">${esc(e.notes||'')}</div></div>
+    <div style="margin-top:0.8rem;display:flex;gap:0.4rem;flex-wrap:wrap">
+      <button class="btn primary" id="btn-toggle-check">${checked?'Uncheck':'Check'} for compare</button>
+      <button class="btn" id="btn-metrics">Load metrics</button>
+      <button class="btn" id="btn-to-launch">Open in Launch</button>
+    </div>
+    <pre class="box" id="metrics-box" style="display:none;margin-top:0.6rem"></pre>
+  `;
+  document.getElementById('btn-toggle-check').onclick = () => {
+    toggleCheck(e.id, !state.checked.has(e.id));
+    showDetail(e);
+    if (state.tab === 'experiments') renderExperiments();
+  };
+  document.getElementById('btn-to-launch').onclick = () => {
+    state.selected = e.id;
+    document.querySelector('.tab[data-tab="launch"]').click();
+  };
+  document.getElementById('btn-metrics').onclick = async () => {
+    const box = document.getElementById('metrics-box');
+    box.style.display = 'block'; box.textContent = 'loading…';
+    try { box.textContent = JSON.stringify(await api('/api/metrics/' + encodeURIComponent(e.id)), null, 2); }
+    catch (err) { box.textContent = String(err); }
+  };
+}
+
+async function renderCompare() {
+  const selectedIds = [...state.checked];
+  document.getElementById('panel-compare').innerHTML = `
+    <div class="filters">
+      <button class="btn primary" id="btn-preset-rtgt">Preset: 8x8 r_t vs G_t</button>
+      <button class="btn primary" id="btn-cmp-selected" ${selectedIds.length>=2?'':'disabled'}>Compare selected (${selectedIds.length})</button>
+      <input id="cmp-ids" style="min-width:420px" value="${esc(selectedIds.join(','))}" placeholder="id1,id2,..." />
+      <button class="btn" id="btn-cmp">Compare ids</button>
+    </div>
+    <div id="cmp-out" class="card"><div class="muted">Select experiments (Overview/Experiments checkboxes) or use preset</div></div>
+  `;
+  const run = async (ids) => {
+    const out = document.getElementById('cmp-out');
+    out.innerHTML = 'loading…';
+    try {
+      let data;
+      if (ids === 'preset') data = await api('/api/compare/preset/rt_vs_gt_8x8');
+      else data = await api('/api/compare?ids=' + encodeURIComponent(ids));
+      const rows = data.experiments || [];
+      const keys = ['episode/success_rate','episode/reward/mean','critic/score/mean','critic/returns/mean','critic/vf_explained_var','actor/entropy_loss','actor/pg_loss'];
+      out.innerHTML = `
+        <div class="muted" style="margin-bottom:0.5rem">${esc(data.preset?.title || 'custom compare')}</div>
+        <table>
+          <thead><tr>
+            <th>id</th><th>reward</th><th>hist</th><th>status</th><th>src</th>
+            ${keys.map(k=>`<th>${esc(k.split('/').pop())}</th>`).join('')}
+          </tr></thead>
+          <tbody>
+            ${rows.map(r => {
+              const s = r.summary || {};
+              return `<tr>
+                <td class="mono">${esc(r.id)}<div class="muted">${esc(short(r.name,40))}</div></td>
+                <td>${esc(r.reward_mode)} <span class="muted">${esc(r.header_token_reward||'')}</span></td>
+                <td>${esc(r.history_length)}</td>
+                <td>${badge(r.status)}</td>
+                <td class="mono">${esc(r.metric_source||'—')}</td>
+                ${keys.map(k => {
+                  const m = s[k] || {};
+                  const v = m.max ?? m.last ?? (k==='episode/success_rate' ? r.success_max_registry : null);
+                  return `<td class="mono">${v==null?'—':(typeof v==='number'?Number(v).toFixed(3):esc(v))}</td>`;
+                }).join('')}
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>`;
+    } catch (err) { out.textContent = String(err); }
+  };
+  document.getElementById('btn-preset-rtgt').onclick = () => run('preset');
+  document.getElementById('btn-cmp').onclick = () => run(document.getElementById('cmp-ids').value);
+  document.getElementById('btn-cmp-selected').onclick = () => run(selectedIds.join(','));
+  if (selectedIds.length >= 2) run(selectedIds.join(','));
+}
+
+function renderHypotheses() {
+  const hyps = (state.hyps && state.hyps.hypotheses) || [];
+  document.getElementById('panel-hypotheses').innerHTML = `
+    <div class="grid">${hyps.map(h => `
+      <div class="card">
+        <h3>${esc(h.id)} · ${esc(h.confidence)} · ${esc(h.status)}</h3>
+        <div class="val" style="font-size:1rem">${esc(h.title)}</div>
+        <div style="margin-top:0.5rem;white-space:pre-wrap;font-size:0.88rem">${esc(h.rationale||'')}</div>
+        <div style="margin-top:0.55rem" class="muted">for: ${(h.evidence_for||[]).map(x=>`<span class="chip">${esc(x)}</span>`).join('')||'—'}</div>
+        <div class="muted">against: ${(h.evidence_against||[]).map(x=>`<span class="chip">${esc(x)}</span>`).join('')||'—'}</div>
+        <div class="muted">tests: ${(h.experiments_testing||[]).map(x=>`<span class="chip">${esc(x)}</span>`).join('')||'—'}</div>
+      </div>`).join('')}
+    </div>`;
+}
+
+function renderPlanned() {
+  const items = (state.experiments || []).filter(e => e.status === 'planned')
+    .sort((a,b)=>((a.planned||{}).priority||99)-((b.planned||{}).priority||99));
+  document.getElementById('panel-planned').innerHTML = `
+    <div class="warn-banner">Planned — не запускать автоматически.</div>
+    <div class="grid">${items.map(e => `
+      <div class="card">
+        <h3>P${esc((e.planned||{}).priority ?? '?')} · ${esc(e.id)}</h3>
+        <div class="val">${esc(e.name)}</div>
+        <div style="margin-top:0.4rem">${badge(e.status)} ${(e.hypothesis||[]).map(h=>`<span class="chip">${esc(h)}</span>`).join('')}</div>
+        <div style="margin-top:0.5rem"><strong>Δ</strong> ${esc((e.planned||{}).delta_vs_baseline||'')}</div>
+        <div class="muted" style="margin-top:0.35rem">${esc((e.planned||{}).expected||'')}</div>
+      </div>`).join('')}</div>`;
+}
+
+function renderLaunch() {
+  const planned = (state.experiments||[]);
+  const opts = planned.map(e => `<option value="${esc(e.id)}" ${e.id===state.selected?'selected':''}>${esc(e.id)} · ${esc(e.status)}</option>`).join('');
+  document.getElementById('panel-launch').innerHTML = `
+    <div class="warn-banner">Launch: Preview → Confirm. Default dry-run unless ALLOW_LAUNCH=1.</div>
+    <div class="filters">
+      <select id="launch-id" style="min-width:360px">${opts}</select>
+      <button class="btn primary" id="btn-preview">Preview (nvidia-smi)</button>
+      <button class="btn" id="btn-confirm" disabled>Confirm launch</button>
+      <button class="btn danger" id="btn-stop">Stop (confirm)</button>
+    </div>
+    <pre class="box" id="launch-box">Select experiment and preview…</pre>`;
+  document.getElementById('btn-preview').onclick = async () => {
+    const id = document.getElementById('launch-id').value;
+    const box = document.getElementById('launch-box');
+    box.textContent = 'probing…';
+    try {
+      const data = await api('/api/launch/preview/' + encodeURIComponent(id));
+      box.textContent = JSON.stringify(data, null, 2);
+      document.getElementById('btn-confirm').disabled = !data.ok;
+    } catch (err) { box.textContent = String(err); }
+  };
+  document.getElementById('btn-confirm').onclick = async () => {
+    const id = document.getElementById('launch-id').value;
+    if (!confirm('Confirm launch ' + id + '?')) return;
+    const r = await fetch('/api/launch/confirm', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({exp_id: id, confirm: true, confirm_stop_others: false})
+    });
+    document.getElementById('launch-box').textContent = JSON.stringify(await r.json(), null, 2);
+  };
+  document.getElementById('btn-stop').onclick = async () => {
+    if (!confirm('Stop running experiment?')) return;
+    const r = await fetch('/api/launch/stop', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({confirm: true})
+    });
+    document.getElementById('launch-box').textContent = JSON.stringify(await r.json(), null, 2);
+  };
+}
+
+function render() {
+  renderSelbar();
+  if (state.tab === 'overview') renderOverview();
+  if (state.tab === 'experiments') renderExperiments();
+  if (state.tab === 'compare') renderCompare();
+  if (state.tab === 'hypotheses') renderHypotheses();
+  if (state.tab === 'planned') renderPlanned();
+  if (state.tab === 'launch') renderLaunch();
+}
+
+async function boot() {
+  const [ov, ex, hy] = await Promise.all([
+    api('/api/overview'),
+    api('/api/experiments'),
+    api('/api/hypotheses'),
+  ]);
+  state.overview = ov;
+  state.experiments = ex.experiments || [];
+  state.hyps = hy;
+  document.getElementById('headerMeta').innerHTML =
+    `host <strong>${esc(ov.host||'?')}</strong><br/>registry <strong>${esc(ov.registry_updated||'?')}</strong> · experiments <strong>${esc((ov.counts||{}).total)}</strong>`;
+  render();
+  // refresh fleet in background (SSH can be slow)
+  api('/api/gpu/fleet').then(f => {
+    state.fleetOnly = f;
+    if (state.overview) state.overview.fleet = f;
+    if (state.tab === 'overview') renderOverview();
+  }).catch(()=>{});
+}
+boot().catch(err => {
+  document.getElementById('panel-overview').innerHTML = `<div class="warn-banner">${esc(err)}</div>`;
+});
+</script>
+</body>
+</html>

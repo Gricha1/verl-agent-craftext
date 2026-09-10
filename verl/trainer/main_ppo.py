@@ -118,19 +118,26 @@ class TaskRunner:
         local_path = copy_to_local(config.actor_rollout_ref.model.path, use_shm=config.actor_rollout_ref.model.get("use_shm", False))
 
         from agent_system.environments import make_envs
-        from agent_system.environments.jax_device_config import (
-            configure_craftext_jax_backend_with_fallback,
-            craftext_jax_device_summary,
-            read_jax_gpu_settings,
-        )
 
-        use_jax_gpu, jax_gpu_fraction = read_jax_gpu_settings(config)
-        use_jax_gpu = configure_craftext_jax_backend_with_fallback(
-            use_jax_gpu,
-            gpu_mem_fraction=jax_gpu_fraction if use_jax_gpu else None,
-        )
+        env_name = str(getattr(config.env, "env_name", "") or "").lower()
+        needs_jax = "craftext" in env_name
+        if needs_jax:
+            from agent_system.environments.jax_device_config import (
+                configure_craftext_jax_backend_with_fallback,
+                craftext_jax_device_summary,
+                read_jax_gpu_settings,
+            )
+
+            use_jax_gpu, jax_gpu_fraction = read_jax_gpu_settings(config)
+            use_jax_gpu = configure_craftext_jax_backend_with_fallback(
+                use_jax_gpu,
+                gpu_mem_fraction=jax_gpu_fraction if use_jax_gpu else None,
+            )
+        else:
+            # AlfWorld/TextWorld: never import/configure JAX before env workers fork.
+            use_jax_gpu = False
         envs, val_envs = make_envs(config)
-        if use_jax_gpu or "craftext" in str(config.env.env_name).lower():
+        if needs_jax:
             print(f"[INFO] {craftext_jax_device_summary()}")
 
         # instantiate tokenizer
@@ -215,11 +222,22 @@ class TaskRunner:
         use_episode_return = bool(
             config.reward_model.get("use_episode_return_as_token_reward", True)
         )
+        use_remaining_return = bool(
+            config.reward_model.get("use_remaining_return_as_token_reward", False)
+        )
+        remaining_return_gamma = float(
+            config.reward_model.get(
+                "remaining_return_gamma",
+                config.algorithm.get("gamma", 1.0),
+            )
+        )
         reward_fn = reward_manager_cls(
             tokenizer=tokenizer,
             num_examine=0,
             normalize_by_length=False,
             use_episode_return_as_token_reward=use_episode_return,
+            use_remaining_return_as_token_reward=use_remaining_return,
+            remaining_return_gamma=remaining_return_gamma,
         )
 
         # Note that we always use function-based RM for validation
@@ -228,6 +246,8 @@ class TaskRunner:
             num_examine=1,
             normalize_by_length=False,
             use_episode_return_as_token_reward=use_episode_return,
+            use_remaining_return_as_token_reward=use_remaining_return,
+            remaining_return_gamma=remaining_return_gamma,
         )
 
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)

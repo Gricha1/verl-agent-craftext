@@ -474,25 +474,62 @@ def compute_remaining_return_bins(
     step_rewards: Sequence[float],
     *,
     spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC,
+    episode_step_idx: Sequence[int] | None = None,
+    gamma: float = 1.0,
 ) -> np.ndarray:
-    scalars = compute_remaining_return_scalars(traj_uids, step_rewards)
+    scalars = compute_remaining_return_scalars(
+        traj_uids, step_rewards, episode_step_idx=episode_step_idx, gamma=gamma
+    )
     return np.array([quantize_return(float(g), spec=spec) for g in scalars], dtype=np.int64)
 
 
 def compute_remaining_return_scalars(
     traj_uids: Sequence[str],
     step_rewards: Sequence[float],
+    episode_step_idx: Sequence[int] | None = None,
+    *,
+    gamma: float = 1.0,
 ) -> np.ndarray:
+    """MC remaining return G_t^gamma per row, grouped by traj_uid.
+
+    gamma=1 => undiscounted suffix sum (legacy). gamma<1 => discounted return-to-go.
+
+    If ``episode_step_idx`` is provided, steps are ordered by it within each trajectory
+    (safe after batch shuffle / adjust_batch duplicates).
+    """
     groups: Dict[str, List[int]] = defaultdict(list)
     for idx, uid in enumerate(traj_uids):
         groups[str(uid)].append(idx)
 
+    step_idx = None
+    if episode_step_idx is not None:
+        step_idx = np.asarray(episode_step_idx, dtype=np.int64).reshape(-1)
+
     targets = np.zeros(len(traj_uids), dtype=np.float64)
     for indices in groups.values():
-        rewards = [float(step_rewards[i]) for i in indices]
-        remaining = compute_remaining_returns(rewards)
-        for idx, g in zip(indices, remaining):
-            targets[idx] = float(g)
+        if step_idx is not None:
+            indices_sorted = sorted(indices, key=lambda i: int(step_idx[i]))
+            # Unique chronological steps (adjust_batch may duplicate rows).
+            uniq_indices: List[int] = []
+            seen_steps = set()
+            for i in indices_sorted:
+                key = int(step_idx[i])
+                if key in seen_steps:
+                    continue
+                seen_steps.add(key)
+                uniq_indices.append(i)
+            rewards = [float(step_rewards[i]) for i in uniq_indices]
+            remaining = compute_remaining_returns(rewards, gamma=gamma)
+            by_step = {
+                int(step_idx[i]): float(g) for i, g in zip(uniq_indices, remaining)
+            }
+            for i in indices:
+                targets[i] = by_step[int(step_idx[i])]
+        else:
+            rewards = [float(step_rewards[i]) for i in indices]
+            remaining = compute_remaining_returns(rewards, gamma=gamma)
+            for idx, g in zip(indices, remaining):
+                targets[idx] = float(g)
     return targets
 
 

@@ -2258,10 +2258,9 @@ class RayPPOTrainer:
 
                     batch.batch["response_mask"] = compute_response_mask(batch)
                     if self.use_actor_value_token:
-                        # Same reward постановка as dual LLM by default: full episode return
-                        # on the last response token (EpisodeRewardManager). Value CE targets
-                        # match that scalar; only with use_episode_return_as_token_reward=False
-                        # we keep per-step remaining returns (dense debug_square).
+                        # Match EpisodeRewardManager token rewards:
+                        #   True  -> full episode_rewards on every step's last response token
+                        #   False -> remaining return-to-go G_t for step t (dense CrafText)
                         use_episode_return = bool(
                             self.config.reward_model.get("use_episode_return_as_token_reward", True)
                         )
@@ -2279,11 +2278,21 @@ class RayPPOTrainer:
                             step_rewards_raw = batch.non_tensor_batch.get("rewards")
                             if step_rewards_raw is None:
                                 raise ValueError(
-                                    "use_actor_value_token requires non_tensor_batch['rewards'] from rollout"
+                                    "use_actor_value_token requires non_tensor_batch['rewards'] "
+                                    "when use_episode_return_as_token_reward=False"
                                 )
                             step_rewards = np.asarray(step_rewards_raw, dtype=np.float64).reshape(-1).tolist()
+                            remaining_gamma = float(
+                                self.config.reward_model.get(
+                                    "remaining_return_gamma",
+                                    self.config.algorithm.get("gamma", 1.0),
+                                )
+                            )
                             target_returns = compute_remaining_return_scalars(
-                                batch.non_tensor_batch["traj_uid"], step_rewards
+                                batch.non_tensor_batch["traj_uid"],
+                                step_rewards,
+                                episode_step_idx=batch.non_tensor_batch.get("episode_step_idx"),
+                                gamma=remaining_gamma,
                             )
                         batch.batch["actor_value_target_returns"] = torch.tensor(
                             target_returns,
@@ -2379,9 +2388,9 @@ class RayPPOTrainer:
                         batch.batch["token_level_scores"] = reward_tensor
 
                         if self.use_actor_value_token:
-                            # Do NOT overwrite token_level_scores: keep EpisodeRewardManager output
-                            # (full episode return on last token when use_episode_return_as_token_reward=True),
-                            # identical to dual LLM outcome-style PPO.
+                            # Keep EpisodeRewardManager token_level_scores:
+                            #   True  -> full episode return on last token of every step
+                            #   False -> remaining return-to-go G_t on last token of step t
                             with _timer("values", timing_raw):
                                 values = self.actor_rollout_wg.compute_actor_token_values(batch)
                             batch = batch.union(values)

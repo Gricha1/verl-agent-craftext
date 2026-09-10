@@ -1,0 +1,49 @@
+# Project-level source of truth (read by experiment_dashboard).
+version: 1
+updated: "2026-09-11"
+host: aicenteritl
+repo_path: /home/gorbov_gv/safe_rl_nlp
+comet_projects:
+  craftext: gregory-gorbov/verl-agent-caged-craftext
+  alfworld: gregory-gorbov/verl-agent-alfworld
+
+research_goal: |
+  Same LLM as policy actor + task-oriented implicit world model
+  (V_env / Q_env / plan-Q). Not observation reconstruction.
+
+current_baseline_id: ds8_dual_rt_h0_02e2744
+current_best_id: ds8_dual_rt_h0_02e2744
+active_hypothesis_ids: [H1, H2, H3]
+next_planned_id: ds8_dual_sparse_R_h50_seed1
+
+ladder:
+  - debug_square_8x8
+  - debug_square_16x16
+  - sparse collect
+  - craft chain (table / wood pickaxe)
+
+rules:
+  - Never launch training without explicit user confirmation.
+  - Always nvidia-smi before any train launch; warn if foreign GPU jobs.
+  - Do not auto-tune GPU memory when another user occupies GPUs.
+  - On "стоп" — stop; no silent restart.
+  - Do not commit without explicit request.
+  - Every launch must register into experiments/registry.yaml + snapshot.
+  - Prefer log header + code over Comet parameter name alone.
+
+compare_presets:
+  rt_vs_gt_8x8:
+    title: "8x8 dual r_t vs G_t"
+    experiment_ids:
+      - ds8_dual_rt_h0_02e2744
+      - ds8_dual_rt_h50_874bc480
+      - ds8_dual_gt_h50_1a064d01
+      - ds8_dual_gt_h50_2a42e153
+    metrics:
+      - episode/success_rate
+      - episode/reward/mean
+      - critic/score/mean
+      - critic/returns/mean
+      - critic/vf_explained_var
+      - actor/entropy_loss
+      - actor/pg_loss
