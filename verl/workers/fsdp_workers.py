@@ -1503,6 +1503,13 @@ class CriticWorker(Worker):
         if self._is_lora:
             print("Applying LoRA to critic module")
             critic_module.enable_input_require_grads()
+            # peft>=0.17 PeftModelForCausalLM requires prepare_inputs_for_generation;
+            # Qwen2ForTokenClassification does not define it. Stub is enough for LoRA wrap.
+            # (TOKEN_CLS path fails: modules_to_save vs Linear score head.)
+            if not hasattr(critic_module, "prepare_inputs_for_generation"):
+                critic_module.prepare_inputs_for_generation = lambda *args, **kwargs: {
+                    "input_ids": kwargs.get("input_ids", args[0] if args else None)
+                }
             # Convert config to regular Python types before creating PEFT model
             lora_config = {
                 'task_type': TaskType.CAUSAL_LM,
