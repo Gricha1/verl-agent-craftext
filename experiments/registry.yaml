@@ -1254,8 +1254,8 @@ experiments:
 - id: ds8_shared_av_gt_g099_h50
   name: shared actor-value G_t gamma=0.99 h50
   comet_project: gregory-gorbov/verl-agent-caged-craftext
-  comet_key: null
-  comet_url: null
+  comet_key: f70ad71b8b414747a32d443a8d545431
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/f70ad71b8b414747a32d443a8d545431
   environment: debug_square_8x8
   architecture: shared_actor_value
   actor_value: true
@@ -1278,10 +1278,10 @@ experiments:
   - 5
   config_path: examples/ppo_trainer/config/ppo_debug_square_8x8_shared_av_gt_g099.yaml
   launch_script: examples/ppo_trainer/ppo_debug_square_shared_av_gt_g099.sh
-  local_log_path: null
-  git_commit: null
+  local_log_path: /home/gorbov_gv/safe_rl_nlp/logdir/ppo_debug_square_shared_av_gt_g099_20260911_192926.log
+  git_commit: 1e41228cf165dd802a7e937c32f428288726d6a4
   start_date: '2026-09-11'
-  status: planned
+  status: running
   success_max: null
   success_last: null
   checkpoint_mode: actor_only
@@ -1299,10 +1299,13 @@ experiments:
   - 874bc480b5224efb9b92795d271ca81c
   - 2a42e153bdb0448789a56140e70fdf50
   tags:
-  - planned
   - shared_actor_value
   - G_t
   - gamma0.99
   - 8x8
   - aicenter3
   - actor_only_ckpt
+  - running
+  pid: 4149884
+  source_snapshot_note: Synced files from safe@1e41228; aicenter3 tree has no .git
+    (SOURCE_GIT_COMMIT file).
