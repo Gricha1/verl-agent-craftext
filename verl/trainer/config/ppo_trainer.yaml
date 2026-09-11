@@ -336,6 +336,9 @@ trainer:
   nnodes: 1
   n_gpus_per_node: 8
   save_freq: -1
+  # Shared actor-value: save LoRA adapter only (no optimizer/critic) at stage steps.
+  actor_lora_only_checkpoint: False
+  actor_lora_stage_steps: []  # e.g. [40, 75, 110] -> early/mid/late
   # auto: find the last ckpt to resume. If can't find, start from scratch
   resume_mode: auto # or disable or resume_path if resume_from_path is set
   resume_from_path: null

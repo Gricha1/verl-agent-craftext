@@ -739,6 +739,29 @@ def return_token_value_loss(
         pred_argmax = probs.argmax(dim=-1)
         raw_t = target_returns.to(dtype=torch.float32)
         clipped = raw_t.clamp(min=float(spec.vmin), max=float(spec.vmax))
+        edge_frac = float(((k_low == 0) | (k_high >= max_bin)).float().mean().item())
+        clip_frac = float((raw_t != clipped).float().mean().item())
+        bin_centers = (
+            float(spec.vmin)
+            + torch.arange(max_bin + 1, device=probs.device, dtype=torch.float32) * float(spec.step)
+        )
+        pred_value = (probs * bin_centers.unsqueeze(0)).sum(dim=-1)
+        # Pearson corr / explained var vs scalar targets (batch-local).
+        t_c = raw_t - raw_t.mean()
+        p_c = pred_value - pred_value.mean()
+        denom = torch.sqrt((t_c * t_c).sum() * (p_c * p_c).sum()).clamp_min(1e-8)
+        corr = float((t_c * p_c).sum().item() / denom.item()) if raw_t.numel() > 1 else 0.0
+        resid = pred_value - raw_t
+        var_t = float(torch.var(raw_t, unbiased=False).item()) if raw_t.numel() > 1 else 0.0
+        var_r = float(torch.var(resid, unbiased=False).item()) if resid.numel() > 1 else 0.0
+        explained = float(1.0 - (var_r / var_t)) if var_t > 1e-12 else 0.0
+        mae_scalar = float(resid.abs().mean().item()) if resid.numel() else 0.0
+
+        def _pct(x: torch.Tensor, q: float) -> float:
+            if x.numel() == 0:
+                return 0.0
+            return float(torch.quantile(x.detach().float(), q).item())
+
         diag = {
             "actor_value/value_loss_type": 0.0 if loss_type == "ce" else 1.0,
             "actor_value/mae_mean": float(categorical_mae_loss(probs, target_probs).detach().item()),
@@ -751,11 +774,28 @@ def return_token_value_loss(
             "actor_value/target_left_bin_mean": float(k_low.float().mean().item()),
             "actor_value/target_right_bin_mean": float(k_high.float().mean().item()),
             "actor_value/pred_argmax_bin_mean": float(pred_argmax.float().mean().item()),
-            "actor_value/edge_bin_fraction": float(
-                ((k_low == 0) | (k_high >= max_bin)).float().mean().item()
-            ),
-            "actor_value/target_clipping_fraction": float((raw_t != clipped).float().mean().item()),
+            "actor_value/edge_bin_fraction": edge_frac,
+            "actor_value/target_clipping_fraction": clip_frac,
             "actor_value/exp_neg_CE_mean_NOT_p_target": float(torch.exp(-per).mean().item()),
+            # User-facing aliases for Comet / dashboard.
+            "value_target/min": float(raw_t.min().item()) if raw_t.numel() else 0.0,
+            "value_target/max": float(raw_t.max().item()) if raw_t.numel() else 0.0,
+            "value_target/mean": float(raw_t.mean().item()) if raw_t.numel() else 0.0,
+            "value_target/std": float(raw_t.std(unbiased=False).item()) if raw_t.numel() else 0.0,
+            "value_target/p01": _pct(raw_t, 0.01),
+            "value_target/p99": _pct(raw_t, 0.99),
+            "predicted_value/min": float(pred_value.min().item()) if pred_value.numel() else 0.0,
+            "predicted_value/max": float(pred_value.max().item()) if pred_value.numel() else 0.0,
+            "predicted_value/mean": float(pred_value.mean().item()) if pred_value.numel() else 0.0,
+            "predicted_value/std": float(pred_value.std(unbiased=False).item()) if pred_value.numel() else 0.0,
+            "edge_bin_fraction": edge_frac,
+            "clipping_fraction": clip_frac,
+            "target_left_bin": float(k_low.float().mean().item()),
+            "target_right_bin": float(k_high.float().mean().item()),
+            "target_alpha": float(alpha.mean().item()),
+            "scalar_value_mae": mae_scalar,
+            "corr_pred_target": corr,
+            "explained_variance_env": explained,
         }
         for thr in (1e-4, 1e-3, 0.01, 0.05, 0.1):
             diag[f"actor_value/p_target_mass_lt_{thr:g}"] = float((p_target_mass < thr).float().mean().item())

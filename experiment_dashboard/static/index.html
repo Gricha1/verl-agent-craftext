@@ -433,7 +433,25 @@ function showDetail(e) {
       <div class="k">log</div><div class="mono">${esc(e.local_log_path || '—')}</div>
       <div class="k">success</div><div>max=${esc(e.success_max)} last=${esc(e.success_last)}</div>
       <div class="k">tags</div><div>${(e.tags||[]).map(t=>`<span class="chip">${esc(t)}</span>`).join('')}</div>
+      <div class="k">final_step</div><div>global=${esc(e.final_global_step)} env=${esc(e.final_total_env_steps)}</div>
     </div>
+    ${Array.isArray(e.checkpoints) && e.checkpoints.length ? `
+    <div style="margin-top:0.8rem"><h3>CHECKPOINTS</h3>
+      <table class="tbl"><thead><tr>
+        <th>stage</th><th>global_step</th><th>total_env_steps</th><th>path</th><th>saved</th><th>git</th><th>comet</th><th>load_verified</th>
+      </tr></thead><tbody>
+      ${e.checkpoints.map(c => `<tr>
+        <td>${esc(c.stage)}</td>
+        <td class="mono">${esc(c.global_step)}</td>
+        <td class="mono">${esc(c.total_env_steps)}</td>
+        <td class="mono">${esc(c.checkpoint_path)}</td>
+        <td class="mono">${esc(c.save_timestamp||'')}</td>
+        <td class="mono">${esc((c.git_commit||'').toString().slice(0,8))}</td>
+        <td class="mono">${esc((c.comet_key||'').toString().slice(0,8))}</td>
+        <td>${esc(c.load_verified)}</td>
+      </tr>`).join('')}
+      </tbody></table>
+    </div>` : ''}
     <div style="margin-top:0.8rem"><h3>Notes</h3><div style="white-space:pre-wrap">${esc(e.notes||'')}</div></div>
     <div style="margin-top:0.8rem;display:flex;gap:0.4rem;flex-wrap:wrap">
       <button class="btn primary" id="btn-toggle-check">${checked?'Uncheck':'Check'} for compare</button>

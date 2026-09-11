@@ -101,7 +101,8 @@ experiments:
   status: failed
   success_max: null
   success_last: null
-  notes: 'Log header: token reward remaining G_t. Comet flag False ≠ r_t in that code path.'
+  notes: 'Log header: token reward remaining G_t. Comet flag False ≠ r_t in that code
+    path.'
   hypothesis:
   - H1
   - H2
@@ -179,7 +180,8 @@ experiments:
   status: inconclusive
   success_max: 0.06
   success_last: null
-  notes: Better VF metrics; policy success takeoff missing. Correct traj-GAE uses r_t not G_t.
+  notes: Better VF metrics; policy success takeoff missing. Correct traj-GAE uses
+    r_t not G_t.
   hypothesis:
   - H5
   parent_experiment: ds8_dual_rt_h50_874bc480
@@ -554,11 +556,12 @@ experiments:
   planned:
     priority: 1
     delta_vs_baseline: dense r_t → sparse success-only; token = full R/G_t
-    expected: If learns → telescoping H1 supported for dense G_t failure; if fails → prior/exploration
+    expected: If learns → telescoping H1 supported for dense G_t failure; if fails
+      → prior/exploration
 - id: ds8_dual_gt_g099_h50_seed1
   name: discounted G_t gamma=0.99
-  comet_key: aa4f5c97f8654dbaa58e0931ce88d627
-  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/aa4f5c97f8654dbaa58e0931ce88d627
+  comet_key: 90deefed8ddc458da4f27349a14bf4f4
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/90deefed8ddc458da4f27349a14bf4f4
   comet_project: gregory-gorbov/verl-agent-caged-craftext
   environment: debug_square_8x8
   architecture: dual_llm
@@ -580,37 +583,44 @@ experiments:
   - 5
   config_path: examples/ppo_trainer/config/ppo_debug_square_8x8_dual_gt_g099.yaml
   launch_script: examples/ppo_trainer/ppo_debug_square_gt_g099.sh
-  local_log_path: /home/gorbov_gv/safe_rl_nlp/logdir/ppo_debug_square_gt_g099_20260911_011041.log
+  local_log_path: /home/gorbov_gv/safe_rl_nlp/logdir/ppo_debug_square_gt_g099_20260911_070145.log
   git_commit: 9d2af95a111b56f1f8616a1f712c2c32be4efb00
   start_date: '2026-09-10'
-  status: running
-  success_max: null
-  success_last: null
+  status: stopped_for_next_experiment
+  success_max: 1.0
+  success_last: 1.0
   prior_failed_comet_key: c7dcda4e7c3642d99ca8a9aca173b0a4
-  source_snapshot_note: 'Live aa4f5c97 GPUs4,5 code~safe@9d2af95 (critic LoRA stub) + FLASH_ATTN env in vllm_rollout. Asked
-    key c7dcda4e: DEAD; source snapshot was 451cadd + failed TOKEN_CLS local patch (never on origin).'
+  source_snapshot_note: 'Live aa4f5c97 GPUs4,5 code~safe@9d2af95 (critic LoRA stub)
+    + FLASH_ATTN env in vllm_rollout. Asked key c7dcda4e: DEAD; source snapshot was
+    451cadd + failed TOKEN_CLS local patch (never on origin).'
   notes: 'Breaks exact telescoping; -1 + gamma*(+1) not exact cancel.
 
     Token score = remaining G_t^0.99 via reward_model.use_remaining_return_as_token_reward=True.
 
     algorithm.gamma kept at 1.0 for response-level GAE identity.
 
-    '
+
+    Stopped for next experiment (shared AV). Live key was 90deefed (aa4f5c97 was earlier
+    relaunch). Final success_last=max=1.0 at global_step~114 / total_env_steps~240544.'
   hypothesis:
   - H1
   - H2
   parent_experiment: ds8_dual_gt_h50_2a42e153
   tags:
-  - running
   - dual
   - G_t
   - gamma
   - 8x8
   - aicenter3
+  - stopped_for_next_experiment
   planned:
     priority: 2
     delta_vs_baseline: token = discounted return-to-go gamma=0.99
     expected: Better local action discrimination than gamma=1 G_t
+  final_global_step: 114
+  final_total_env_steps: 240544
+  stop_reason: ActorDiedError/worker crash at ~step 114 after success takeoff; GPUs
+    freed for shared actor-value G_t^0.99 experiment
 - id: ds8_dual_gt_g095_h50_seed1
   name: discounted G_t gamma=0.95
   comet_project: gregory-gorbov/verl-agent-caged-craftext
@@ -766,7 +776,8 @@ experiments:
   success_last: null
   notes: 'Placeholder until Comet import. Meaningful baselines/actor-value/dual/entropy
 
-    should replace this entry. Sparse R/G_t semantics differ from dense square G_t (H3).
+    should replace this entry. Sparse R/G_t semantics differ from dense square G_t
+    (H3).
 
 
     Replaced by curated alf_* imports (2026-09-11).'
@@ -1238,4 +1249,60 @@ experiments:
   planned:
     priority: 1
     delta_vs_baseline: dual LoRA64 CE-critic -> shared AV LoRA64 MAE value bins
-    expected: Test if MAE reduces CE pressure vs dual without claiming architecture win yet
+    expected: Test if MAE reduces CE pressure vs dual without claiming architecture
+      win yet
+- id: ds8_shared_av_gt_g099_h50
+  name: shared actor-value G_t gamma=0.99 h50
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: null
+  comet_url: null
+  environment: debug_square_8x8
+  architecture: shared_actor_value
+  actor_value: true
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: discounted_Gt
+  remaining_return_gamma: 0.99
+  value_loss: two_hot_ce
+  gamma: 0.99
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 50
+  response_len: 1
+  batch_size: 64
+  gpus: 2
+  host: aicenter3
+  gpu_ids:
+  - 4
+  - 5
+  config_path: examples/ppo_trainer/config/ppo_debug_square_8x8_shared_av_gt_g099.yaml
+  launch_script: examples/ppo_trainer/ppo_debug_square_shared_av_gt_g099.sh
+  local_log_path: null
+  git_commit: null
+  start_date: '2026-09-11'
+  status: planned
+  success_max: null
+  success_last: null
+  checkpoint_mode: actor_only
+  checkpoint_schedule: early/mid/late @ global_step 40/75/110
+  checkpoints: []
+  notes: 'Main architecture test: dual separate critic vs shared actor-value under
+    identical discounted G_t^0.99. Value loss=two-hot CE (not MAE). gae_by_trajectory=False
+    to avoid double-count. Bins [-5,6]/0.4 kept (same as 4be19); monitor clipping_fraction.'
+  hypothesis:
+  - H_arch_shared_vs_dual
+  parent_experiment: ds8_dual_gt_g099_h50_seed1
+  compare_with:
+  - 90deefed8ddc458da4f27349a14bf4f4
+  - 4be19de5e50949359891ce852700d565
+  - 874bc480b5224efb9b92795d271ca81c
+  - 2a42e153bdb0448789a56140e70fdf50
+  tags:
+  - planned
+  - shared_actor_value
+  - G_t
+  - gamma0.99
+  - 8x8
+  - aicenter3
+  - actor_only_ckpt

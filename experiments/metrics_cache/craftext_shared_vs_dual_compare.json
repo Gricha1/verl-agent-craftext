@@ -1,0 +1,70 @@
+{
+  "craftext_shared_vs_dual_gt_g099": {
+    "title": "CRAFTEXT SHARED VS DUAL: G_t^0.99 + historical r_t / G_t^1",
+    "main_metric": "episode/success_rate",
+    "runs": [
+      {
+        "role": "A_dual_gt_g099_stopped",
+        "key": "90deefed8ddc458da4f27349a14bf4f4",
+        "architecture": "dual_actor_separate_critic",
+        "reward": "G_t_discounted",
+        "gamma_token": 0.99,
+        "history": 50,
+        "status": "stopped_for_next_experiment"
+      },
+      {
+        "role": "B_shared_av_gt_g099_new",
+        "key": null,
+        "architecture": "shared_actor_value",
+        "reward": "G_t_discounted",
+        "gamma_token": 0.99,
+        "history": 50,
+        "value_loss": "two_hot_ce",
+        "status": "pending_launch"
+      },
+      {
+        "role": "C_shared_av_rt_historical",
+        "key": "4be19de5e50949359891ce852700d565",
+        "architecture": "shared_actor_value",
+        "reward": "r_t_or_asymmetric_bins",
+        "history": null,
+        "note": "debug_square_8x8 shared AV; reward/setup not identical to G_t^0.99"
+      },
+      {
+        "role": "D_dual_rt_h50",
+        "key": "874bc480b5224efb9b92795d271ca81c",
+        "architecture": "dual_actor_separate_critic",
+        "reward": "r_t",
+        "history": 50
+      },
+      {
+        "role": "E_dual_gt_gamma1",
+        "key": "2a42e153bdb0448789a56140e70fdf50",
+        "architecture": "dual_actor_separate_critic",
+        "reward": "G_t_undiscounted",
+        "gamma_token": 1.0,
+        "history": 50
+      }
+    ],
+    "optional_runs": [
+      {"key": "02e2744", "note": "dual r_t history0"},
+      {"key": "1a064d01", "note": "old dual G_t"},
+      {"key": "c3a5e727", "note": "dual trajGAE"}
+    ],
+    "metrics": [
+      "episode/success_rate",
+      "episode/reward/mean",
+      "actor/value_token_loss",
+      "actor/value_token_accuracy",
+      "value_target/min",
+      "value_target/max",
+      "edge_bin_fraction",
+      "clipping_fraction",
+      "critic/vf_explained_var",
+      "actor/entropy_loss",
+      "actor/pg_loss",
+      "actor/ppo_kl"
+    ],
+    "compare_url_template": "https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/compare?selected=90deefed8ddc458da4f27349a14bf4f4&selected=REPLACE_NEW&selected=4be19de5e50949359891ce852700d565&selected=874bc480b5224efb9b92795d271ca81c&selected=2a42e153bdb0448789a56140e70fdf50"
+  }
+}

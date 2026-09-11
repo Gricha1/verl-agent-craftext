@@ -1989,7 +1989,133 @@ class RayPPOTrainer:
                 worker_group=self.actor_rollout_wg,
             )
 
+    def _actor_lora_stage_name(self, step: int) -> str | None:
+        stage_steps = list(self.config.trainer.get("actor_lora_stage_steps", []) or [])
+        if not stage_steps:
+            return None
+        # Map configured steps -> early/mid/late (sorted ascending).
+        ordered = sorted(int(s) for s in stage_steps)
+        labels = ["early", "mid", "late"]
+        for i, s in enumerate(ordered):
+            if int(step) == int(s):
+                return labels[min(i, len(labels) - 1)]
+        return None
+
+    def _verify_lora_adapter_files(self, adapter_dir: str) -> bool:
+        cfg_path = os.path.join(adapter_dir, "adapter_config.json")
+        weight_path = os.path.join(adapter_dir, "adapter_model.safetensors")
+        if not (os.path.isfile(cfg_path) and os.path.isfile(weight_path)):
+            print(f"[ckpt] load_verified=False missing files under {adapter_dir}")
+            return False
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            if not isinstance(cfg, dict) or "peft_type" not in cfg:
+                print(f"[ckpt] load_verified=False invalid adapter_config.json")
+                return False
+            if os.path.getsize(weight_path) <= 0:
+                print(f"[ckpt] load_verified=False empty adapter weights")
+                return False
+            print(f"[ckpt] load_verified=True adapter_dir={adapter_dir}")
+            return True
+        except Exception as e:
+            print(f"[ckpt] load_verified=False error={e}")
+            return False
+
+    def _save_actor_lora_only_checkpoint(self, stage: str | None = None):
+        """Save shared actor/value LoRA adapter only (no optimizer / critic / dataloader)."""
+        import json as _json
+        import shutil
+        from datetime import datetime, timezone
+
+        base_dir = self.config.trainer.default_local_dir
+        local_global_step_folder = os.path.join(base_dir, f"global_step_{self.global_steps}")
+        actor_local_path = os.path.join(local_global_step_folder, "actor")
+        os.makedirs(actor_local_path, exist_ok=True)
+        print(f"[ckpt] actor_lora_only -> {actor_local_path} stage={stage}")
+
+        self.actor_rollout_wg.save_lora_adapter_only(
+            actor_local_path, None, self.global_steps, max_ckpt_to_keep=None
+        )
+
+        adapter_dir = os.path.join(actor_local_path, "lora_adapter")
+        load_verified = self._verify_lora_adapter_files(adapter_dir)
+
+        comet_key = None
+        try:
+            key_file = os.environ.get("COMET_EXPERIMENT_KEY_FILE") or "/tmp/ray_temp_gorbov/comet_experiment_key.txt"
+            if os.path.isfile(key_file):
+                comet_key = open(key_file, "r", encoding="utf-8").read().strip() or None
+        except Exception:
+            comet_key = None
+
+        git_commit = None
+        try:
+            import subprocess
+
+            git_commit = (
+                subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=os.getcwd(), stderr=subprocess.DEVNULL)
+                .decode()
+                .strip()
+            )
+        except Exception:
+            git_commit = os.environ.get("SOURCE_GIT_COMMIT")
+
+        meta = {
+            "stage": stage,
+            "global_step": int(self.global_steps),
+            "total_env_steps": int(getattr(self, "total_env_steps", 0) or 0),
+            "comet_key": comet_key,
+            "git_commit": git_commit,
+            "config_path": str(self.config.trainer.get("default_local_dir", "")),
+            "checkpoint_path": adapter_dir,
+            "save_timestamp": datetime.now(timezone.utc).isoformat(),
+            "load_verified": bool(load_verified),
+            "contents": ["lora_adapter"],
+            "excluded": ["optimizer", "scheduler", "critic", "trainer_state", "dataloader"],
+            "base_model_ref": str(
+                OmegaConf.select(self.config, "actor_rollout_ref.model.path")
+                or OmegaConf.select(self.config, "actor_rollout_ref.model.model_path")
+                or ""
+            ),
+        }
+        meta_path = os.path.join(local_global_step_folder, "checkpoint_metadata.json")
+        with open(meta_path, "w", encoding="utf-8") as f:
+            _json.dump(meta, f, indent=2)
+
+        if stage:
+            stage_dir = os.path.join(base_dir, "staged", f"checkpoint_{stage}")
+            if os.path.isdir(stage_dir):
+                shutil.rmtree(stage_dir)
+            os.makedirs(stage_dir, exist_ok=True)
+            dst_adapter = os.path.join(stage_dir, "lora_adapter")
+            if os.path.isdir(dst_adapter):
+                shutil.rmtree(dst_adapter)
+            shutil.copytree(adapter_dir, dst_adapter)
+            with open(os.path.join(stage_dir, "checkpoint_metadata.json"), "w", encoding="utf-8") as f:
+                meta["checkpoint_path"] = dst_adapter
+                _json.dump(meta, f, indent=2)
+            print(f"[ckpt] staged copy -> {stage_dir}")
+
+        # Registry sidecar for dashboard (append-only JSONL).
+        try:
+            reg_side = os.path.join(base_dir, "checkpoints_registry.jsonl")
+            with open(reg_side, "a", encoding="utf-8") as f:
+                f.write(_json.dumps(meta) + "\n")
+        except Exception as e:
+            print(f"[ckpt] registry sidecar write failed: {e}")
+
+        local_latest_checkpointed_iteration = os.path.join(base_dir, "latest_checkpointed_iteration.txt")
+        with open(local_latest_checkpointed_iteration, "w") as f:
+            f.write(str(self.global_steps))
+
     def _save_checkpoint(self):
+        # Optional actor-LoRA-only path for shared actor-value analysis checkpoints.
+        if bool(self.config.trainer.get("actor_lora_only_checkpoint", False)):
+            stage = self._actor_lora_stage_name(self.global_steps)
+            self._save_actor_lora_only_checkpoint(stage=stage)
+            return
+
         # path: given_path + `/global_step_{global_steps}` + `/actor`
         local_global_step_folder = os.path.join(self.config.trainer.default_local_dir, f"global_step_{self.global_steps}")
 
@@ -2601,7 +2727,14 @@ class RayPPOTrainer:
                                 last_val_metrics = val_metrics
                         metrics.update(val_metrics)
 
-                    if self.config.trainer.save_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.save_freq == 0):
+                    stage_steps = {
+                        int(s) for s in (self.config.trainer.get("actor_lora_stage_steps") or [])
+                    }
+                    should_save = bool(
+                        self.config.trainer.save_freq > 0
+                        and (is_last_step or self.global_steps % self.config.trainer.save_freq == 0)
+                    ) or (self.global_steps in stage_steps)
+                    if should_save:
                         with _timer("save_checkpoint", timing_raw):
                             self._save_checkpoint()
 
