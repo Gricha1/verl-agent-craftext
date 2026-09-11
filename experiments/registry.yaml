@@ -557,9 +557,9 @@ experiments:
     expected: If learns → telescoping H1 supported for dense G_t failure; if fails → prior/exploration
 - id: ds8_dual_gt_g099_h50_seed1
   name: discounted G_t gamma=0.99
+  comet_key: aa4f5c97f8654dbaa58e0931ce88d627
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/aa4f5c97f8654dbaa58e0931ce88d627
   comet_project: gregory-gorbov/verl-agent-caged-craftext
-  comet_key: null
-  comet_url: null
   environment: debug_square_8x8
   architecture: dual_llm
   actor_value: false
@@ -573,26 +573,40 @@ experiments:
   history_length: 50
   response_len: 1
   batch_size: 64
-  gpus: 1
-  config_path: null
-  launch_script: null
-  local_log_path: null
-  git_commit: null
-  start_date: null
-  status: planned
+  gpus: 2
+  host: aicenter3
+  gpu_ids:
+  - 4
+  - 5
+  config_path: examples/ppo_trainer/config/ppo_debug_square_8x8_dual_gt_g099.yaml
+  launch_script: examples/ppo_trainer/ppo_debug_square_gt_g099.sh
+  local_log_path: /home/gorbov_gv/safe_rl_nlp/logdir/ppo_debug_square_gt_g099_20260911_011041.log
+  git_commit: 9d2af95a111b56f1f8616a1f712c2c32be4efb00
+  start_date: '2026-09-10'
+  status: running
   success_max: null
   success_last: null
-  notes: Breaks exact telescoping; -1 + gamma*(+1) not exact cancel.
+  prior_failed_comet_key: c7dcda4e7c3642d99ca8a9aca173b0a4
+  source_snapshot_note: 'Live aa4f5c97 GPUs4,5 code~safe@9d2af95 (critic LoRA stub) + FLASH_ATTN env in vllm_rollout. Asked
+    key c7dcda4e: DEAD; source snapshot was 451cadd + failed TOKEN_CLS local patch (never on origin).'
+  notes: 'Breaks exact telescoping; -1 + gamma*(+1) not exact cancel.
+
+    Token score = remaining G_t^0.99 via reward_model.use_remaining_return_as_token_reward=True.
+
+    algorithm.gamma kept at 1.0 for response-level GAE identity.
+
+    '
   hypothesis:
   - H1
   - H2
   parent_experiment: ds8_dual_gt_h50_2a42e153
   tags:
-  - planned
+  - running
   - dual
   - G_t
   - gamma
   - 8x8
+  - aicenter3
   planned:
     priority: 2
     delta_vs_baseline: token = discounted return-to-go gamma=0.99
@@ -1183,3 +1197,45 @@ experiments:
   - alfworld
   - actor_value
   - plan_q
+- id: gsm8k_shared_av_lora64_mae
+  name: GSM8K shared actor-value LoRA64 + MAE value loss
+  comet_key: null
+  comet_url: null
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  environment: gsm8k
+  architecture: shared_actor_value
+  actor_value: true
+  model: Qwen2.5-1.5B-Instruct
+  finetune: lora
+  lora_rank: 64
+  value_loss_type: mae
+  actor_value_target_encoding: two_hot
+  reward_mode: gsm8k_rule
+  matched_dual_baseline: b7573e3eacd949a099afe9682c8df516
+  matched_dual_note: Prefer LoRA64 dual; LoRA128 0a0271de is secondary
+  no_aux_wm: true
+  config_path: examples/ppo_trainer/ppo_gsm8k_actor_value_mae_lora64.sh
+  launch_script: examples/ppo_trainer/ppo_gsm8k_actor_value_mae_lora64.sh
+  host: aicenter3
+  gpu_ids:
+  - 2
+  - 3
+  gpus: 2
+  status: blocked_gpu
+  notes: 'Blocked: GPU 2+3 occupied by foreign VLLM::EngineCore (root).
+
+    Free GPUs currently 1 and 6 — do not silently relocate without user OK.
+
+    Pure shared AV + LoRA64 + MAE; no reward-WM / plan-Q / MC-Q.
+
+    '
+  tags:
+  - planned
+  - gsm8k
+  - shared
+  - mae
+  - lora64
+  planned:
+    priority: 1
+    delta_vs_baseline: dual LoRA64 CE-critic -> shared AV LoRA64 MAE value bins
+    expected: Test if MAE reduces CE pressure vs dual without claiming architecture win yet

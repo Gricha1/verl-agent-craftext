@@ -104,6 +104,8 @@ actor_rollout_ref:
     actor_value_micro_batch_size_per_gpu: null
     # Return target encoding for value CE: one_hot (round to bin) | two_hot (linear blend of adjacent bins).
     actor_value_target_encoding: one_hot
+    # ce (default) or mae (= 0.5 * L1(softmax(bin_logits), target_dist))
+    actor_value_loss_type: ce
     # If true: value CE targets are per-token GAE returns (batch["returns"]), not scalar episode return.
     actor_value_target_from_returns: False
     # If true with actor_value_token: policy and value each get zero_grad -> backward -> step.
