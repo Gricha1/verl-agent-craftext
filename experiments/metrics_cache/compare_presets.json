@@ -106,7 +106,7 @@
       },
       {
         "role": "B_shared_av_gt_g099_new",
-        "key": "f70ad71b8b414747a32d443a8d545431",
+        "key": "5ea069fc84f3426e8f23caa84e63d2d5",
         "architecture": "shared_actor_value",
         "reward": "G_t_discounted",
         "gamma_token": 0.99,
@@ -167,6 +167,6 @@
       "actor/ppo_kl"
     ],
     "compare_url_template": "https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/compare?selected=90deefed8ddc458da4f27349a14bf4f4&selected=REPLACE_NEW&selected=4be19de5e50949359891ce852700d565&selected=874bc480b5224efb9b92795d271ca81c&selected=2a42e153bdb0448789a56140e70fdf50",
-    "compare_url": "https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/compare?selected=90deefed8ddc458da4f27349a14bf4f4&selected=f70ad71b8b414747a32d443a8d545431&selected=4be19de5e50949359891ce852700d565&selected=874bc480b5224efb9b92795d271ca81c&selected=2a42e153bdb0448789a56140e70fdf50"
+    "compare_url": "https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/compare?selected=90deefed8ddc458da4f27349a14bf4f4&selected=5ea069fc84f3426e8f23caa84e63d2d5&selected=4be19de5e50949359891ce852700d565&selected=874bc480b5224efb9b92795d271ca81c&selected=2a42e153bdb0448789a56140e70fdf50"
   }
 }

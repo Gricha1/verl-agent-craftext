@@ -1254,8 +1254,8 @@ experiments:
 - id: ds8_shared_av_gt_g099_h50
   name: shared actor-value G_t gamma=0.99 h50
   comet_project: gregory-gorbov/verl-agent-caged-craftext
-  comet_key: f70ad71b8b414747a32d443a8d545431
-  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/f70ad71b8b414747a32d443a8d545431
+  comet_key: 5ea069fc84f3426e8f23caa84e63d2d5
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/5ea069fc84f3426e8f23caa84e63d2d5
   environment: debug_square_8x8
   architecture: shared_actor_value
   actor_value: true
@@ -1278,7 +1278,7 @@ experiments:
   - 5
   config_path: examples/ppo_trainer/config/ppo_debug_square_8x8_shared_av_gt_g099.yaml
   launch_script: examples/ppo_trainer/ppo_debug_square_shared_av_gt_g099.sh
-  local_log_path: /home/gorbov_gv/safe_rl_nlp/logdir/ppo_debug_square_shared_av_gt_g099_20260911_192926.log
+  local_log_path: /home/gorbov_gv/safe_rl_nlp/logdir/ppo_debug_square_shared_av_gt_g099_20260911_200739.log
   git_commit: 1e41228cf165dd802a7e937c32f428288726d6a4
   start_date: '2026-09-11'
   status: running
@@ -1306,6 +1306,12 @@ experiments:
   - aicenter3
   - actor_only_ckpt
   - running
-  pid: 4149884
+  pid: 343079
   source_snapshot_note: Synced files from safe@1e41228; aicenter3 tree has no .git
     (SOURCE_GIT_COMMIT file).
+  cuda_visible_devices_note: CVD=3,4 because broken nvidia GPU2 shifts CUDA indices;
+    maps to physical nvidia 4+5
+  prior_dead_comet_keys:
+  - f70ad71b8b414747a32d443a8d545431
+  - 21abf9053f0c43e3953f32dc8a51df2e
+  - 107ce44206e646d98d248b71ff637591
