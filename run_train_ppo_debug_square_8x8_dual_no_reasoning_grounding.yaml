@@ -1,0 +1,14 @@
+# PLANNED / NOT RUN -- cloud submission descriptor.
+container:
+  image: cr.ai.cloud.ru/0be50883-779e-4f89-a2c2-6befd3879c6f/uv_test_img-cloud:latest
+  command: HYPER_YAML=examples/ppo_trainer/config/ppo_debug_square_8x8_dual_no_reasoning_grounding.yaml bash examples/ppo_trainer/ppo_debug_square_gt_g099.sh
+  environment:
+    COMET_API_KEY: 3OfuYHwcRgIwG7DzgzJ190igY
+  work_dir: /home/jovyan/nsorokin/verl-agent-craftext-2
+  run_from_copy: false
+  cry_copy_dir: /home/jovyan/nsorokin
+cloud:
+  region: SR006
+  instance_type: a100plus.2gpu.80vG.24C.488G
+  n_workers: 1
+  description: planned-ds8-dual-no-reasoning-grounding
