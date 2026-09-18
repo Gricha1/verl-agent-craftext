@@ -33,15 +33,30 @@ def main() -> int:
         return 1
 
     workspace = os.environ.get("COMET_WORKSPACE")
-    experiment = Experiment(
-        api_key=api_key,
-        workspace=workspace,
-        project_name=args.project,
-        experiment_name=args.experiment,
-        auto_param_logging=False,
-        auto_metric_logging=False,
-        display_summary_level=0,
-    )
+    offline_mode = os.environ.get("COMET_OFFLINE_MODE", "0") == "1"
+    offline_dir = os.environ.get("COMET_OFFLINE_DIRECTORY") or None
+    if offline_mode and offline_dir:
+        from comet_ml import OfflineExperiment
+        experiment = OfflineExperiment(
+            api_key=api_key,
+            workspace=workspace,
+            project_name=args.project,
+            experiment_name=args.experiment,
+            offline_directory=offline_dir,
+            auto_param_logging=False,
+            auto_metric_logging=False,
+            display_summary_level=0,
+        )
+    else:
+        experiment = Experiment(
+            api_key=api_key,
+            workspace=workspace,
+            project_name=args.project,
+            experiment_name=args.experiment,
+            auto_param_logging=False,
+            auto_metric_logging=False,
+            display_summary_level=0,
+        )
     experiment.set_name(args.experiment)
 
     key = experiment.get_key()

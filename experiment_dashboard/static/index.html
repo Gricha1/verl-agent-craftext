@@ -132,6 +132,7 @@
     <button class="tab" data-tab="experiments">Experiments</button>
     <button class="tab" data-tab="compare">Compare</button>
     <button class="tab" data-tab="hypotheses">Hypotheses</button>
+    <button class="tab" data-tab="value">VALUE DIAGNOSTICS</button>
     <button class="tab" data-tab="planned">Planned</button>
     <button class="tab" data-tab="launch">Launch</button>
   </nav>
@@ -141,6 +142,7 @@
     <section class="panel" id="panel-experiments"></section>
     <section class="panel" id="panel-compare"></section>
     <section class="panel" id="panel-hypotheses"></section>
+    <section class="panel" id="panel-value"></section>
     <section class="panel" id="panel-planned"></section>
     <section class="panel" id="panel-launch"></section>
   </main>
@@ -153,6 +155,12 @@ const state = {
 function badge(status) {
   const s = String(status || 'unknown');
   return `<span class="badge ${s}">${s}</span>`;
+}
+function fmtGiB(bytes) {
+  if (bytes == null || bytes === '') return '—';
+  const n = Number(bytes);
+  if (!Number.isFinite(n)) return '—';
+  return (n / (1024**3)).toFixed(1) + ' GiB';
 }
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -239,9 +247,14 @@ function serverCard(s) {
   const gpus = s.gpus || [];
   const procs = (s.processes || []).slice(0, 4);
   const free = !s.any_busy;
+  const ram = s.ram || null;
+  const ramLine = ram ? `<div class="mono muted" style="margin-top:0.35rem">RAM ${fmtGiB(ram.used_bytes)} / ${fmtGiB(ram.total_bytes)} · ${ram.used_pct}%</div>
+      <div class="gpu-bar"><span style="width:${Math.min(100, ram.used_pct||0)}%;background:linear-gradient(90deg,#5b8def,#3aa89f)"></span></div>` : '';
+  const cacheNote = s.from_cache ? '<span class="badge warn">cache</span>' : '';
   return `<div class="${cls}">
     <h3>${esc(s.label || s.id)} ${free ? '<span class="badge ok">free?</span>' : '<span class="badge warn">busy</span>'}
-      ${s.foreign_jobs_suspected ? '<span class="badge bad">foreign</span>' : ''}</h3>
+      ${s.foreign_jobs_suspected ? '<span class="badge bad">foreign</span>' : ''} ${cacheNote}</h3>
+    ${ramLine}
     ${gpus.map(g => {
       const pct = g.memory_total_mb ? (100 * g.memory_used_mb / g.memory_total_mb) : 0;
       return `<div style="margin-top:0.45rem">
@@ -581,12 +594,162 @@ function renderLaunch() {
   };
 }
 
+async function renderValueDiagnostics() {
+  const el = document.getElementById('panel-value');
+  el.innerHTML = `<div class="muted">Loading VALUE DIAGNOSTICS…</div>`;
+  try {
+    const d = await api('/api/value-diagnostics');
+    const mae = d.mae_hypothesis || {};
+    const ranks = d.cause_ranking || [];
+    const gsm = d.gsm8k_runs || [];
+    const craf = d.craftext_cache_index || [];
+    const gsmCards = gsm.map(r => {
+      const late = (r.windows || {})['75_100'] || {};
+      return `<div class="card">
+        <h3>${esc(r.architecture)} · ${esc((r.key||'').slice(0,8))}</h3>
+        <div class="val mono">${esc(short(r.name, 70))}</div>
+        <div class="muted" style="margin-top:0.45rem">enc=${esc(r.encoding)} lora=${esc(r.lora_rank)} planQ=${esc(r.plan_q)} rwm=${esc(r.reward_wm)}</div>
+        <div style="margin-top:0.45rem">late success/score <strong>${late.success_or_score_mean==null?'—':Number(late.success_or_score_mean).toFixed(3)}</strong></div>
+        <div>late value CE <strong>${late.value_token_loss_mean==null?'—':Number(late.value_token_loss_mean).toFixed(3)}</strong>
+          · p_proxy(one-hot only) <strong>${late.p_target_proxy_from_mean_CE==null?'—':Number(late.p_target_proxy_from_mean_CE).toFixed(3)}</strong>
+          · MAE_proxy <strong>${late.mae_proxy_1_minus_p==null?'—':Number(late.mae_proxy_1_minus_p).toFixed(3)}</strong></div>
+        <div class="muted">bins=${esc(JSON.stringify(r.bins))} · sep_opt=${esc(r.separate_value_opt)}</div>
+      </div>`;
+    }).join('');
+    const rankCards = ranks.map(r => `<div class="card">
+      <h3>${esc(r.id)}. ${esc(r.title)}</h3>
+      <div>confidence <strong>${Number(r.confidence).toFixed(2)}</strong></div>
+      <div style="margin-top:0.4rem">${esc(r.evidence)}</div>
+      <div class="muted" style="margin-top:0.4rem">next: ${esc(r.next)}</div>
+    </div>`).join('');
+    const crafRows = craf.slice(0, 16).map(c =>
+      `<tr><td class="mono">${esc(c.id)}</td><td class="mono">${esc(c.comet_key||'')}</td><td>${esc((c.metric_keys||[]).slice(0,6).join(', '))}</td></tr>`
+    ).join('');
+    el.innerHTML = `
+      <div class="section-title">VALUE DIAGNOSTICS</div>
+      <div class="card" style="margin-bottom:0.9rem">
+        <h3>MAE / CE hypothesis</h3>
+        <div class="val">${esc(mae.verdict || 'n/a')}</div>
+        <div class="muted" style="margin-top:0.35rem">${esc(mae.code_loss || '')}</div>
+        <div class="muted">${esc(mae.grad_identity_one_hot || '')}</div>
+        <div style="margin-top:0.4rem">future ablation: ${(mae.proposed_future_ablation||[]).map(x=>`<span class="chip">${esc(x)}</span>`).join(' ')} · launch_now=${esc(mae.launch_now)}</div>
+      </div>
+      <div class="section-title">GSM8K shared vs dual (windowed)</div>
+      <div class="grid">${gsmCards || '<div class="muted">no gsm8k rows</div>'}</div>
+      <div class="section-title">Cause ranking (A–G)</div>
+      <div class="grid">${rankCards}</div>
+      <div class="section-title">CrafText cache index</div>
+      <div class="card"><table class="tbl"><thead><tr><th>id</th><th>comet</th><th>metrics</th></tr></thead><tbody>${crafRows}</tbody></table>
+      <div class="muted" style="margin-top:0.5rem">Historical proxy exp(-CE) is valid for <em>one-hot only</em>. For two-hot use p_left+p_right (=p_target_mass); logging prepared in code, not yet on a large GSM8K train.</div></div>
+      <div class="section-title">GSM8K sample efficiency</div>
+      <div id="gsm8k-eff"></div>
+      <div class="section-title">Gt0.99 vs r_t / undisc Gt</div>
+      <div id="gt-compare"></div>
+      <div class="section-title">Two-hot MAE vs CE (theory)</div>
+      <div id="mae-theory"></div>
+      <div class="section-title">Source commits (registry)</div>
+      <div id="src-commits"></div>
+      <div class="section-title">COMPARE PRESETS</div>
+      <div id="compare-presets"></div>
+    `;
+    try {
+      const presets = await api('/api/compare-presets');
+      const gsm = presets.gsm8k_dual_vs_shared_mae || {};
+      const craf = presets.craftext_8x8_reward_targets || {};
+      const crafRows = (craf.runs||[]).map(r => `<tr>
+        <td>${esc(r.role)}</td><td class="mono">${esc((r.key||'').slice(0,8))}</td>
+        <td>${esc(r.architecture)}</td><td>${esc(r.reward)}</td>
+        <td>${esc(r.gamma_token)}</td><td>${esc(r.history)}</td>
+        <td>${r.success_last_approx==null?'—':r.success_last_approx}</td>
+      </tr>`).join('');
+      document.getElementById('compare-presets').innerHTML = `
+        <div class="card" style="margin-bottom:0.7rem">
+          <h3>GSM8K: dual LoRA vs shared LoRA+MAE</h3>
+          <div class="muted">${esc(gsm.gpu_blocker||gsm.status||'')}</div>
+          <div style="margin-top:0.4rem">dual = <span class="mono">${esc((gsm.dual_lora||{}).key||'')}</span>
+            · shared MAE = <span class="mono">${esc(String((gsm.shared_mae||{}).key||'pending'))}</span></div>
+          <div style="margin-top:0.35rem"><a href="${esc(gsm.compare_url_template||gsm.compare_url_baseline_only||'#')}" target="_blank">Comet compare (template/baseline)</a></div>
+        </div>
+        <div class="card">
+          <h3>CrafText 8x8 reward targets</h3>
+          <div><a href="${esc(craf.compare_url||'#')}" target="_blank">CRAFTEXT COMET COMPARE</a></div>
+          <div class="muted" style="margin-top:0.35rem">${esc(((craf.shared_gt_gamma1_8x8||{}).statement)||'')}</div>
+          <table class="tbl" style="margin-top:0.5rem"><thead><tr>
+            <th>role</th><th>key</th><th>arch</th><th>reward</th><th>gamma</th><th>hist</th><th>success</th>
+          </tr></thead><tbody>${crafRows}</tbody></table>
+        </div>`;
+    } catch (e2) {
+      document.getElementById('compare-presets').innerHTML = `<div class="muted">${esc(e2)}</div>`;
+    }
+
+    // enrich panels
+    const se = d.gsm8k_sample_efficiency || {};
+    const seRuns = se.runs || [];
+    const verdict = se.verdict || {};
+    document.getElementById('gsm8k-eff').innerHTML = `
+      <div class="card" style="margin-bottom:0.7rem">
+        <div><strong>Causal claim shared worse than dual:</strong> ${esc(String(verdict.causal_claim_shared_worse_than_dual))}</div>
+        <div class="muted" style="margin-top:0.35rem">${esc(verdict.reason||'')}</div>
+        <div class="muted" style="margin-top:0.35rem">best pair confound_score=${esc(String((verdict.best_matched_pair||{}).confound_score))} · ${esc(((verdict.best_matched_pair||{}).confounds||[]).join(', '))}</div>
+      </div>
+      <div class="card"><table class="tbl"><thead><tr>
+        <th>key</th><th>arch</th><th>AUC</th><th>→0.4</th><th>→0.5</th><th>→0.6</th><th>early</th><th>mid</th><th>late</th><th>confounds</th>
+      </tr></thead><tbody>
+      ${seRuns.map(r => `<tr>
+        <td class="mono">${esc((r.key||'').slice(0,8))}</td>
+        <td>${esc(r.architecture)}</td>
+        <td>${r.auc_success_vs_step==null?'—':Number(r.auc_success_vs_step).toFixed(3)}</td>
+        <td>${r['step_to_success_0.4']??'—'}</td>
+        <td>${r['step_to_success_0.5']??'—'}</td>
+        <td>${r['step_to_success_0.6']??'—'}</td>
+        <td>${r.early_25pct_mean_success==null?'—':Number(r.early_25pct_mean_success).toFixed(3)}</td>
+        <td>${r.middle_50pct_mean_success==null?'—':Number(r.middle_50pct_mean_success).toFixed(3)}</td>
+        <td>${r.late_25pct_mean_success==null?'—':Number(r.late_25pct_mean_success).toFixed(3)}</td>
+        <td class="muted">${esc((r.confounds||[]).join(', '))}</td>
+      </tr>`).join('')}
+      </tbody></table>
+      <div class="muted" style="margin-top:0.4rem">series_source often windows_approx (not raw step series).</div></div>`;
+
+    const gt = d.gt_g099_compare || {};
+    const bands = gt.score_range_check || {};
+    const gtRuns = gt.runs || {};
+    document.getElementById('gt-compare').innerHTML = `
+      <div class="card"><pre class="mono" style="white-space:pre-wrap">${esc(JSON.stringify(bands, null, 2))}</pre></div>
+      <div class="grid">${Object.entries(gtRuns).map(([lab,r]) => `
+        <div class="card"><h3>${esc(lab)}</h3>
+          <div class="mono muted">${esc((r.key||'').slice(0,8))} · ${esc(r.name||'')}</div>
+          <div class="muted">${esc(r.url||'')}</div>
+          <div style="margin-top:0.4rem">metrics with data: ${esc(Object.keys(r.metrics||{}).filter(k => (r.metrics||{})[k]).join(', ')||'none yet')}</div>
+        </div>`).join('')}</div>`;
+
+    const th = d.two_hot_mae_theory || {};
+    document.getElementById('mae-theory').innerHTML = `<div class="card">
+      <div class="val">${esc(th.can_mae_reduce_pressure||'')}</div>
+      <div class="muted" style="margin-top:0.4rem">${esc(th.l1_mae||'')}</div>
+      <div class="muted">${esc(th.grad_l1_logits||'')}</div>
+      <div class="muted">${esc(th.exp_neg_ce_invalid||'')}</div>
+      <div class="muted">logging: ${esc(JSON.stringify((d.p_target_mass_logging||{}).status))}</div>
+    </div>`;
+
+    const commits = d.registry_source_commits || {};
+    const commitRows = Object.entries(commits).filter(([id]) => id.includes('gt_g0') || id.includes('874bc') || id.includes('2a42') || id.includes('4be19')).slice(0,12);
+    document.getElementById('src-commits').innerHTML = `<div class="card"><table class="tbl"><thead><tr><th>id</th><th>comet</th><th>git</th><th>status</th></tr></thead><tbody>
+      ${commitRows.map(([id,c]) => `<tr><td class="mono">${esc(id)}</td><td class="mono">${esc((c.comet_key||'').slice(0,8))}</td><td class="mono">${esc((c.git_commit||'').slice(0,8))}</td><td>${esc(c.status||'')}</td></tr>`).join('')}
+    </tbody></table>
+    <div class="muted" style="margin-top:0.4rem">${esc(((commits['ds8_dual_gt_g099_h50_seed1']||{}).source_snapshot_note)||'')}</div></div>`;
+
+  } catch (err) {
+    el.innerHTML = `<div class="card"><h3>VALUE DIAGNOSTICS</h3><div class="muted">${esc(err)}</div></div>`;
+  }
+}
+
 function render() {
   renderSelbar();
   if (state.tab === 'overview') renderOverview();
   if (state.tab === 'experiments') renderExperiments();
   if (state.tab === 'compare') renderCompare();
   if (state.tab === 'hypotheses') renderHypotheses();
+  if (state.tab === 'value') renderValueDiagnostics();
   if (state.tab === 'planned') renderPlanned();
   if (state.tab === 'launch') renderLaunch();
 }

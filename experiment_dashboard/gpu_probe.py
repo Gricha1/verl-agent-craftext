@@ -97,11 +97,40 @@ _PROC_Q = [
     "--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory",
     "--format=csv,noheader",
 ]
+_RAM_Q = "free -b"
+
+
+def _parse_ram(out: str) -> dict[str, Any] | None:
+    for line in (out or "").splitlines():
+        if not line.startswith("Mem:"):
+            continue
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            total = int(parts[1])
+            used = int(parts[2])
+            avail = int(parts[6]) if len(parts) > 6 else max(0, total - used)
+            return {
+                "total_bytes": total,
+                "used_bytes": used,
+                "available_bytes": avail,
+                "used_pct": round(100.0 * used / total, 1) if total else 0.0,
+            }
+        except ValueError:
+            return None
+    return None
 
 
 def nvidia_smi(ssh_host: str | None = None, timeout: float = 8.0) -> dict[str, Any]:
     if ssh_host:
-        remote = " ".join(_GPU_Q) + "; echo '---PROCS---'; " + " ".join(_PROC_Q)
+        remote = (
+            " ".join(_GPU_Q)
+            + "; echo '---PROCS---'; "
+            + " ".join(_PROC_Q)
+            + "; echo '---RAM---'; "
+            + _RAM_Q
+        )
         code, out, err = _run(
             [
                 "ssh",
@@ -122,13 +151,16 @@ def nvidia_smi(ssh_host: str | None = None, timeout: float = 8.0) -> dict[str, A
                 "error": (err or out or f"ssh rc={code}").strip()[:240],
                 "gpus": [],
                 "processes": [],
+                "ram": None,
                 "any_busy": False,
                 "foreign_jobs_suspected": False,
                 "ssh_host": ssh_host,
             }
-        gpu_part, _, proc_part = out.partition("---PROCS---")
+        gpu_part, _, rest = out.partition("---PROCS---")
+        proc_part, _, ram_part = rest.partition("---RAM---")
         gpus = _parse_gpu_csv(gpu_part)
         procs = _parse_procs_csv(proc_part)
+        ram = _parse_ram(ram_part)
     else:
         if not shutil.which("nvidia-smi"):
             return {"ok": False, "error": "nvidia-smi not found", "gpus": [], "processes": []}
@@ -136,12 +168,15 @@ def nvidia_smi(ssh_host: str | None = None, timeout: float = 8.0) -> dict[str, A
         gpus = _parse_gpu_csv(out) if code == 0 else []
         code2, out2, _ = _run(_PROC_Q, timeout=timeout)
         procs = _parse_procs_csv(out2) if code2 == 0 else []
+        code3, out3, _ = _run(["bash", "-lc", _RAM_Q], timeout=timeout)
+        ram = _parse_ram(out3) if code3 == 0 else None
         if code != 0:
             return {
                 "ok": False,
                 "error": err.strip() or "nvidia-smi failed",
                 "gpus": [],
                 "processes": [],
+                "ram": None,
                 "any_busy": False,
                 "foreign_jobs_suspected": False,
             }
@@ -150,11 +185,14 @@ def nvidia_smi(ssh_host: str | None = None, timeout: float = 8.0) -> dict[str, A
         ("koksharov" in (p.get("name") or "").lower()) or ("lerobot" in (p.get("name") or "").lower())
         for p in procs
     )
+    if ssh_host is None and "ram" not in locals():
+        ram = None
     return {
         "ok": True,
         "error": None,
         "gpus": gpus,
         "processes": procs,
+        "ram": ram if "ram" in locals() else None,
         "any_busy": any(g.get("busy") for g in gpus),
         "foreign_jobs_suspected": foreign,
         "ssh_host": ssh_host,
