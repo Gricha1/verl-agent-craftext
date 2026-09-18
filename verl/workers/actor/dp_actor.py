@@ -38,13 +38,29 @@ from verl.utils.torch_functional import logprobs_from_logits
 from verl.utils.ulysses import gather_outpus_and_unpad, ulysses_pad_and_slice_inputs, ulysses_pad
 from verl.workers.actor import BasePPOActor
 
-if is_cuda_available:
+def _is_flash_attn_available():
+    if not is_cuda_available:
+        return False
     try:
-        from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
+        import flash_attn  # noqa: F401
+        return True
     except ImportError:
-        pass
+        return False
+
+if _is_flash_attn_available():
+    from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
 elif is_npu_available:
     from transformers.integrations.npu_flash_attention import index_first_axis, pad_input, rearrange, unpad_input
+else:
+    # Fallback: define dummy functions that will cause clear errors if used
+    def unpad_input(*args, **kwargs):
+        raise RuntimeError("unpad_input requires flash_attn or NPU flash attention")
+    def pad_input(*args, **kwargs):
+        raise RuntimeError("pad_input requires flash_attn or NPU flash attention")
+    def index_first_axis(*args, **kwargs):
+        raise RuntimeError("index_first_axis requires flash_attn or NPU flash attention")
+    def rearrange(*args, **kwargs):
+        raise RuntimeError("rearrange requires flash_attn or NPU flash attention")
 
 
 __all__ = ["DataParallelPPOActor"]
