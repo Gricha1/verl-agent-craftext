@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .envs import *
+# Keep this package import free of JAX/Craftax.
+# Eagerly importing .envs/.utility pulls JAX and deadlocks AlfWorld TextWorld
+# workers that fork with asynchronous=True.
 from .projection import *
-from .utility import *
 from .action_tokens import *

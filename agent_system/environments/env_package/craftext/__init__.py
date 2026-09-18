@@ -13,9 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .envs import *
-from .envs_oracle import *
+# Prompt/projection only — do not import .envs (JAX) at package import time.
+# AlfWorld shares agent_system.environments and must not inherit a JAX-threaded process
+# before TextWorld forks its async vector env workers.
 from .projection import *
 from .projection_oracle import *
-from .utility import *
-from .oracle import *
