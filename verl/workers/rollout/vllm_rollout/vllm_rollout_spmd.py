@@ -53,6 +53,18 @@ from verl.workers.rollout.base import BaseRollout
 from vllm.lora.request import LoRARequest
 
 logger = logging.getLogger(__file__)
+
+# Monkey-patch for transformers 5.x compatibility with vLLM 0.8.5
+# The all_special_tokens_extended attribute was removed in newer transformers
+def _patch_tokenizer_for_vllm():
+    from transformers import PreTrainedTokenizerBase
+    if not hasattr(PreTrainedTokenizerBase, 'all_special_tokens_extended'):
+        PreTrainedTokenizerBase.all_special_tokens_extended = property(
+            lambda self: self.all_special_tokens
+        )
+
+_patch_tokenizer_for_vllm()
+
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 # TODO
