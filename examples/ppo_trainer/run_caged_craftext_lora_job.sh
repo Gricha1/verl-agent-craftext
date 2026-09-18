@@ -20,7 +20,7 @@ export COMET_WS_CONNECTION_TIMEOUT="${COMET_WS_CONNECTION_TIMEOUT:-60}"
 export COMET_WS_CONNECTION_IDLE_TIMEOUT="${COMET_WS_CONNECTION_IDLE_TIMEOUT:-120}"
 # Prefer online logging; offline mode hides runs from the UI
 export COMET_OFFLINE_DIRECTORY="${COMET_OFFLINE_DIRECTORY:-}"
-unset COMET_OFFLINE_MODE 2>/dev/null || true
+#unset COMET_OFFLINE_MODE  # commented out for offline mode 2>/dev/null || true
 
 # JAX backend: configured in main_ppo via ++env.use_jax_gpu=True (GPU if jaxlib+cuda works, else CPU fallback).
 # Do NOT set JAX_PLATFORMS=cuda here — breaks when jaxlib has no CUDA backend (vLLM can still use GPU).
@@ -89,7 +89,7 @@ if [ "$USE_ACTION_HEAD" = "true" ] || [ "$PROMPT_TEMPLATE_TYPE" = "single_token_
     echo "[INFO] max_response_length=1 (USE_ACTION_HEAD=$USE_ACTION_HEAD, PROMPT_TEMPLATE_TYPE=$PROMPT_TEMPLATE_TYPE)"
 fi
 
-export VLLM_ATTENTION_BACKEND=XFORMERS
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 
 # Путь к пакету caged_craftext (должен содержать модуль craftext.environment)
 # Путь к клонированному репозиторию CAGED-CrafText
@@ -156,7 +156,7 @@ python -m verl.trainer.main_ppo \
     data.val_files=$HOME/data/verl-agent/text/test.parquet \
     data.train_batch_size=$train_data_size \
     data.val_batch_size=$val_data_size \
-    data.max_prompt_length=512 \
+    data.max_prompt_length="${MAX_PROMPT_LENGTH:-1024}" \
     data.max_response_length=$max_response_length \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
@@ -165,7 +165,7 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.model.lora_rank=$(if [ "$USE_ACTOR_LORA" = "true" ]; then echo "64"; else echo "0"; fi) \
     actor_rollout_ref.model.lora_alpha=$(if [ "$USE_ACTOR_LORA" = "true" ]; then echo "64"; else echo "0"; fi) \
     actor_rollout_ref.actor.optim.lr=1e-6 \
-    actor_rollout_ref.model.use_remove_padding=True \
+    actor_rollout_ref.model.use_remove_padding=False \
     actor_rollout_ref.actor.ppo_mini_batch_size=128 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=64 \
     actor_rollout_ref.actor.use_kl_loss=True \
@@ -189,7 +189,7 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.use_invalid_action_penalty=True \
     actor_rollout_ref.actor.invalid_action_penalty_coef=0.1 \
     critic.optim.lr=1e-5 \
-    critic.model.use_remove_padding=True \
+    critic.model.use_remove_padding=False \
     critic.model.path=Qwen/Qwen2.5-1.5B-Instruct \
     critic.model.lora_rank=0 \
     critic.model.lora_alpha=16 \
@@ -199,6 +199,7 @@ python -m verl.trainer.main_ppo \
     critic.model.fsdp_config.param_offload=False \
     critic.model.fsdp_config.optimizer_offload=False \
     algorithm.use_kl_in_reward=False \
+    reward_model.use_episode_return_as_token_reward=False \
     +algorithm.log_prob_action_only=$LOG_PROB_ACTION_ONLY \
     env.env_name='caged_craftext/CagedCraftextEnv' \
     +env.enable_reasoning=$(if [ "$NO_REASONING" = "true" ]; then echo "False"; else echo "True"; fi) \
@@ -213,7 +214,7 @@ python -m verl.trainer.main_ppo \
     +actor_rollout_ref.model.num_actions=17 \
     env.seed=0 \
     env.max_steps=50 \
-    env.history_length=0 \
+    env.history_length="${HISTORY_LENGTH:-50}" \
     env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
     trainer.critic_warmup=$CRITIC_WARMUP \
     trainer.logger=['console','comet'] \
