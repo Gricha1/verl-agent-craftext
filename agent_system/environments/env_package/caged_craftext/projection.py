@@ -237,6 +237,25 @@ Your available actions are: {actions_list}
 CRAFTEXT_EXTENDED_TEMPLATE_NO_HIS = get_craftext_extended_template_no_his()
 
 
+def format_executed_actions_history(actions) -> str:
+    """Compact episode action memory: ``1=LEFT, 2=UP`` (oldest → newest)."""
+    from .action_tokens import TOKEN_TO_ACTION_ID, normalize_action_token
+
+    parts = []
+    for raw in actions or []:
+        tok = normalize_action_token(raw)
+        if not tok:
+            # Fall back to raw text for non-token actions (default_template).
+            text = str(raw).strip()
+            if text:
+                parts.append(text)
+            continue
+        aid = TOKEN_TO_ACTION_ID.get(tok)
+        name = ACTION_TO_TEXT[aid] if aid is not None and 0 <= aid < len(ACTION_TO_TEXT) else tok
+        parts.append(f"{tok}={name}")
+    return ", ".join(parts) if parts else "(none)"
+
+
 def get_single_token_action_template_no_his() -> str:
     """Prompt for one-token action output; legend lists token=ACTION for all 17 actions."""
     from .action_tokens import action_token_legend
@@ -244,6 +263,9 @@ def get_single_token_action_template_no_his() -> str:
     return f"""
 Your goal is to complete the following task:
 **TASK:** {{task_description}}
+
+Actions already taken in this episode (oldest → newest):
+{{action_history}}
 
 This is what you currently see:
 {{current_observation}}
@@ -258,6 +280,9 @@ def get_single_token_return_template_no_his() -> str:
     return """
 Your goal is to complete the following task:
 **TASK:** {task_description}
+
+Actions already taken in this episode (oldest → newest):
+{action_history}
 
 This is what you currently see:
 {current_observation}
@@ -275,6 +300,9 @@ def get_single_token_action_vl_template_no_his() -> str:
 Your goal is to complete the following task:
 **TASK:** {{task_description}}
 
+Actions already taken in this episode (oldest → newest):
+{{action_history}}
+
 You currently see visual observation:
 
 Picture 1: <image>
@@ -290,6 +318,9 @@ def get_single_token_return_vl_template_no_his() -> str:
 Your goal is to complete the following task:
 **TASK:** {task_description}
 
+Actions already taken in this episode (oldest → newest):
+{action_history}
+
 You currently see visual observation:
 
 Picture 1: <image>
@@ -304,6 +335,9 @@ def get_per_action_return_template_no_his() -> str:
     return """
 Your goal is to complete the following task:
 **TASK:** {task_description}
+
+Actions already taken in this episode (oldest → newest):
+{action_history}
 
 This is what you currently see:
 {current_observation}
@@ -325,6 +359,7 @@ def format_per_action_return_prompt(
     action_token: str,
     return_bin_legend: str,
     constraint: str = "",
+    action_history: str = "(none)",
 ) -> str:
     prompt = get_per_action_return_template_no_his().format(
         task_description=task_description or "No task",
@@ -332,6 +367,7 @@ def format_per_action_return_prompt(
         action_name=action_name,
         action_token=action_token,
         return_bin_legend=return_bin_legend,
+        action_history=action_history or "(none)",
     )
     if constraint:
         prompt += f"\n\n**CONSTRAINT:** {constraint}"
