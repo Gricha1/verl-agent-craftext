@@ -853,10 +853,14 @@ class DataParallelPPOActor(BasePPOActor):
             target_returns = micro_batch["actor_value_target_returns"]
 
         target_encoding = str(self.config.get("actor_value_target_encoding", "one_hot"))
+        value_loss_type = str(self.config.get("actor_value_loss_type", "ce"))
+        clipped_mae_rho = float(self.config.get("actor_value_clipped_mae_rho", 0.2))
         ce_loss, _hard_bins = return_token_value_loss(
             bin_logits,
             target_returns,
             target_encoding=target_encoding,
+            value_loss_type=value_loss_type,
+            clipped_mae_rho=clipped_mae_rho,
             response_mask=response_mask,
             spec=spec,
         )
@@ -870,6 +874,12 @@ class DataParallelPPOActor(BasePPOActor):
             loss = ce_loss - entropy_coef * entropy_term
         else:
             loss = ce_loss
+        _av_diag = getattr(ce_loss, "_actor_value_diag", None)
+        if _av_diag is not None:
+            try:
+                loss._actor_value_diag = _av_diag
+            except Exception:
+                pass
         with torch.no_grad():
             target_bins = (
                 target_returns.clamp(min=spec.vmin, max=spec.vmax) - spec.vmin
@@ -1208,14 +1218,24 @@ class DataParallelPPOActor(BasePPOActor):
                                 temperature=temperature,
                             )
                             value_entropy_coef = float(self.config.get("actor_value_entropy_coef", 0.0))
-                            append_to_dict(
-                                metrics,
-                                {
+                            value_metrics = {
                                     "actor/value_token_loss": value_loss.detach().item(),
                                     "actor/value_token_accuracy": value_acc,
                                     "actor/value_token_entropy": value_entropy,
                                     "actor/value_token_entropy_coef": value_entropy_coef,
-                                },
+                                    "actor/value_loss_type_is_mae": float(
+                                        str(self.config.get("actor_value_loss_type", "ce")).lower() == "mae"
+                                    ),
+                                    "actor/value_loss_type_is_clipped_mae": float(
+                                        str(self.config.get("actor_value_loss_type", "ce")).lower() == "clipped_mae"
+                                    ),
+                                }
+                            diag = getattr(value_loss, "_actor_value_diag", None)
+                            if isinstance(diag, dict):
+                                value_metrics.update(diag)
+                            append_to_dict(
+                                metrics,
+                                value_metrics,
                             )
                             (value_loss * actor_value_loss_coef * loss_scale).backward()
                             get_torch_device().empty_cache()
