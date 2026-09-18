@@ -1,20 +1,21 @@
 #!/bin/bash
-# PPO on debug_square_8x8: dual actor+critic LLMs (ordinary PPO baseline).
+# PPO on debug_square_16x16: dual actor+critic LLMs.
 #
+# Same as working 8x8 dual:
 # - history_length=50 (executed actions in prompt)
-# - Token score = per-step env reward r_t
+# - Token score = per-step env reward r_t (not G_t / not full episode R)
 # - gae_by_trajectory=False (response_len=1 → returns≈r_t)
 #
-# Hyperparams: examples/ppo_trainer/config/ppo_debug_square_8x8_dual.yaml
+# Hyperparams: examples/ppo_trainer/config/ppo_debug_square_16x16_dual.yaml
 #
 # Usage:
-#   bash examples/ppo_trainer/ppo_debug_square.sh
-#   NUM_OPTIMISTIC_ENVS=32 HISTORY_LENGTH=20 bash examples/ppo_trainer/ppo_debug_square.sh
+#   bash examples/ppo_trainer/ppo_debug_square_16x16.sh
+#   NUM_OPTIMISTIC_ENVS=32 HISTORY_LENGTH=20 bash examples/ppo_trainer/ppo_debug_square_16x16.sh
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HYPER_YAML="${HYPER_YAML:-$SCRIPT_DIR/config/ppo_debug_square_8x8_dual.yaml}"
+HYPER_YAML="${HYPER_YAML:-$SCRIPT_DIR/config/ppo_debug_square_16x16_dual.yaml}"
 
 if [ ! -f "$HYPER_YAML" ]; then
   echo "[ERROR] Hyperparam yaml not found: $HYPER_YAML"
@@ -47,12 +48,12 @@ emit("TOTAL_EPOCHS", j("total_epochs", 8000, "TOTAL_EPOCHS"))
 emit("HISTORY_LENGTH", j("history_length", 50, "HISTORY_LENGTH"))
 emit("CHECKPOINT_DIR", j(
     "checkpoint_dir",
-    "training_checkpoints/verl_agent_caged_craftext_debug_square_dual",
+    "training_checkpoints/verl_agent_caged_craftext_debug_square_16x16_dual",
     "CHECKPOINT_DIR",
 ))
 emit("RUN_NAME", j(
     "run_name",
-    "PPO Debug Square 8x8 dual LLM + r_t + history",
+    "PPO Debug Square 16x16 dual LLM + r_t + history",
     "RUN_NAME",
 ))
 
@@ -62,7 +63,7 @@ replacements = {
     "env.history_length=": f"env.history_length={j('history_length', 50, 'HISTORY_LENGTH')}",
     "critic.model.lora_rank=": f"critic.model.lora_rank={j('critic_lora_rank', 64, 'CRITIC_LORA_RANK')}",
     "critic.model.lora_alpha=": f"critic.model.lora_alpha={j('critic_lora_alpha', 64, 'CRITIC_LORA_ALPHA')}",
-    "trainer.default_local_dir=": f"trainer.default_local_dir={j('checkpoint_dir', 'training_checkpoints/verl_agent_caged_craftext_debug_square_dual', 'CHECKPOINT_DIR')}",
+    "trainer.default_local_dir=": f"trainer.default_local_dir={j('checkpoint_dir', 'training_checkpoints/verl_agent_caged_craftext_debug_square_16x16_dual', 'CHECKPOINT_DIR')}",
 }
 
 def apply(item: str) -> str:
@@ -88,7 +89,7 @@ _bool() {
 USE_ACTOR_LORA="$(_bool "$USE_ACTOR_LORA")"
 
 echo "=========================================="
-echo "PPO debug_square_8x8 (dual actor+critic LLM)"
+echo "PPO debug_square_16x16 (dual actor+critic LLM)"
 echo "=========================================="
 echo "[INFO] hyper yaml: $HYPER_YAML"
 echo "[INFO] NUM_OPTIMISTIC_ENVS=$NUM_OPTIMISTIC_ENVS"

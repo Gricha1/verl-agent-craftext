@@ -1,0 +1,78 @@
+# Shared actor-value PPO on debug_square_16x16:
+# MATCHED to 8x8 ds8_shared_av_gt_g099_h50 except map size + 16x16 value bins.
+#
+# Architecture: one LLM = actor + value (use_actor_value_token=True).
+# Value loss: two-hot CE (NOT MAE) — CE baseline for later MAE comparison.
+# Target: discounted remaining return G_t^0.99 for BOTH token reward and value CE.
+# No trajectory-GAE over G_t (gae_by_trajectory=False).
+#
+# BINS NOTE (explicit, not silent):
+#   8x8 shared used [-5, 6] step 0.4 (29 bins).
+#   16x16 Manhattan / remaining-return can reach ~[-25, +16] (hist. notes).
+#   Using 8x8 bins would clip heavily → confound CE-vs-MAE.
+#   Therefore use historical 16x16 AV range: [-26, 16] step 1.5 (also 29 bins).
+#
+# Launch (aicenter2 /storage):
+#   bash examples/ppo_trainer/ppo_debug_square_16x16_shared_av_gt_g099_ce.sh
+
+job:
+  run_name: "ds16_shared_av_gt_g099_ce_h50"
+  num_optimistic_envs: 64
+  optimistic_reset_ratio: 8
+  use_actor_lora: true
+  total_epochs: 8000
+  history_length: 50
+  checkpoint_dir: training_checkpoints/verl_agent_caged_craftext_debug_square_16x16_shared_av_gt_g099_ce
+
+overrides:
+  - ++env.craftext_settings=debug_square_16x16
+  - +env.use_optimistic_parallel=True
+  - +env.optimistic_reset_ratio=8
+  - +env.use_ray_text_render_workers=False
+  - +env.value_prompt_template_type=single_token_return
+  - +env.value_return_min=-26
+  - +env.value_return_max=16
+  - +env.value_return_bin_step=1.5
+  - ++env.use_jax_gpu=False
+  - ++env.jax_gpu_fraction=0.15
+  - env.history_length=50
+
+  - reward_model.use_episode_return_as_token_reward=False
+  - reward_model.use_remaining_return_as_token_reward=True
+  - reward_model.remaining_return_gamma=0.99
+  - algorithm.gamma=1.0
+  - algorithm.lam=1.0
+  - algorithm.gae_by_trajectory=False
+  - algorithm.use_actor_value_token=True
+  - actor_rollout_ref.actor.actor_value_token=True
+  - actor_rollout_ref.actor.actor_value_target_encoding=two_hot
+  - actor_rollout_ref.actor.actor_value_loss_type=ce
+  - actor_rollout_ref.actor.actor_value_target_from_returns=True
+  - actor_rollout_ref.actor.actor_value_return_min=-26
+  - actor_rollout_ref.actor.actor_value_return_max=16
+  - actor_rollout_ref.actor.actor_value_return_bin_step=1.5
+  - actor_rollout_ref.actor.actor_value_separate_optimizer_steps=True
+
+  - actor_rollout_ref.rollout.gpu_memory_utilization=0.75
+  - actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16
+  - actor_rollout_ref.actor.ppo_mini_batch_size=64
+  - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8
+  - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=8
+  - actor_rollout_ref.rollout.val_kwargs.temperature=1.0
+  - actor_rollout_ref.actor.entropy_coeff=0.01
+  - actor_rollout_ref.actor.entropy_over_valid_actions=True
+
+  # Actor-only LoRA stages. 16x16 episodes longer → fewer env steps/PPO step than 8x8.
+  # Keep same PPO-step schedule as 8x8 for matched update count; also save late=200.
+  - trainer.resume_mode=disable
+  - trainer.save_freq=-1
+  - trainer.actor_lora_only_checkpoint=True
+  - trainer.actor_lora_stage_steps=[40,110]
+  - trainer.test_freq=20
+  - trainer.max_actor_ckpt_to_keep=5
+  - trainer.max_critic_ckpt_to_keep=1
+  - trainer.default_local_dir=training_checkpoints/verl_agent_caged_craftext_debug_square_16x16_shared_av_gt_g099_ce
+  - trainer.n_gpus_per_node=2
+  - trainer.nnodes=1
+  - trainer.actor_value_online_reward_wm.enable=False
+  - trainer.actor_value_online_plan_q_wm.enable=False
