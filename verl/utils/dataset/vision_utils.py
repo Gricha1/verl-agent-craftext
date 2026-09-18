@@ -18,7 +18,11 @@ from typing import Optional, Union
 import numpy as np
 import torch
 from PIL import Image
-from qwen_vl_utils import fetch_image, fetch_video
+try:
+    from qwen_vl_utils import fetch_image, fetch_video
+except ImportError:
+    fetch_image = None
+    fetch_video = None
 
 
 def obs_array_to_pil_rgb(image) -> Image.Image:
