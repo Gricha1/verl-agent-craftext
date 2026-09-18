@@ -101,7 +101,8 @@ experiments:
   status: failed
   success_max: null
   success_last: null
-  notes: 'Log header: token reward remaining G_t. Comet flag False ≠ r_t in that code path.'
+  notes: 'Log header: token reward remaining G_t. Comet flag False ≠ r_t in that code
+    path.'
   hypothesis:
   - H1
   - H2
@@ -179,7 +180,8 @@ experiments:
   status: inconclusive
   success_max: 0.06
   success_last: null
-  notes: Better VF metrics; policy success takeoff missing. Correct traj-GAE uses r_t not G_t.
+  notes: Better VF metrics; policy success takeoff missing. Correct traj-GAE uses
+    r_t not G_t.
   hypothesis:
   - H5
   parent_experiment: ds8_dual_rt_h50_874bc480
@@ -554,12 +556,13 @@ experiments:
   planned:
     priority: 1
     delta_vs_baseline: dense r_t → sparse success-only; token = full R/G_t
-    expected: If learns → telescoping H1 supported for dense G_t failure; if fails → prior/exploration
+    expected: If learns → telescoping H1 supported for dense G_t failure; if fails
+      → prior/exploration
 - id: ds8_dual_gt_g099_h50_seed1
   name: discounted G_t gamma=0.99
+  comet_key: 90deefed8ddc458da4f27349a14bf4f4
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/90deefed8ddc458da4f27349a14bf4f4
   comet_project: gregory-gorbov/verl-agent-caged-craftext
-  comet_key: null
-  comet_url: null
   environment: debug_square_8x8
   architecture: dual_llm
   actor_value: false
@@ -573,30 +576,51 @@ experiments:
   history_length: 50
   response_len: 1
   batch_size: 64
-  gpus: 1
-  config_path: null
-  launch_script: null
-  local_log_path: null
-  git_commit: null
-  start_date: null
-  status: planned
-  success_max: null
-  success_last: null
-  notes: Breaks exact telescoping; -1 + gamma*(+1) not exact cancel.
+  gpus: 2
+  host: aicenter3
+  gpu_ids:
+  - 4
+  - 5
+  config_path: examples/ppo_trainer/config/ppo_debug_square_8x8_dual_gt_g099.yaml
+  launch_script: examples/ppo_trainer/ppo_debug_square_gt_g099.sh
+  local_log_path: /home/gorbov_gv/safe_rl_nlp/logdir/ppo_debug_square_gt_g099_20260911_070145.log
+  git_commit: 9d2af95a111b56f1f8616a1f712c2c32be4efb00
+  start_date: '2026-09-10'
+  status: stopped_for_next_experiment
+  success_max: 1.0
+  success_last: 1.0
+  prior_failed_comet_key: c7dcda4e7c3642d99ca8a9aca173b0a4
+  source_snapshot_note: 'Live aa4f5c97 GPUs4,5 code~safe@9d2af95 (critic LoRA stub)
+    + FLASH_ATTN env in vllm_rollout. Asked key c7dcda4e: DEAD; source snapshot was
+    451cadd + failed TOKEN_CLS local patch (never on origin).'
+  notes: 'Breaks exact telescoping; -1 + gamma*(+1) not exact cancel.
+
+    Token score = remaining G_t^0.99 via reward_model.use_remaining_return_as_token_reward=True.
+
+    algorithm.gamma kept at 1.0 for response-level GAE identity.
+
+
+    Stopped for next experiment (shared AV). Live key was 90deefed (aa4f5c97 was earlier
+    relaunch). Final success_last=max=1.0 at global_step~114 / total_env_steps~240544.'
   hypothesis:
   - H1
   - H2
   parent_experiment: ds8_dual_gt_h50_2a42e153
   tags:
-  - planned
   - dual
   - G_t
   - gamma
   - 8x8
+  - aicenter3
+  - stopped_for_next_experiment
   planned:
     priority: 2
     delta_vs_baseline: token = discounted return-to-go gamma=0.99
     expected: Better local action discrimination than gamma=1 G_t
+  final_global_step: 114
+  final_total_env_steps: 240544
+  stop_reason: ActorDiedError/worker crash at ~step 114 after success takeoff; GPUs
+    freed for shared actor-value G_t^0.99 experiment
 - id: ds8_dual_gt_g095_h50_seed1
   name: discounted G_t gamma=0.95
   comet_project: gregory-gorbov/verl-agent-caged-craftext
@@ -752,7 +776,8 @@ experiments:
   success_last: null
   notes: 'Placeholder until Comet import. Meaningful baselines/actor-value/dual/entropy
 
-    should replace this entry. Sparse R/G_t semantics differ from dense square G_t (H3).
+    should replace this entry. Sparse R/G_t semantics differ from dense square G_t
+    (H3).
 
 
     Replaced by curated alf_* imports (2026-09-11).'
@@ -1183,3 +1208,110 @@ experiments:
   - alfworld
   - actor_value
   - plan_q
+- id: gsm8k_shared_av_lora64_mae
+  name: GSM8K shared actor-value LoRA64 + MAE value loss
+  comet_key: null
+  comet_url: null
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  environment: gsm8k
+  architecture: shared_actor_value
+  actor_value: true
+  model: Qwen2.5-1.5B-Instruct
+  finetune: lora
+  lora_rank: 64
+  value_loss_type: mae
+  actor_value_target_encoding: two_hot
+  reward_mode: gsm8k_rule
+  matched_dual_baseline: b7573e3eacd949a099afe9682c8df516
+  matched_dual_note: Prefer LoRA64 dual; LoRA128 0a0271de is secondary
+  no_aux_wm: true
+  config_path: examples/ppo_trainer/ppo_gsm8k_actor_value_mae_lora64.sh
+  launch_script: examples/ppo_trainer/ppo_gsm8k_actor_value_mae_lora64.sh
+  host: aicenter3
+  gpu_ids:
+  - 2
+  - 3
+  gpus: 2
+  status: blocked_gpu
+  notes: 'Blocked: GPU 2+3 occupied by foreign VLLM::EngineCore (root).
+
+    Free GPUs currently 1 and 6 — do not silently relocate without user OK.
+
+    Pure shared AV + LoRA64 + MAE; no reward-WM / plan-Q / MC-Q.
+
+    '
+  tags:
+  - planned
+  - gsm8k
+  - shared
+  - mae
+  - lora64
+  planned:
+    priority: 1
+    delta_vs_baseline: dual LoRA64 CE-critic -> shared AV LoRA64 MAE value bins
+    expected: Test if MAE reduces CE pressure vs dual without claiming architecture
+      win yet
+- id: ds8_shared_av_gt_g099_h50
+  name: shared actor-value G_t gamma=0.99 h50
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: 5ea069fc84f3426e8f23caa84e63d2d5
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/5ea069fc84f3426e8f23caa84e63d2d5
+  environment: debug_square_8x8
+  architecture: shared_actor_value
+  actor_value: true
+  model: Qwen2.5-family (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: discounted_Gt
+  remaining_return_gamma: 0.99
+  value_loss: two_hot_ce
+  gamma: 0.99
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 50
+  response_len: 1
+  batch_size: 64
+  gpus: 2
+  host: aicenter3
+  gpu_ids:
+  - 4
+  - 5
+  config_path: examples/ppo_trainer/config/ppo_debug_square_8x8_shared_av_gt_g099.yaml
+  launch_script: examples/ppo_trainer/ppo_debug_square_shared_av_gt_g099.sh
+  local_log_path: /home/gorbov_gv/safe_rl_nlp/logdir/ppo_debug_square_shared_av_gt_g099_20260911_200739.log
+  git_commit: 1e41228cf165dd802a7e937c32f428288726d6a4
+  start_date: '2026-09-11'
+  status: running
+  success_max: null
+  success_last: null
+  checkpoint_mode: actor_only
+  checkpoint_schedule: early/mid/late @ global_step 40/75/110
+  checkpoints: []
+  notes: 'Main architecture test: dual separate critic vs shared actor-value under
+    identical discounted G_t^0.99. Value loss=two-hot CE (not MAE). gae_by_trajectory=False
+    to avoid double-count. Bins [-5,6]/0.4 kept (same as 4be19); monitor clipping_fraction.'
+  hypothesis:
+  - H_arch_shared_vs_dual
+  parent_experiment: ds8_dual_gt_g099_h50_seed1
+  compare_with:
+  - 90deefed8ddc458da4f27349a14bf4f4
+  - 4be19de5e50949359891ce852700d565
+  - 874bc480b5224efb9b92795d271ca81c
+  - 2a42e153bdb0448789a56140e70fdf50
+  tags:
+  - shared_actor_value
+  - G_t
+  - gamma0.99
+  - 8x8
+  - aicenter3
+  - actor_only_ckpt
+  - running
+  pid: 343079
+  source_snapshot_note: Synced files from safe@1e41228; aicenter3 tree has no .git
+    (SOURCE_GIT_COMMIT file).
+  cuda_visible_devices_note: CVD=3,4 because broken nvidia GPU2 shifts CUDA indices;
+    maps to physical nvidia 4+5
+  prior_dead_comet_keys:
+  - f70ad71b8b414747a32d443a8d545431
+  - 21abf9053f0c43e3953f32dc8a51df2e
+  - 107ce44206e646d98d248b71ff637591
