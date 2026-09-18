@@ -104,6 +104,10 @@ actor_rollout_ref:
     actor_value_micro_batch_size_per_gpu: null
     # Return target encoding for value CE: one_hot (round to bin) | two_hot (linear blend of adjacent bins).
     actor_value_target_encoding: one_hot
+    # ce (default), mae (= 0.5 * L1(softmax(bin_logits), target_dist)), or clipped_mae.
+    actor_value_loss_type: ce
+    # With clipped_mae, examples with target-support mass > rho get zero value loss.
+    actor_value_clipped_mae_rho: 0.2
     # If true: value CE targets are per-token GAE returns (batch["returns"]), not scalar episode return.
     actor_value_target_from_returns: False
     # If true with actor_value_token: policy and value each get zero_grad -> backward -> step.
@@ -334,6 +338,9 @@ trainer:
   nnodes: 1
   n_gpus_per_node: 8
   save_freq: -1
+  # Shared actor-value: save LoRA adapter only (no optimizer/critic) at stage steps.
+  actor_lora_only_checkpoint: False
+  actor_lora_stage_steps: []  # e.g. [40, 75, 110] -> early/mid/late
   # auto: find the last ckpt to resume. If can't find, start from scratch
   resume_mode: auto # or disable or resume_path if resume_from_path is set
   resume_from_path: null

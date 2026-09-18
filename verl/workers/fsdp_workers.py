@@ -1311,6 +1311,47 @@ class ActorRolloutRefWorker(Worker):
 
         return output
 
+    def _save_lora_adapter_only(self, local_path: str):
+        """Save Peft LoRA adapter weights only (no FSDP model/optimizer shards)."""
+        assert self._is_actor
+        if not (self._is_lora and isinstance(self.actor_module, PeftModel)):
+            raise RuntimeError("actor_lora_only_checkpoint requires a PeftModel actor")
+
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.actor_module_fsdp)
+
+        lora_save_path = os.path.join(local_path, "lora_adapter")
+        peft_config = {}
+        if dist.get_rank() == 0:
+            os.makedirs(lora_save_path, exist_ok=True)
+            peft_config = asdict(self.actor_module.peft_config.get("default", {}))
+            peft_config["task_type"] = peft_config["task_type"].value
+            peft_config["peft_type"] = peft_config["peft_type"].value
+            peft_config["target_modules"] = list(peft_config["target_modules"])
+        try:
+            if isinstance(self.actor_module_fsdp, FSDP):
+                self.actor_module_fsdp = self.actor_module_fsdp.cuda()
+                lora_params = layered_summon_lora_params(self.actor_module_fsdp)
+                if dist.get_rank() == 0:
+                    save_file(lora_params, os.path.join(lora_save_path, "adapter_model.safetensors"))
+                    with open(os.path.join(lora_save_path, "adapter_config.json"), "w", encoding="utf-8") as f:
+                        json.dump(peft_config, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            if dist.get_rank() == 0:
+                print(f"[rank-{self.rank}]: Save LoRA Adapter Error ({e})")
+        dist.barrier()
+        if dist.get_rank() == 0:
+            print(f"[rank-{self.rank}]: Saved LoRA-only adapter to: {lora_save_path}")
+
+        if self._is_offload_param:
+            offload_fsdp_model_to_cpu(self.actor_module_fsdp)
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def save_lora_adapter_only(self, local_path, hdfs_path=None, global_step=0, max_ckpt_to_keep=None):
+        """Public RPC: actor LoRA adapter only (no optimizer / trainer state)."""
+        del hdfs_path, global_step, max_ckpt_to_keep  # unused; signature matches save_checkpoint
+        self._save_lora_adapter_only(local_path)
+
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def save_checkpoint(self, local_path, hdfs_path=None, global_step=0, max_ckpt_to_keep=None):
         # only support save and load ckpt for actor
@@ -1845,7 +1886,7 @@ class RewardModelWorker(Worker):
                 auto_wrap_policy=auto_wrap_policy,
                 device_id=get_torch_device().current_device(),
                 sharding_strategy=sharding_strategy,  # zero3
-                sync_module_states=True,
+                sync_module_states=False,  # critic loads same checkpoint
                 cpu_offload=CPUOffload(offload_params=True),
                 forward_prefetch=False,
                 device_mesh=self.device_mesh,
