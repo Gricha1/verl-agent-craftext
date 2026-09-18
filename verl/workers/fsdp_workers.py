@@ -76,6 +76,16 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 device_name = get_device_name()
 
+def _is_flash_attn_available():
+    if not is_cuda_available:
+        return False
+    try:
+        import flash_attn  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 
 def create_device_mesh(world_size, fsdp_size):
     if fsdp_size < 0 or fsdp_size >= world_size:
@@ -218,7 +228,7 @@ class ActorRolloutRefWorker(Worker):
 
         # override model kwargs
         # Используем flash_attention_2 только если CUDA доступна
-        attn_impl = "flash_attention_2" if is_cuda_available else "eager"
+        attn_impl = "flash_attention_2" if _is_flash_attn_available() else "eager"
         actor_model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=trust_remote_code, attn_implementation=attn_impl)
                 
         # patch for kimi-vl
@@ -1452,7 +1462,7 @@ class CriticWorker(Worker):
         from transformers import AutoConfig, AutoModelForTokenClassification, AutoModelForVision2Seq
 
         # Используем flash_attention_2 только если CUDA доступна
-        attn_impl = "flash_attention_2" if is_cuda_available else "eager"
+        attn_impl = "flash_attention_2" if _is_flash_attn_available() else "eager"
         critic_model_config = AutoConfig.from_pretrained(local_path, attn_implementation=attn_impl, trust_remote_code=config.model.get("trust_remote_code", False))
         is_vlm_critic = type(critic_model_config) in AutoModelForVision2Seq._model_mapping.keys()
         if not is_vlm_critic:
@@ -1811,7 +1821,7 @@ class RewardModelWorker(Worker):
 
         trust_remote_code = config.model.get("trust_remote_code", False)
         # Используем flash_attention_2 только если CUDA доступна
-        attn_impl = "flash_attention_2" if is_cuda_available else "eager"
+        attn_impl = "flash_attention_2" if _is_flash_attn_available() else "eager"
         model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=trust_remote_code, attn_implementation=attn_impl)
         model_config.num_labels = 1
 
