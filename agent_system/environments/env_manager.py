@@ -97,6 +97,7 @@ class Gsm8kEnvironmentManager(EnvironmentManagerBase):
 
         from agent_system.environments.env_package.caged_craftext.projection import (
             get_single_token_return_template_no_his,
+            extract_reasoning_text,
         )
         from agent_system.environments.env_package.caged_craftext.return_tokens import (
             return_bin_spec_from_env,
@@ -783,6 +784,7 @@ from agent_system.environments.env_package.caged_craftext.projection import (
     get_single_token_action_vl_template_no_his,
     get_single_token_return_template_no_his,
     get_single_token_return_vl_template_no_his,
+    format_executed_actions_history,
     CRAFTEXT_EXTENDED_TEMPLATE_NO_HIS,
     ACTION_TO_TEXT as CAGED_ACTION_TO_TEXT,
 )
@@ -968,7 +970,30 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
             if instr:
                 self.tasks[i] = instr
 
-        self.memory.store({'text_obs': self.pre_text_obs, 'action': text_actions})
+        # Store discrete action tokens for episode memory (cleaner than raw LLM text).
+        try:
+            from agent_system.environments.env_package.caged_craftext.action_tokens import (
+                action_token_label,
+            )
+            stored_actions = []
+            for i, raw in enumerate(text_actions):
+                try:
+                    aid = int(to_numpy(action_ids[i]))
+                    stored_actions.append(action_token_label(aid) if aid >= 0 else str(raw))
+                except Exception:
+                    stored_actions.append(str(raw))
+        except Exception:
+            stored_actions = list(text_actions)
+        # Extract reasoning text from LLM output (for reasoning mode)
+        reasoning_texts = []
+        try:
+            from agent_system.environments.env_package.caged_craftext.projection import extract_reasoning_text
+            for raw in text_actions:
+                reasoning_texts.append(extract_reasoning_text(str(raw)))
+        except Exception:
+            reasoning_texts = [""] * len(text_actions)
+        
+        self.memory.store({'text_obs': self.pre_text_obs, 'action': stored_actions, 'reasoning': reasoning_texts})
         self.pre_text_obs = next_text_renders
 
         # Извлекаем constraint информацию, если есть
@@ -1015,6 +1040,45 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
 
         return next_observations, rewards, dones, infos
 
+    def _executed_actions_history(self, env_idx: int, init: bool = False) -> str:
+        """Format actions already taken in this episode for actor/critic prompts."""
+        history_length = int(getattr(self.config.env, "history_length", 0) or 0)
+        if init or history_length <= 0 or self.memory is None or self.memory._data is None:
+            return "(none)"
+        try:
+            records = self.memory[env_idx]
+        except Exception:
+            return "(none)"
+        if not records:
+            return "(none)"
+        recent = records[-history_length:]
+        actions = [rec.get("action", "") for rec in recent]
+        return format_executed_actions_history(actions)
+
+    def _reasoning_history(self, env_idx: int, init: bool = False) -> str:
+        """Format last N reasoning texts from this episode (oldest → newest)."""
+        if init or self.memory is None or self.memory._data is None:
+            return "(none)"
+        try:
+            records = self.memory[env_idx]
+        except Exception:
+            return "(none)"
+        if not records:
+            return "(none)"
+        # N = env.reasoning_history_length (default 5, reference value)
+        n_reasoning = int(getattr(self.config.env, "reasoning_history_length", 5))
+        recent = records[-n_reasoning:]
+        reasonings = [rec.get("reasoning", "") for rec in recent]
+        # Filter out empty strings
+        reasonings = [r for r in reasonings if r]
+        if not reasonings:
+            return "(none)"
+        # Format as numbered list
+        parts = []
+        for i, r in enumerate(reasonings, 1):
+            parts.append(f"{i}. {r}")
+        return chr(10).join(parts)
+
     def build_text_obs(self, text_renders: List[str], infos: List[Dict], init: bool = False) -> List[str]:
         """
         Строит текстовые наблюдения из рендеров и инфо.
@@ -1027,6 +1091,7 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
         
         # Получаем параметр enable_reasoning из config (по умолчанию True для обратной совместимости)
         enable_reasoning = getattr(self.config.env, 'enable_reasoning', True)
+        history_length = int(getattr(self.config.env, "history_length", 0) or 0)
         
         # Выбираем шаблоны в зависимости от prompt_template_type
         if prompt_template_type == 'extended_template':
@@ -1034,6 +1099,14 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
             template_no_his = get_craftext_extended_template_no_his()
             # Для extended шаблона не используем шаблон с историей, так как он не определен
             template = template_no_his  # Fallback
+        elif prompt_template_type == 'single_token_action_reasoning':
+            if is_vl_env:
+                from agent_system.environments.env_package.caged_craftext.projection import get_single_token_action_reasoning_vl_template_no_his
+                template_no_his = get_single_token_action_reasoning_vl_template_no_his()
+            else:
+                from agent_system.environments.env_package.caged_craftext.projection import get_single_token_action_reasoning_template_no_his
+                template_no_his = get_single_token_action_reasoning_template_no_his()
+            template = template_no_his
         elif prompt_template_type == 'single_token_action':
             if is_vl_env:
                 template_no_his = get_single_token_action_vl_template_no_his()
@@ -1054,33 +1127,53 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
             
             # Получаем constraint, если есть
             constraint = info.get('constraint', '')
-            
-            # Получаем историю действий
-            history = self.memory.get(i) if hasattr(self.memory, 'get') else []
-            action_history_str = ""
-            if history and not init:
-                action_hist = [h.get('action', '') for h in history[-5:]]  # Последние 5 действий
-                action_history_str = "\n".join([f"Step {j+1}: {act}" for j, act in enumerate(action_hist)])
+            action_history_str = self._executed_actions_history(i, init=init)
             
             # Строим промпт
-            # Для extended_template всегда используем template_no_his (так как extended шаблон определен только без истории)
-            if prompt_template_type in ('extended_template', 'single_token_action') or self.config.env.history_length == 0:
-                if prompt_template_type in ('extended_template', 'single_token_action'):
-                    # Extended / single-token / VL: no action history in prompt
-                    if is_vl_env and prompt_template_type == 'single_token_action':
-                        prompt = template_no_his.format(task_description=task)
-                    else:
-                        prompt = template_no_his.format(
-                            task_description=task,
-                            current_observation=text_render
-                        )
-                elif action_history_str:
+            if prompt_template_type == 'single_token_action':
+                if is_vl_env:
+                    prompt = template_no_his.format(
+                        task_description=task,
+                        action_history=action_history_str,
+                    )
+                else:
+                    prompt = template_no_his.format(
+                        task_description=task,
+                        current_observation=text_render,
+                        action_history=action_history_str,
+                    )
+            elif prompt_template_type == 'single_token_action_reasoning':
+                reasoning_history_str = self._reasoning_history(i, init=init)
+                if is_vl_env:
+                    prompt = template_no_his.format(
+                        task_description=task,
+                        action_history=action_history_str,
+                        reasoning_history=reasoning_history_str,
+                    )
+                else:
+                    prompt = template_no_his.format(
+                        task_description=task,
+                        current_observation=text_render,
+                        action_history=action_history_str,
+                        reasoning_history=reasoning_history_str,
+                    )
+            elif prompt_template_type == 'extended_template' or history_length <= 0:
+                if prompt_template_type == 'extended_template':
+                    prompt = template_no_his.format(
+                        task_description=task,
+                        current_observation=text_render,
+                    )
+                elif action_history_str and action_history_str != "(none)":
                     # Обычный шаблон с историей (если есть)
+                    try:
+                        records = self.memory[i] if self.memory is not None else []
+                    except Exception:
+                        records = []
                     prompt = template.format(
                         task_description=task,
-                        step_count=len(history) if history else 0,
+                        step_count=len(records),
                         action_history=action_history_str,
-                        current_step=len(history) if history else 0,
+                        current_step=len(records),
                         current_observation=text_render
                     )
                 else:
@@ -1091,11 +1184,15 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
                     )
             else:
                 # Обычный шаблон с историей
+                try:
+                    records = self.memory[i] if self.memory is not None else []
+                except Exception:
+                    records = []
                 prompt = template.format(
                     task_description=task,
-                    step_count=len(history) if history else 0,
+                    step_count=len(records),
                     action_history=action_history_str if action_history_str else "No actions taken yet.",
-                    current_step=len(history) if history else 0,
+                    current_step=len(records),
                     current_observation=text_render
                 )
             
@@ -1134,16 +1231,19 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
                 self.tasks[i] if hasattr(self, "tasks") and i < len(self.tasks) else "No instruction found"
             )
             constraint = info.get('constraint', '')
+            action_history_str = self._executed_actions_history(i, init=init)
             if value_template_type == 'single_token_return_vl':
                 prompt = template_no_his.format(
                     task_description=task,
                     return_bin_legend=legend,
+                    action_history=action_history_str,
                 )
             else:
                 prompt = template_no_his.format(
                     task_description=task,
                     current_observation=text_render,
                     return_bin_legend=legend,
+                    action_history=action_history_str,
                 )
             if constraint:
                 prompt += f"\n\n**CONSTRAINT:** {constraint}"
@@ -1411,10 +1511,8 @@ def make_envs(config):
         # Модификация Craftext с поддержкой оракла
         # Проверяем наличие обоих слов "craftext" и "oracle" в имени среды
         print(f"[make_envs] Detected Oracle environment: {config.env.env_name}")
-        from agent_system.environments.env_package.craftext import (
-            build_craftext_envs_oracle, 
-            craftext_projection_oracle
-        )
+        from agent_system.environments.env_package.craftext.envs_oracle import build_craftext_envs_oracle
+        from agent_system.environments.env_package.craftext.projection_oracle import craftext_projection_oracle
 
         # Параметры для среды Craftext
         env_kwargs = {
@@ -1477,7 +1575,11 @@ def make_envs(config):
                 f"(num_cpus={resources_per_worker.get('num_cpus', '?')}); "
                 "GPUs stay for vLLM/FSDP."
             )
-        from agent_system.environments.env_package.caged_craftext import build_caged_craftext_envs, build_caged_craftext_envs_optimistic, craftext_projection
+        from agent_system.environments.env_package.caged_craftext.envs import (
+            build_caged_craftext_envs,
+            build_caged_craftext_envs_optimistic,
+        )
+        from agent_system.environments.env_package.caged_craftext.projection import craftext_projection
 
         use_pixel_obs = "vlenv" in str(config.env.env_name).lower()
 
@@ -1569,7 +1671,8 @@ def make_envs(config):
     elif "craftext" in config.env.env_name.lower():
         # 1. Импортируем все необходимое для Craftext
         print(f"[make_envs] Detected regular Craftext environment: {config.env.env_name}")
-        from agent_system.environments.env_package.craftext import build_craftext_envs, craftext_projection
+        from agent_system.environments.env_package.craftext.envs import build_craftext_envs
+        from agent_system.environments.env_package.craftext.projection import craftext_projection
 
         # 2. Указываем параметры для среды Craftext (если нужны)
         env_kwargs = {
