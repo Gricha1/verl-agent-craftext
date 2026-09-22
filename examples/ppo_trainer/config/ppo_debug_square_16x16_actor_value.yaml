@@ -1,0 +1,92 @@
+# Hyperparameters for the 16x16 shared actor-value launcher.
+# One LLM/LoRA predicts both an action token and a discretized return token.
+job:
+  run_name: "PPO Debug Square 16x16 dual-prompt actor value"
+  num_optimistic_envs: 64
+  optimistic_reset_ratio: 8
+  critic_warmup: 0
+  use_actor_lora: true
+  total_epochs: 8000
+  engine: vllm
+  no_reasoning: true
+  auto_reset: false
+  use_action_head: false
+  prompt_template_type: single_token_action
+  observation_type: ascii
+  return_bin_min: -26
+  return_bin_max: 16
+  return_bin_step: 1.5
+  actor_value_loss_coef: 1.0
+  actor_value_separate_optimizer_steps: true
+  actor_value_target_encoding: two_hot
+  actor_value_entropy_coef: 0.1
+  entropy_single_token_fastpath: true
+  entropy_band_enable: false
+  entropy_band_low: 0.7
+  entropy_band_high: 1.4
+  entropy_band_coef_lr: 0.05
+  entropy_band_coef_low: 0.0
+  entropy_band_coef_high: 1.0
+  checkpoint_dir: training_checkpoints/verl_agent_caged_craftext_debug_square_16x16_actor_value
+
+# 16x16 potential returns: approximately [-26, 16], discretized into 29 bins.
+# GAE is response-level because the value target itself is remaining return G_t.
+overrides:
+  - ++env.craftext_settings=debug_square_16x16
+  - +env.use_optimistic_parallel=True
+  - +env.optimistic_reset_ratio=8
+  - +env.use_ray_text_render_workers=False
+  - +env.value_prompt_template_type=single_token_return
+  - +env.value_return_min=-26
+  - +env.value_return_max=16
+  - +env.value_return_bin_step=1.5
+  - ++env.use_jax_gpu=False
+  - ++env.jax_gpu_fraction=0.15
+
+  - algorithm.use_actor_value_token=True
+  - algorithm.gae_by_trajectory=False
+  - actor_rollout_ref.actor.actor_value_token=True
+  - actor_rollout_ref.actor.actor_value_loss_coef=1.0
+  - actor_rollout_ref.actor.actor_value_separate_optimizer_steps=true
+  - actor_rollout_ref.actor.actor_value_target_encoding=two_hot
+  - actor_rollout_ref.actor.actor_value_entropy_coef=0.1
+  - actor_rollout_ref.actor.actor_value_target_from_returns=True
+  - actor_rollout_ref.actor.actor_value_return_min=-26
+  - actor_rollout_ref.actor.actor_value_return_max=16
+  - actor_rollout_ref.actor.actor_value_return_bin_step=1.5
+
+  - actor_rollout_ref.model.enable_gradient_checkpointing=True
+  - critic.model.enable_gradient_checkpointing=True
+  - actor_rollout_ref.rollout.gpu_memory_utilization=0.55
+  - actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16
+  - actor_rollout_ref.actor.ppo_mini_batch_size=64
+  - critic.ppo_micro_batch_size_per_gpu=16
+  - critic.ppo_mini_batch_size=64
+  - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8
+  - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=8
+  - actor_rollout_ref.actor.fsdp_config.param_offload=False
+  - actor_rollout_ref.actor.fsdp_config.optimizer_offload=False
+  - critic.model.fsdp_config.param_offload=False
+  - critic.model.fsdp_config.optimizer_offload=False
+
+  - actor_rollout_ref.rollout.val_kwargs.temperature=1.0
+  - actor_rollout_ref.actor.entropy_coeff=0.01
+  - actor_rollout_ref.actor.entropy_coeff_schedule.enable=False
+  - actor_rollout_ref.actor.entropy_band.enable=false
+  - actor_rollout_ref.actor.entropy_band.low=0.7
+  - actor_rollout_ref.actor.entropy_band.high=1.4
+  - actor_rollout_ref.actor.entropy_band.coef_lr=0.05
+  - actor_rollout_ref.actor.entropy_band.coef_low=0.0
+  - actor_rollout_ref.actor.entropy_band.coef_high=1.0
+  - actor_rollout_ref.actor.entropy_over_valid_actions=True
+  - actor_rollout_ref.actor.entropy_action_single_token_fastpath=true
+  - actor_rollout_ref.actor.entropy_action_batched_forward=False
+  - actor_rollout_ref.actor.entropy_action_length_normalize=True
+
+  - trainer.critic_warmup=0
+  - trainer.resume_mode=disable
+  - trainer.save_freq=-1
+  - trainer.test_freq=20
+  - trainer.max_actor_ckpt_to_keep=1
+  - trainer.max_critic_ckpt_to_keep=1
+  - trainer.default_local_dir=training_checkpoints/verl_agent_caged_craftext_debug_square_16x16_actor_value
