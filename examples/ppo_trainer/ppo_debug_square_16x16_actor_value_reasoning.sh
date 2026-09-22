@@ -45,7 +45,7 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   actor_rollout_ref.actor.actor_value_token=True \
   actor_rollout_ref.actor.actor_value_target_encoding=two_hot \
   actor_rollout_ref.actor.actor_value_loss_type="$ACTOR_VALUE_LOSS_TYPE" \
-  actor_rollout_ref.actor.clipped_mae_rho="$CLIPPED_MAE_RHO" \
+  +actor_rollout_ref.actor.clipped_mae_rho="$CLIPPED_MAE_RHO" \
   actor_rollout_ref.actor.actor_value_loss_coef=1.0 \
   actor_rollout_ref.actor.actor_value_separate_optimizer_steps=true \
   actor_rollout_ref.actor.actor_value_entropy_coef=0.1 \

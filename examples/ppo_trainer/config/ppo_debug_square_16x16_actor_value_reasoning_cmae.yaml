@@ -30,7 +30,7 @@ overrides:
   - actor_rollout_ref.actor.actor_value_token=True
   - actor_rollout_ref.actor.actor_value_target_encoding=two_hot
   - actor_rollout_ref.actor.actor_value_loss_type=clipped_mae
-  - actor_rollout_ref.actor.clipped_mae_rho=0.2
+  - +actor_rollout_ref.actor.clipped_mae_rho=0.2
   - actor_rollout_ref.actor.actor_value_target_from_returns=True
   - actor_rollout_ref.actor.actor_value_return_min=-26
   - actor_rollout_ref.actor.actor_value_return_max=16
