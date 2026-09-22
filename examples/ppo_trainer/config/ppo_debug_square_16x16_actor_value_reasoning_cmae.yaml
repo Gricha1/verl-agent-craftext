@@ -1,0 +1,51 @@
+# Matched to the CE reasoning config except for value loss: clipped MAE (CMAE).
+job:
+  run_name: "PPO Debug Square 16x16 shared actor value reasoning CMAE"
+  num_optimistic_envs: 64
+  no_reasoning: false
+  max_response_length: 320
+  prompt_template_type: single_token_action_reasoning
+  history_length: 50
+  reasoning_history_length: 3
+  actor_value_loss_type: clipped_mae
+  clipped_mae_rho: 0.2
+  checkpoint_dir: training_checkpoints/verl_agent_caged_craftext_16x16_actor_value_reasoning_cmae
+
+overrides:
+  - ++env.craftext_settings=debug_square_16x16
+  - +env.use_optimistic_parallel=True
+  - +env.optimistic_reset_ratio=8
+  - +env.use_ray_text_render_workers=False
+  - +env.value_prompt_template_type=single_token_return
+  - +env.value_return_min=-26
+  - +env.value_return_max=16
+  - +env.value_return_bin_step=1.5
+  - ++env.use_jax_gpu=False
+  - ++env.jax_gpu_fraction=0.15
+  - env.history_length=50
+  - +env.reasoning_history_length=3
+  - data.max_prompt_length=3072
+  - algorithm.use_actor_value_token=True
+  - algorithm.gae_by_trajectory=False
+  - actor_rollout_ref.actor.actor_value_token=True
+  - actor_rollout_ref.actor.actor_value_target_encoding=two_hot
+  - actor_rollout_ref.actor.actor_value_loss_type=clipped_mae
+  - actor_rollout_ref.actor.clipped_mae_rho=0.2
+  - actor_rollout_ref.actor.actor_value_target_from_returns=True
+  - actor_rollout_ref.actor.actor_value_return_min=-26
+  - actor_rollout_ref.actor.actor_value_return_max=16
+  - actor_rollout_ref.actor.actor_value_return_bin_step=1.5
+  - actor_rollout_ref.rollout.gpu_memory_utilization=0.55
+  - actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16
+  - actor_rollout_ref.actor.ppo_mini_batch_size=64
+  - critic.ppo_micro_batch_size_per_gpu=16
+  - critic.ppo_mini_batch_size=64
+  - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8
+  - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=8
+  - actor_rollout_ref.actor.entropy_coeff=0.01
+  - actor_rollout_ref.actor.entropy_over_valid_actions=False
+  - trainer.critic_warmup=0
+  - trainer.resume_mode=disable
+  - trainer.save_freq=-1
+  - trainer.test_freq=20
+  - trainer.default_local_dir=training_checkpoints/verl_agent_caged_craftext_16x16_actor_value_reasoning_cmae

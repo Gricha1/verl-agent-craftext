@@ -763,6 +763,21 @@ text, increasing prompt length and eventually harming action formatting.
 
 ## 17. Changelog
 
+### 17.1 16x16 shared actor/value CMAE with reasoning (2026-09-23)
+
+The third 16x16 line is a shared actor/value model with reasoning enabled. Its
+actor emits `<think>...</think><action>ACTION_NAME</action>`; it retains 50
+executed action names and the last three non-empty reasoning snippets. The
+value prompt is separate but is predicted by the same LLM/LoRA as the actor.
+
+CMAE is `actor_value_loss_type=clipped_mae`: a two-hot return-bin target uses
+categorical MAE only if its target-support mass is at most `rho=0.2`:
+`L = 1[p_target_mass <= 0.2] * 0.5 * sum_j |p_j-y_j|`. Expected diagnostics:
+`actor_value/value_loss_type=2`, `actor_value/p_target_mass_le_0.2`,
+`actor_value/clipped_mae`, and `actor_value/unclipped_mae`. It is an ablation,
+not a proven improvement; the CE and CMAE reasoning configs are otherwise
+matched.
+
 - **2026-09-21** — Added §14a «Правило воспроизводимости экспериментов и
   изменения гиперпараметров» (обязательное референс-сравнение перед запуском,
   запрет самостоятельных изменений методики, порядок фиксации запусков) после
