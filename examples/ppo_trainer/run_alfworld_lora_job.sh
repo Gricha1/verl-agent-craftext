@@ -27,14 +27,18 @@ if [ -z "$CONDA_DEFAULT_ENV" ] || [ "$CONDA_DEFAULT_ENV" != "verl-agent-311" ]; 
   fi
 fi
 
-export COMET_API_KEY="${COMET_API_KEY:-3OfuYHwcRgIwG7DzgzJ190igY}"
+export COMET_API_KEY="${COMET_API_KEY:-}"
 export RAY_TEMP_DIR="${RAY_TEMP_DIR:-/tmp/ray_temp}"
+# AlfWorld uses TextWorld workers with fork; avoid inheriting Craftax texture reload setup.
+export CRAFTAX_RELOAD_TEXTURES="${CRAFTAX_RELOAD_TEXTURES:-False}"
+# Game files for AlfredTWEnv (config_tw.yaml uses $ALFWORLD_DATA/...).
+export ALFWORLD_DATA="${ALFWORLD_DATA:-${HOME}/.cache/alfworld}"
 # Host RAM ~126GB; avoid Ray OOM-killer during FSDP+vLLM+AlfWorld workers.
 export RAY_memory_usage_threshold="${RAY_memory_usage_threshold:-0.98}"
 export COMET_EXPERIMENT_KEY_FILE="${COMET_EXPERIMENT_KEY_FILE:-$RAY_TEMP_DIR/comet_experiment_key.txt}"
 export GPU_PROFILER_ENABLED="${GPU_PROFILER_ENABLED:-1}"
 export GPU_PROFILER_INTERVAL_SEC="${GPU_PROFILER_INTERVAL_SEC:-5}"
-export COMET_PROJECT_NAME="${COMET_PROJECT_NAME:-verl_agent_alfworld}"
+export COMET_PROJECT_NAME="${COMET_PROJECT_NAME:-verl_agent_caged_craftext}"
 mkdir -p "$RAY_TEMP_DIR"
 
 GPU_PROFILER_PID=""
@@ -96,6 +100,7 @@ else
 fi
 
 echo "[INFO] PROJECT_ROOT: $PROJECT_ROOT"
+echo "[INFO] ALFWORLD_DATA: $ALFWORLD_DATA"
 echo "[INFO] ALFWORLD_DATA_DIR: $ALFWORLD_DATA_DIR"
 echo "[INFO] ENGINE: $ENGINE"
 echo "[INFO] TRAIN_BATCH_SIZE: $train_data_size"
@@ -104,6 +109,18 @@ echo "[INFO] max_response_length: $max_response_length"
 echo "[INFO] total_epochs: $total_epochs"
 echo "[INFO] USE_ACTOR_LORA: $USE_ACTOR_LORA (rank=$ACTOR_LORA_RANK alpha=$ACTOR_LORA_ALPHA when true)"
 echo "[INFO] CRITIC_WARMUP: $CRITIC_WARMUP"
+
+if [ ! -d "$ALFWORLD_DATA/json_2.1.1/train" ] || \
+   ! find "$ALFWORLD_DATA/json_2.1.1/train" -name 'game.tw-pddl' -print -quit 2>/dev/null | grep -q .; then
+  echo "[INFO] AlfWorld games missing under $ALFWORLD_DATA — downloading..."
+  bash "$PROJECT_ROOT/scripts/download_alfworld_data.sh"
+fi
+n_games=$(find "$ALFWORLD_DATA/json_2.1.1/train" -name 'game.tw-pddl' 2>/dev/null | wc -l)
+echo "[INFO] AlfWorld train games found: $n_games"
+if [ "$n_games" -lt 1 ]; then
+  echo "[ERROR] Still 0 AlfWorld games after download. Check network / ALFWORLD_DATA=$ALFWORLD_DATA"
+  exit 1
+fi
 
 if [ ! -f "$ALFWORLD_DATA_DIR/train.parquet" ] || [ ! -f "$ALFWORLD_DATA_DIR/test.parquet" ]; then
   echo "[INFO] Preparing AlfWorld placeholder parquet (text modality) ..."
@@ -183,7 +200,7 @@ python -m verl.trainer.main_ppo \
   env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
   trainer.critic_warmup=$CRITIC_WARMUP \
   trainer.logger=['console','comet'] \
-  trainer.project_name='verl_agent_alfworld' \
+  trainer.project_name="$COMET_PROJECT_NAME" \
   trainer.experiment_name="$RUN_NAME" \
   trainer.n_gpus_per_node=2 \
   trainer.nnodes=1 \

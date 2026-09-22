@@ -87,7 +87,7 @@ bash examples/ppo_trainer/run_alfworld_lora_job.sh \
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=128 \
   actor_rollout_ref.ref.fsdp_config.param_offload=False \
   actor_rollout_ref.actor.fsdp_config.param_offload=False \
-  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=128 \
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=64 \
   actor_rollout_ref.actor.ppo_mini_batch_size=256 \
   actor_rollout_ref.rollout.val_kwargs.temperature=0.4 \
   actor_rollout_ref.actor.entropy_coeff=0.01 \

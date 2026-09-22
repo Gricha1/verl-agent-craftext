@@ -16,9 +16,7 @@ BLOCK_PIXEL_SIZE_HUMAN = 64
 BLOCK_PIXEL_SIZE_IMG = 16
 BLOCK_PIXEL_SIZE_AGENT = 10
 INVENTORY_OBS_HEIGHT = 4
-TEXTURE_CACHE_FILE = os.path.join(
-    pathlib.Path(__file__).parent.resolve(), "assets", "texture_cache.pbz2"
-)
+TEXTURE_CACHE_FILE = "/home/gorbov_gv/craftax_cache/texture_cache.pbz2"
 
 # ENUMS
 class BlockType(Enum):

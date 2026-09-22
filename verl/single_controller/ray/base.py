@@ -712,6 +712,21 @@ def create_colocated_worker_cls(class_dict: dict[str, RayClassWithInitArgs]):
     class WorkerDict(worker_cls):
         def __init__(self):
             super().__init__()
+            # Explicitly set CUDA_VISIBLE_DEVICES based on Ray's GPU allocation
+            import os
+            import ray
+            try:
+                # Get the GPU IDs assigned by Ray
+                gpu_ids = ray.get_gpu_ids()
+                if gpu_ids:
+                    # Set CUDA_VISIBLE_DEVICES to the first assigned GPU
+                    os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(str(int(gpu_id)) for gpu_id in gpu_ids)
+                    print(f"[WorkerDict] Set CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']} from Ray GPU IDs: {gpu_ids}")
+                else:
+                    print(f"[WorkerDict] No GPU IDs assigned by Ray")
+            except Exception as e:
+                print(f"[WorkerDict] Error getting GPU IDs from Ray: {e}")
+            
             self.worker_dict = {}
             for key, user_defined_cls in cls_dict.items():
                 user_defined_cls = _unwrap_ray_remote(user_defined_cls)

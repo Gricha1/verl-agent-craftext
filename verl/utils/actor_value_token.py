@@ -555,15 +555,128 @@ def two_hot_return_distribution(
     return out
 
 
+
+def two_hot_target_mass_diagnostics(
+    bin_logits: torch.Tensor,
+    target_returns: torch.Tensor,
+    *,
+    spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC,
+) -> dict[str, float]:
+    """Diagnostics for two-hot CE: p_left/p_right/p_target_mass (NOT exp(-CE)).
+
+    For two-hot targets with mass on bins (k, k+1) and weights (alpha, 1-alpha):
+        CE = -alpha log p_left - (1-alpha) log p_right
+    so exp(-CE) is NOT a probability of the target support.
+    """
+    if bin_logits.numel() == 0:
+        return {}
+    max_bin = bin_logits.shape[-1] - 1
+    logits = bin_logits
+    targets = target_returns
+    if logits.dim() == 3:
+        logits = logits.reshape(-1, logits.size(-1))
+        targets = targets.reshape(-1)
+    probs = torch.softmax(logits.to(dtype=torch.float32), dim=-1)
+    log_probs = torch.log(probs.clamp_min(1e-12))
+
+    raw = targets.to(dtype=torch.float32)
+    clipped = raw.clamp(min=float(spec.vmin), max=float(spec.vmax))
+    clip_frac = float((raw != clipped).float().mean().item()) if raw.numel() else 0.0
+    target_bins = ((clipped - float(spec.vmin)) / float(spec.step)).clamp(0.0, float(max_bin))
+    k_low = target_bins.floor().to(dtype=torch.long).clamp(max=max_bin)
+    k_high = (k_low + 1).clamp(max=max_bin)
+    alpha = 1.0 - (target_bins - k_low.to(dtype=torch.float32))  # mass on left
+    at_boundary = k_low >= max_bin
+    alpha = torch.where(at_boundary, torch.ones_like(alpha), alpha)
+    # two_hot_return_distribution uses w_low = 1 - (v - k_low) = alpha here
+
+    gather_left = probs.gather(1, k_low.unsqueeze(1)).squeeze(1)
+    gather_right = probs.gather(1, k_high.unsqueeze(1)).squeeze(1)
+    p_target_mass = gather_left + gather_right
+    # when left==right (edge), mass counted once in scatter but twice here — fix:
+    same = k_low == k_high
+    p_target_mass = torch.where(same, gather_left, p_target_mass)
+
+    target_probs = two_hot_return_distribution(target_bins, max_bin=max_bin)
+    two_hot_ce = -(target_probs * log_probs).sum(dim=-1)
+
+    pred_argmax = probs.argmax(dim=-1)
+    edge_frac = float(((k_low == 0) | (k_low >= max_bin) | (k_high >= max_bin)).float().mean().item())
+
+    def _stats(x: torch.Tensor, prefix: str) -> dict[str, float]:
+        if x.numel() == 0:
+            return {}
+        xs = x.detach().float().cpu()
+        return {
+            f"{prefix}/mean": float(xs.mean().item()),
+            f"{prefix}/median": float(xs.median().item()),
+            f"{prefix}/p01": float(xs.quantile(0.01).item()),
+            f"{prefix}/p05": float(xs.quantile(0.05).item()),
+            f"{prefix}/p95": float(xs.quantile(0.95).item()),
+        }
+
+    out: dict[str, float] = {}
+    out.update(_stats(gather_left, "actor_value/p_left"))
+    out.update(_stats(gather_right, "actor_value/p_right"))
+    out.update(_stats(p_target_mass, "actor_value/p_target_mass"))
+    out.update(_stats(alpha, "actor_value/two_hot_alpha"))
+    out.update(_stats(two_hot_ce, "actor_value/two_hot_CE"))
+    out.update(_stats(k_low.float(), "actor_value/target_left_bin"))
+    out.update(_stats(k_high.float(), "actor_value/target_right_bin"))
+    out.update(_stats(pred_argmax.float(), "actor_value/pred_argmax_bin"))
+    out["actor_value/edge_bin_fraction"] = edge_frac
+    out["actor_value/target_clipping_fraction"] = clip_frac
+    for thr in (1e-4, 1e-3, 0.01, 0.05, 0.1):
+        out[f"actor_value/p_target_mass_lt_{thr:g}"] = float((p_target_mass < thr).float().mean().item())
+    for thr in (0.5, 0.9):
+        out[f"actor_value/p_target_mass_gt_{thr:g}"] = float((p_target_mass > thr).float().mean().item())
+    # Explicitly log that exp(-CE) is NOT p_target (debug only mean).
+    out["actor_value/exp_neg_CE_mean_NOT_p_target"] = float(torch.exp(-two_hot_ce).mean().item())
+    return out
+
+
+
+def categorical_mae_per_example(
+    probs: torch.Tensor,
+    target_probs: torch.Tensor,
+) -> torch.Tensor:
+    """PaW-style categorical MAE: 0.5 * L1(p, y), per example."""
+    return 0.5 * (probs - target_probs).abs().sum(dim=-1)
+
+
+def categorical_mae_loss(
+    probs: torch.Tensor,
+    target_probs: torch.Tensor,
+) -> torch.Tensor:
+    """PaW-style categorical MAE: 0.5 * L1(p, y) averaged over batch.
+
+    For one-hot y with mass on class k: 0.5 * ||p-y||_1 = 1 - p_k.
+    For two-hot y the same formula is the natural generalization.
+    probs/target_probs: (N, num_bins). Returns scalar mean loss.
+    """
+    if probs.numel() == 0:
+        return probs.sum() * 0.0
+    return categorical_mae_per_example(probs, target_probs).mean()
+
+
 def return_token_value_loss(
     bin_logits: torch.Tensor,
     target_returns: torch.Tensor,
     *,
     target_encoding: str = "one_hot",
+    value_loss_type: str = "ce",
+    clipped_mae_rho: float = 0.2,
     response_mask: torch.Tensor | None = None,
     spec: ReturnBinSpec = DEFAULT_RETURN_BIN_SPEC,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Cross-entropy over return bins. Targets are scalar returns in [vmin, vmax]."""
+    """Value loss over return bins (CE, MAE, or confidence-clipped MAE).
+
+    value_loss_type:
+      - "ce": NLL / soft CE (default; preserves historical behavior)
+      - "mae": 0.5 * ||softmax(logits) - target||_1  (PaW-style; equals 1-p_y for one-hot)
+      - "clipped_mae": MAE only while target support mass is <= rho. For two-hot targets,
+        target mass is p_left + p_right, as used by the CMAE experiment.
+    """
     encoding = str(target_encoding).lower()
     max_bin = bin_logits.shape[-1] - 1
     if bin_logits.dim() == 3:
@@ -583,6 +696,8 @@ def return_token_value_loss(
             flat_logits,
             flat_targets,
             target_encoding=target_encoding,
+            value_loss_type=value_loss_type,
+            clipped_mae_rho=clipped_mae_rho,
             response_mask=None,
             spec=spec,
         )
@@ -595,14 +710,152 @@ def return_token_value_loss(
     hard_bins = target_bins.round().to(dtype=torch.long)
     log_probs = F.log_softmax(bin_logits, dim=-1)
 
+    loss_type = str(value_loss_type).lower()
+    if loss_type not in ("ce", "mae", "clipped_mae"):
+        raise ValueError(f"Unsupported actor_value_loss_type: {value_loss_type!r}")
+    if not 0.0 <= float(clipped_mae_rho) <= 1.0:
+        raise ValueError(f"clipped_mae_rho must be in [0, 1], got {clipped_mae_rho!r}")
+
     if encoding == "one_hot":
-        loss = F.nll_loss(log_probs, hard_bins, reduction="mean")
+        num_bins = max_bin + 1
+        target_probs = torch.zeros(
+            hard_bins.size(0), num_bins, device=bin_logits.device, dtype=torch.float32
+        )
+        target_probs.scatter_(1, hard_bins.unsqueeze(1), 1.0)
+        probs = log_probs.exp()
+        if loss_type == "ce":
+            loss = F.nll_loss(log_probs, hard_bins, reduction="mean")
+        elif loss_type == "mae":
+            loss = categorical_mae_loss(probs, target_probs)
+        else:
+            p_target_mass = probs.gather(1, hard_bins.unsqueeze(1)).squeeze(1)
+            per_mae = categorical_mae_per_example(probs, target_probs)
+            active = p_target_mass <= float(clipped_mae_rho)
+            loss = (per_mae * active.to(dtype=per_mae.dtype)).mean()
+        diag = {
+            "actor_value/value_loss_type": {"ce": 0.0, "mae": 1.0, "clipped_mae": 2.0}[loss_type],
+            "actor_value/mae_mean": float(categorical_mae_loss(probs, target_probs).detach().item()),
+        }
+        if loss_type == "clipped_mae":
+            diag.update({
+                "actor_value/p_target_mass_mean": float(p_target_mass.mean().item()),
+                "actor_value/p_target_mass_median": float(p_target_mass.median().item()),
+                "actor_value/p_target_mass_p05": float(torch.quantile(p_target_mass, 0.05).item()),
+                "actor_value/p_target_mass_p95": float(torch.quantile(p_target_mass, 0.95).item()),
+                "actor_value/p_target_mass_le_0.2": float(active.float().mean().item()),
+                "actor_value/clipped_high_conf_fraction": float((~active).float().mean().item()),
+                "actor_value/unclipped_mae": float(per_mae.mean().item()),
+                "actor_value/clipped_mae": float(loss.detach().item()),
+            })
     elif encoding == "two_hot":
         target_probs = two_hot_return_distribution(target_bins, max_bin=max_bin)
-        loss = -(target_probs * log_probs).sum(dim=-1).mean()
+        per = -(target_probs * log_probs).sum(dim=-1)
+        probs = log_probs.exp()
+        if loss_type == "ce":
+            loss = per.mean()
+        elif loss_type == "mae":
+            loss = categorical_mae_loss(probs, target_probs)
+        # Real target-support probabilities (not exp(-CE)).
+        probs = log_probs.exp()
+        k_low = target_bins.floor().to(dtype=torch.long).clamp(max=max_bin)
+        k_high = (k_low + 1).clamp(max=max_bin)
+        alpha = 1.0 - (target_bins - k_low.to(dtype=torch.float32))
+        at_boundary = k_low >= max_bin
+        alpha = torch.where(at_boundary, torch.ones_like(alpha), alpha)
+        p_left = probs.gather(1, k_low.unsqueeze(1)).squeeze(1)
+        p_right = probs.gather(1, k_high.unsqueeze(1)).squeeze(1)
+        p_target_mass = torch.where(k_low == k_high, p_left, p_left + p_right)
+        per_mae = categorical_mae_per_example(probs, target_probs)
+        active_cmae = p_target_mass <= float(clipped_mae_rho)
+        if loss_type == "clipped_mae":
+            loss = (per_mae * active_cmae.to(dtype=per_mae.dtype)).mean()
+        pred_argmax = probs.argmax(dim=-1)
+        raw_t = target_returns.to(dtype=torch.float32)
+        clipped = raw_t.clamp(min=float(spec.vmin), max=float(spec.vmax))
+        edge_frac = float(((k_low == 0) | (k_high >= max_bin)).float().mean().item())
+        clip_frac = float((raw_t != clipped).float().mean().item())
+        bin_centers = (
+            float(spec.vmin)
+            + torch.arange(max_bin + 1, device=probs.device, dtype=torch.float32) * float(spec.step)
+        )
+        pred_value = (probs * bin_centers.unsqueeze(0)).sum(dim=-1)
+        # Pearson corr / explained var vs scalar targets (batch-local).
+        t_c = raw_t - raw_t.mean()
+        p_c = pred_value - pred_value.mean()
+        denom = torch.sqrt((t_c * t_c).sum() * (p_c * p_c).sum()).clamp_min(1e-8)
+        corr = float((t_c * p_c).sum().item() / denom.item()) if raw_t.numel() > 1 else 0.0
+        resid = pred_value - raw_t
+        var_t = float(torch.var(raw_t, unbiased=False).item()) if raw_t.numel() > 1 else 0.0
+        var_r = float(torch.var(resid, unbiased=False).item()) if resid.numel() > 1 else 0.0
+        explained = float(1.0 - (var_r / var_t)) if var_t > 1e-12 else 0.0
+        mae_scalar = float(resid.abs().mean().item()) if resid.numel() else 0.0
+
+        def _pct(x: torch.Tensor, q: float) -> float:
+            if x.numel() == 0:
+                return 0.0
+            return float(torch.quantile(x.detach().float(), q).item())
+
+        diag = {
+            "actor_value/value_loss_type": {"ce": 0.0, "mae": 1.0, "clipped_mae": 2.0}[loss_type],
+            "actor_value/mae_mean": float(categorical_mae_loss(probs, target_probs).detach().item()),
+            "actor_value/p_left_mean": float(p_left.mean().item()),
+            "actor_value/p_right_mean": float(p_right.mean().item()),
+            "actor_value/p_target_mass_mean": float(p_target_mass.mean().item()),
+            "actor_value/p_target_mass_median": float(p_target_mass.median().item()),
+            "actor_value/two_hot_alpha_mean": float(alpha.mean().item()),
+            "actor_value/two_hot_CE_mean": float(per.mean().item()),
+            "actor_value/target_left_bin_mean": float(k_low.float().mean().item()),
+            "actor_value/target_right_bin_mean": float(k_high.float().mean().item()),
+            "actor_value/pred_argmax_bin_mean": float(pred_argmax.float().mean().item()),
+            "actor_value/edge_bin_fraction": edge_frac,
+            "actor_value/target_clipping_fraction": clip_frac,
+            "actor_value/exp_neg_CE_mean_NOT_p_target": float(torch.exp(-per).mean().item()),
+            # User-facing aliases for Comet / dashboard.
+            "value_target/min": float(raw_t.min().item()) if raw_t.numel() else 0.0,
+            "value_target/max": float(raw_t.max().item()) if raw_t.numel() else 0.0,
+            "value_target/mean": float(raw_t.mean().item()) if raw_t.numel() else 0.0,
+            "value_target/std": float(raw_t.std(unbiased=False).item()) if raw_t.numel() else 0.0,
+            "value_target/p01": _pct(raw_t, 0.01),
+            "value_target/p99": _pct(raw_t, 0.99),
+            "predicted_value/min": float(pred_value.min().item()) if pred_value.numel() else 0.0,
+            "predicted_value/max": float(pred_value.max().item()) if pred_value.numel() else 0.0,
+            "predicted_value/mean": float(pred_value.mean().item()) if pred_value.numel() else 0.0,
+            "predicted_value/std": float(pred_value.std(unbiased=False).item()) if pred_value.numel() else 0.0,
+            "edge_bin_fraction": edge_frac,
+            "clipping_fraction": clip_frac,
+            "target_left_bin": float(k_low.float().mean().item()),
+            "target_right_bin": float(k_high.float().mean().item()),
+            "target_alpha": float(alpha.mean().item()),
+            "scalar_value_mae": mae_scalar,
+            "corr_pred_target": corr,
+            "explained_variance_env": explained,
+            "actor_value/p_target_mass_le_0.2": float(active_cmae.float().mean().item()),
+            "actor_value/clipped_high_conf_fraction": float((~active_cmae).float().mean().item()),
+            "actor_value/unclipped_mae": float(per_mae.mean().item()),
+            "actor_value/clipped_mae": float(loss.detach().item()) if loss_type == "clipped_mae" else float(per_mae.mean().item()),
+        }
+        for thr in (1e-4, 1e-3, 0.01, 0.05, 0.1):
+            diag[f"actor_value/p_target_mass_lt_{thr:g}"] = float((p_target_mass < thr).float().mean().item())
+        for thr in (0.5, 0.9):
+            diag[f"actor_value/p_target_mass_gt_{thr:g}"] = float((p_target_mass > thr).float().mean().item())
+        # richer percentiles via helper (keeps one source of truth)
+        diag.update(
+            {
+                k: v
+                for k, v in two_hot_target_mass_diagnostics(
+                    bin_logits, target_returns, spec=spec
+                ).items()
+                if k not in diag or k.endswith(("/p01", "/p05", "/p95", "/median", "/mean"))
+            }
+        )
     else:
         raise ValueError(f"Unsupported actor_value_target_encoding: {target_encoding!r}")
 
+    # Attach diagnostics on the loss tensor for optional upstream logging.
+    try:
+        loss._actor_value_diag = diag  # type: ignore[attr-defined]
+    except Exception:
+        pass
     return loss, hard_bins
 
 

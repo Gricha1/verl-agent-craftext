@@ -201,6 +201,28 @@ def api_alfworld_comet(limit: int = 40) -> dict[str, Any]:
     return list_alfworld_from_comet(limit=limit)
 
 
+@app.get("/api/value-diagnostics")
+def api_value_diagnostics() -> dict[str, Any]:
+    """GSM8K / CrafText shared-vs-dual value diagnostics summary (cached JSON)."""
+    import json
+
+    path = ROOT / "experiments" / "metrics_cache" / "value_diagnostics_summary.json"
+    if not path.is_file():
+        raise HTTPException(404, f"missing {path}; run experiment_dashboard/_build_value_diagnostics.py")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/compare-presets")
+def api_compare_presets() -> dict[str, Any]:
+    """GSM8K dual-vs-MAE and CrafText 8x8 reward-target Comet compare presets."""
+    import json
+
+    path = ROOT / "experiments" / "metrics_cache" / "compare_presets.json"
+    if not path.is_file():
+        raise HTTPException(404, f"missing {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC / "index.html")

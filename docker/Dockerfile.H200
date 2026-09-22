@@ -45,7 +45,7 @@ RUN echo ". /opt/conda/etc/profile.d/conda.sh" >> ~/.bashrc \
 SHELL ["conda", "run", "-n", "verl-agent-311", "/bin/bash", "-c"]
 RUN pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
   --index-url https://download.pytorch.org/whl/cu124
-RUN pip install alfworld
+RUN pip install "alfworld==0.4.2" termcolor tqdm "textworld[pddl]>=1.6.1"
 
 # Optional local flash-attn wheel (build_h200.sh downloads into .wheels/ if missing).
 # Script also falls back to downloading from GitHub during build.

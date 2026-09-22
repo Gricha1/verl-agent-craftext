@@ -465,13 +465,13 @@ def make_train(config, network_params, experiment=None):
 
                 print(traj_batch.instruction.shape)
                 print(traj_batch.textual_constraint.shape)
-                batch = jax.tree_map(
+                batch = jax.tree.map(
                     lambda x: x.reshape((batch_size,) + x.shape[2:]), batch
                 )
-                shuffled_batch = jax.tree_map(
+                shuffled_batch = jax.tree.map(
                     lambda x: jnp.take(x, permutation, axis=0), batch
                 )
-                minibatches = jax.tree_map(
+                minibatches = jax.tree.map(
                     lambda x: jnp.reshape(
                         x, [config["NUM_MINIBATCHES"], -1] + list(x.shape[1:])
                     ),
@@ -510,7 +510,7 @@ def make_train(config, network_params, experiment=None):
 
             train_state = update_state[0]
             lambda_state = update_state[1]
-            metric = jax.tree_map(
+            metric = jax.tree.map(
                 lambda x: (x * traj_batch.info["returned_episode"]).sum()
                 / traj_batch.info["returned_episode"].sum(),
                 traj_batch.info,

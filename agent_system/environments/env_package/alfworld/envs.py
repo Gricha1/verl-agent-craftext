@@ -71,6 +71,8 @@ class AlfworldWorker:
     """
 
     def __init__(self, alf_config_path, seed, is_train, eval_dataset, batch_size):
+        # Guard against JAX-threaded parent/import side-effects before TextWorld env creation.
+        os.environ.setdefault("JAX_PLATFORMS", "cpu")
         self.batch_size = int(batch_size)
         config = load_config_file(alf_config_path)
         env_type = config['env']['type']

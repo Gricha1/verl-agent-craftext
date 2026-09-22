@@ -21,7 +21,8 @@ export RAY_LOCAL_FS_CAPACITY_THRESHOLD=0.999
 # PPO/reward/env hyperparameters are pinned to the reference run
 # 90deefed8ddc458da4f27349a14bf4f4 (ds8_dual_gt_g099_h50, aicenter3, 2026-09-11).
 # Allowed differences (reasoning/16x16): prompt_template_type=single_token_action_reasoning,
-# enable_reasoning=True, reasoning_history_length=5, max_response_length=320,
+# enable_reasoning=True, reasoning_history_length=3 (user decision 2026-09-21: prompt was
+# 2585 tokens > max_prompt_length=2048, truncation=error crashed val_before_train), max_response_length=320,
 # craftext_settings=debug_square_16x16, max_prompt_length=2048,
 # single_token_actions=False.
 # Forced technical/resource differences: use_remove_padding=False (no flash_attn on
@@ -54,8 +55,9 @@ ACTOR_LR=${ACTOR_LR:-1e-6}
 CRITIC_LR=${CRITIC_LR:-1e-5}
 
 # Sequence lengths (reference: prompt 1024, response 1)
-# 16x16 + reasoning need: prompt 2048 (user-approved), response 320 (user-confirmed).
-MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-2048}
+# 16x16 + reasoning need: prompt 3072 (user-approved 2026-09-21 after crash: observed
+# 2585 tokens > 2048 with truncation=error; 2200/2560 judged insufficient margin), response 320 (user-confirmed).
+MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-3072}
 MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-320}
 
 # LoRA parameters (reference: actor 64/64, critic 64/64)
@@ -69,6 +71,8 @@ GPU_MEMORY_UTIL=${GPU_MEMORY_UTIL:-0.55}
 
 # Trainer cadence (reference: test_freq=20, val_before_train=True, save_freq=-1)
 # save_freq=4 per user decision: grounding requires initial/early/middle/final checkpoints.
+# max_*_ckpt_to_keep=2 per user decision: cap disk usage, keep only the 2 newest checkpoints.
+# checkpoint contents per user decision: save ONLY actor weights (model+extra+LoRA, no optimizers) for agent validation; critic saves nothing but extra state.
 TEST_FREQ=${TEST_FREQ:-20}
 SAVE_FREQ=${SAVE_FREQ:-4}
 
@@ -119,7 +123,7 @@ python3 -m verl.trainer.main_ppo \
     env.resources_per_worker.num_cpus=0.03 \
     +env.enable_reasoning=True \
     +env.prompt_template_type=single_token_action_reasoning \
-    +env.reasoning_history_length=5 \
+    +env.reasoning_history_length=3 \
     actor_rollout_ref.model.path=$MODEL_PATH \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.model.use_remove_padding=False \
@@ -174,6 +178,10 @@ python3 -m verl.trainer.main_ppo \
     trainer.val_before_train=True \
     trainer.test_freq=$TEST_FREQ \
     trainer.save_freq=$SAVE_FREQ \
+    trainer.max_actor_ckpt_to_keep=2 \
+    trainer.max_critic_ckpt_to_keep=2 \
+    actor_rollout_ref.actor.checkpoint.contents=[model,extra] \
+    critic.checkpoint.contents=[extra] \
     trainer.resume_mode=disable \
     trainer.env_val_video_freq=200000 \
     trainer.default_hdfs_dir=null \

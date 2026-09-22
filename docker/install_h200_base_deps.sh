@@ -31,6 +31,9 @@ pip install \
 
 pip install --no-deps craftax==1.4.3
 
+# AlfWorld: pin 0.4.2 (same as vendored tree); TextWorld/termcolor required either way
+pip install "alfworld==0.4.2" termcolor tqdm "textworld[pddl]>=1.6.1"
+
 # flash-attn: local wheel preferred, else download (no source build)
 WHL="flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl"
 URL="https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/${WHL}"
@@ -60,12 +63,14 @@ pip install "vllm==0.8.5"
 echo "=== Verify base deps ==="
 python - <<'PY'
 import gymnasium, jax, flash_attn, craftax, imageio, vllm, tensordict, transformers
+import termcolor, textworld
 print("gymnasium", gymnasium.__version__)
 print("jax", jax.__version__)
 print("flash_attn", flash_attn.__version__)
 print("vllm", vllm.__version__)
 print("tensordict", tensordict.__version__)
 print("transformers", transformers.__version__)
+print("textworld", textworld.__version__)
 print("craftax OK")
 PY
 echo "=== H200 base deps OK ==="

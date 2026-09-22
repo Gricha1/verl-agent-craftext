@@ -589,13 +589,10 @@ experiments:
   prior_failed_comet_key: c7dcda4e7c3642d99ca8a9aca173b0a4
   source_snapshot_note: 'Live aa4f5c97 GPUs4,5 code~safe@9d2af95 (critic LoRA stub) + FLASH_ATTN env in vllm_rollout. Asked
     key c7dcda4e: DEAD; source snapshot was 451cadd + failed TOKEN_CLS local patch (never on origin).'
-  notes: 'Relaunched 2026-09-11 after jax.tree_map crash (fixed to jax.tree_util.tree_map). New key 90deefed; prior aa4f5c97 dead.'
-
+  notes: |-
+    Relaunched 2026-09-11 after jax.tree_map crash (fixed to jax.tree_util.tree_map). New key 90deefed; prior aa4f5c97 dead.
     Token score = remaining G_t^0.99 via reward_model.use_remaining_return_as_token_reward=True.
-
     algorithm.gamma kept at 1.0 for response-level GAE identity.
-
-    '
   hypothesis:
   - H1
   - H2
@@ -1222,13 +1219,10 @@ experiments:
   - 3
   gpus: 2
   status: running
-  notes: 'Running aicenter3 GPUs 2,3 TP=1 enforce_eager; FORCE_NEW_RAY_CLUSTER; fixed action_history in GSM8K value prompt. Matched dual b7573e3e.'
-
-    Free GPUs currently 1 and 6 — do not silently relocate without user OK.
-
-    Pure shared AV + LoRA64 + MAE; no reward-WM / plan-Q / MC-Q.
-
-    '
+  notes: |-
+      Running aicenter3 GPUs 2,3 TP=1 enforce_eager; FORCE_NEW_RAY_CLUSTER; fixed action_history in GSM8K value prompt. Matched dual b7573e3e.
+      Free GPUs currently 1 and 6 — do not silently relocate without user OK.
+      Pure shared AV + LoRA64 + MAE; no reward-WM / plan-Q / MC-Q.
   local_log_path: /home/gorbov_gv/safe_rl_nlp/logdir/gsm8k_shared_av_lora64_mae_20260911_073800.log
   tags:
   - planned
@@ -1240,3 +1234,151 @@ experiments:
     priority: 1
     delta_vs_baseline: dual LoRA64 CE-critic -> shared AV LoRA64 MAE value bins
     expected: Test if MAE reduces CE pressure vs dual without claiming architecture win yet
+- id: itl16_dual_reasoning_c2_f39114bc
+  name: 16x16 DUAL + reasoning, actor-weights-only checkpoints (config C2)
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: f39114bc282f41ac8ca39ee4e753df93
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/f39114bc282f41ac8ca39ee4e753df93
+  environment: debug_square_16x16
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-1.5B-Instruct (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: G_t (use_remaining_return_as_token_reward, gamma 0.99)
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 50 actions + 5 reasoning
+  response_len: 320 (reasoning multi-token)
+  batch_size: 32
+  gpus: 2
+  host: aicenteritl
+  config_path: temp_launch_16x16_dual_reasoning_2gpu.sh
+  launch_script: temp_launch_16x16_dual_reasoning_2gpu.sh
+  local_log_path: launch_logs/launch_16x16_dual_reasoning_c2_20260921_165810.log
+  git_commit: 393e031+dirty (checkpoint-contents patch in fsdp_checkpoint_manager.py uncommitted)
+  start_date: '2026-09-21'
+  status: crashed
+  notes: >-
+    Reference 90deefed (ds8_dual_gt_g099_h50). Allowed deltas: 16x16,
+    single_token_action_reasoning, reasoning_history_length=5,
+    max_prompt_length=2048, max_response_length=320, single_token_actions=False.
+    Forced: use_remove_padding=False, train_batch_size=32 (RAM).
+    User decisions: save_freq=4, max_*_ckpt_to_keep=2,
+    checkpoint contents actor=[model,extra] critic=[extra] — save only actor
+    weights (model+LoRA, no optimizers) for agent validation; critic not saved.
+    Requires code patch: FSDPCheckpointManager partial contents support.
+    CRASHED on val_before_train (water scenario): prompt 2585 tokens >
+    max_prompt_length=2048 with data.truncation=error. True cause: invalid
+    model actions stored in episode history as full raw responses (up to 320
+    tokens each with the reasoning template). No checkpoints saved.
+    Comet caveat: the key below was created by an earlier run B and shared via
+    the /tmp/ray_temp/comet_experiment_key.txt attach mechanism, so this
+    experiment's Comet page contains mixed C2/C3 param sets.
+  tags:
+  - crashed
+  - dual
+  - reasoning
+  - 16x16
+  - G_t
+  - history50
+  - lora64
+  - actor-weights-only-ckpt
+
+- id: itl16_dual_reasoning_c3b_4b534c61
+  name: 16x16 DUAL + reasoning, actor-weights-only checkpoints (config C3b)
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: 4b534c615bae4c1fa83cd9b7bf87804c
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/4b534c615bae4c1fa83cd9b7bf87804c
+  environment: debug_square_16x16
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-1.5B-Instruct (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: G_t (use_remaining_return_as_token_reward, gamma 0.99)
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 50 actions + 3 reasoning
+  response_len: 320 (reasoning multi-token)
+  batch_size: 32
+  gpus: 2
+  host: aicenteritl
+  config_path: temp_launch_16x16_dual_reasoning_2gpu.sh
+  launch_script: temp_launch_16x16_dual_reasoning_2gpu.sh
+  local_log_path: launch_logs/launch_16x16_dual_reasoning_c3b_20260921_180005.log
+  git_commit: 393e031+dirty (checkpoint-contents patch in fsdp_checkpoint_manager.py uncommitted)
+  start_date: '2026-09-21'
+  status: crashed
+  notes: >-
+    Crash-fix relaunch of C2: reasoning_history_length=3 (user decision) and
+    max_prompt_length=3072. Everything else identical to C2 (see
+    itl16_dual_reasoning_c2_f39114bc). Fresh Comet experiment key: the
+    /tmp/ray_temp/comet_experiment_key.txt cache was removed before launch so
+    this run does NOT attach to the polluted f39114bc experiment.
+    C3 (first relaunch attempt, same config) was killed by operator because it
+    attached to f39114bc via the key cache.
+    CRASHED on val_before_train (water scenario): prompt 3228 tokens > 3072.
+    True root cause (same mechanism as C2): invalid model actions are stored in
+    episode history as FULL raw responses (up to 320 tokens each with the
+    reasoning template); ~7 such entries accumulated during the water
+    trajectory. stone and wood passed (few invalid actions there).
+    Fixed in agent_system/environments/env_manager.py: invalid actions are now
+    stored as "?" instead of raw text (see C4 entry). No checkpoints saved.
+  tags:
+  - crashed
+  - dual
+  - reasoning
+  - 16x16
+  - G_t
+  - history50
+  - lora64
+  - actor-weights-only-ckpt
+
+- id: itl16_dual_reasoning_c4_45697fe4
+  name: 16x16 DUAL + reasoning, actor-weights-only checkpoints (config C4)
+  comet_project: gregory-gorbov/verl-agent-caged-craftext
+  comet_key: 45697fe4f83b46cc9befe8570dd7433f
+  comet_url: https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/45697fe4f83b46cc9befe8570dd7433f
+  environment: debug_square_16x16
+  architecture: dual_llm
+  actor_value: false
+  model: Qwen2.5-1.5B-Instruct (LoRA)
+  finetune: lora
+  lora_rank: 64
+  reward_mode: G_t (use_remaining_return_as_token_reward, gamma 0.99)
+  gamma: 1.0
+  lambda: 1.0
+  gae_by_trajectory: false
+  history_length: 50 actions + 3 reasoning
+  response_len: 320 (reasoning multi-token)
+  batch_size: 32
+  gpus: 2
+  host: aicenteritl
+  config_path: temp_launch_16x16_dual_reasoning_2gpu.sh
+  launch_script: temp_launch_16x16_dual_reasoning_2gpu.sh
+  local_log_path: launch_logs/launch_16x16_dual_reasoning_c4_20260921_191356.log
+  git_commit: 393e031+dirty (checkpoint-contents + invalid-action-history patches uncommitted)
+  start_date: '2026-09-21'
+  status: running
+  notes: >-
+    Same config as C3b (reasoning_history_length=3, max_prompt_length=3072)
+    plus the REAL crash fix: agent_system/environments/env_manager.py now
+    stores invalid actions in episode history as "?" instead of the full raw
+    LLM response (up to 320 tokens). Without the fix, val/train prompts grow
+    unboundedly with invalid actions (observed: 3228 > 3072 in water,
+    2585 > 2048 in C2) — raising max_prompt_length alone cannot help.
+    Worst-case prompt with the fix: ~1400 tokens.
+    Fresh Comet experiment: /tmp/ray_temp/comet_experiment_key.txt removed
+    before launch (C3b key 4b534c61 was in the cache).
+  tags:
+  - running
+  - dual
+  - reasoning
+  - 16x16
+  - G_t
+  - history50
+  - lora64
+  - actor-weights-only-ckpt

@@ -1427,7 +1427,27 @@ class CriticWorker(Worker):
         self._is_lora = self.config.model.get('lora_rank', 0) > 0
 
     def _build_critic_model_optimizer(self, config):
-        # the following line is necessary
+        import os, torch, sys, time
+        # Local CUDA check that overrides the module-level is_cuda_available
+        cuda_available_now = torch.cuda.is_available()
+        
+        # Retry mechanism for GPU availability
+        for retry in range(15):
+            if cuda_available_now:
+                break
+            print(f"[CRITIC FIX] CUDA not available, retry {retry+1}/15, waiting 2s...")
+            sys.stdout.flush()
+            time.sleep(2)
+            cuda_available_now = torch.cuda.is_available()
+        
+        print("[DEBUG CRITIC] Final torch.cuda.is_available()={}".format(cuda_available_now))
+        print("[DEBUG CRITIC] torch.cuda.device_count()={}".format(torch.cuda.device_count()))
+        if cuda_available_now:
+            print("[DEBUG CRITIC] Current device: {}".format(torch.cuda.current_device()))
+        sys.stdout.flush()
+        
+        
+        
         from torch import optim
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
         from torch.distributed.fsdp import MixedPrecision
@@ -1459,12 +1479,16 @@ class CriticWorker(Worker):
         torch_dtype = self.config.model.fsdp_config.get("model_dtype", "fp32")
         torch_dtype = PrecisionType.to_dtype(torch_dtype)
 
-        from transformers import AutoConfig, AutoModelForTokenClassification, AutoModelForVision2Seq
+        from transformers import AutoConfig, AutoModelForTokenClassification
+        try:
+            from transformers import AutoModelForVision2Seq
+        except ImportError:
+            AutoModelForVision2Seq = None
 
         # Используем flash_attention_2 только если CUDA доступна
         attn_impl = "flash_attention_2" if _is_flash_attn_available() else "eager"
         critic_model_config = AutoConfig.from_pretrained(local_path, attn_implementation=attn_impl, trust_remote_code=config.model.get("trust_remote_code", False))
-        is_vlm_critic = type(critic_model_config) in AutoModelForVision2Seq._model_mapping.keys()
+        is_vlm_critic = AutoModelForVision2Seq is not None and type(critic_model_config) in AutoModelForVision2Seq._model_mapping.keys()
         if not is_vlm_critic:
             critic_model_config.num_labels = 1
         # patch for kimi-vl
@@ -1564,7 +1588,7 @@ class CriticWorker(Worker):
 
         # Перемещаем модель на GPU перед FSDP, если CUDA доступна
         # FSDP с sync_module_states=True требует, чтобы параметры были на GPU
-        if is_cuda_available:
+        if cuda_available_now:
             device = torch.device(f"cuda:{get_torch_device().current_device()}")
             critic_module = critic_module.to(device)
         elif is_npu_available:
@@ -1574,8 +1598,8 @@ class CriticWorker(Worker):
         # Note: We force turn off CPUOffload for critic because it causes incorrect results when using grad accumulation
         if config.strategy == "fsdp":
             # sync_module_states требует GPU, поэтому отключаем на CPU
-            sync_module_states = is_cuda_available or is_npu_available
-            device_id = get_torch_device().current_device() if (is_cuda_available or is_npu_available) else None
+            sync_module_states = cuda_available_now or is_npu_available
+            device_id = get_torch_device().current_device() if (cuda_available_now or is_npu_available) else None
             critic_module = FSDP(
                 critic_module,
                 param_init_fn=init_fn,

@@ -63,7 +63,7 @@ def _task_gif_path(base_gif_path: str, slug: str) -> str:
 
 
 def _format_prompt(template: str, task: str, text_render: str) -> str:
-    return template.format(task_description=task, current_observation=text_render)
+    return template.format(task_description=task, action_history=[], current_observation=text_render)
 
 
 def _save_gif(

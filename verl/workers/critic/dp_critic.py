@@ -21,7 +21,7 @@ import os
 
 import torch
 import torch.distributed
-from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
+# from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
 from torch import nn, optim
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
@@ -35,12 +35,37 @@ from verl.utils.torch_functional import masked_mean
 from verl.utils.ulysses import gather_outpus_and_unpad, ulysses_pad_and_slice_inputs
 from verl.workers.critic import BasePPOCritic
 from verl.utils.device import get_device_name, get_torch_device, is_npu_available, is_cuda_available
+# Simple fallback for flash_attn.bert_padding functions
+import torch
 
+def pad_input(input_tensor, indices, batch, seqlen):
+    output = torch.zeros(batch, seqlen, *input_tensor.shape[1:], dtype=input_tensor.dtype, device=input_tensor.device)
+    for b in range(batch):
+        mask = indices[:, 0] == b
+        valid_indices = indices[mask, 1]
+        output[b, valid_indices] = input_tensor[mask]
+    return output
 
-if is_cuda_available:
-    from flash_attn.bert_padding import pad_input, unpad_input, rearrange, index_first_axis
-elif is_npu_available:
-    from transformers.integrations.npu_flash_attention import pad_input, unpad_input, rearrange, index_first_axis
+def unpad_input(input_tensor, attention_mask):
+    seqlens = attention_mask.sum(dim=1)
+    indices = torch.nonzero(attention_mask.flatten()).reshape(-1, 2)
+    output = input_tensor[indices[:, 0], indices[:, 1]]
+    return output, indices, seqlens
+
+def index_first_axis(tensor, indices):
+    return tensor[indices]
+
+def rearrange(tensor, pattern):
+    if pattern == 'c b s ... -> (b s) c ...':
+        c, b, s = tensor.shape[:3]
+        rest = tensor.shape[3:]
+        return tensor.permute(1, 2, 0, *range(3, len(tensor.shape))).reshape(b*s, c, *rest)
+    elif pattern == 'b s ... -> (b s) ...':
+        b, s = tensor.shape[:2]
+        rest = tensor.shape[2:]
+        return tensor.reshape(b*s, *rest)
+    else:
+        raise NotImplementedError(f'Rearrange pattern {pattern} not implemented')
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))

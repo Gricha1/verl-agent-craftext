@@ -76,7 +76,7 @@ python -m verl.trainer.main_ppo \
   data.val_files=$HOME/data/verl-agent/text/test.parquet \
   data.train_batch_size=$train_data_size \
   data.val_batch_size=$val_data_size \
-  data.max_prompt_length=512 \
+  data.max_prompt_length="${MAX_PROMPT_LENGTH:-1024}" \
   data.max_response_length=128 \
   data.filter_overlong_prompts=True \
   data.truncation='error' \
@@ -119,6 +119,7 @@ python -m verl.trainer.main_ppo \
   critic.model.fsdp_config.param_offload=False \
   critic.model.fsdp_config.optimizer_offload=False \
   algorithm.use_kl_in_reward=False \
+  reward_model.use_episode_return_as_token_reward=False \
   +algorithm.log_prob_action_only=$LOG_PROB_ACTION_ONLY \
   env.env_name='caged_craftext/CagedCraftextEnv' \
   +env.craftext_settings='achievements_safe_budget_energy_collect_wood' \

@@ -237,6 +237,39 @@ Your available actions are: {actions_list}
 CRAFTEXT_EXTENDED_TEMPLATE_NO_HIS = get_craftext_extended_template_no_his()
 
 
+def format_executed_actions_history(actions) -> str:
+    """Compact episode action memory: ``1=LEFT, 2=UP`` (oldest → newest)."""
+    from .action_tokens import TOKEN_TO_ACTION_ID, normalize_action_token
+
+    parts = []
+    for raw in actions or []:
+        tok = normalize_action_token(raw)
+        if not tok:
+            # Fall back to raw text for non-token actions (default_template).
+            text = str(raw).strip()
+            if text:
+                parts.append(text)
+            continue
+        aid = TOKEN_TO_ACTION_ID.get(tok)
+        name = ACTION_TO_TEXT[aid] if aid is not None and 0 <= aid < len(ACTION_TO_TEXT) else tok
+        parts.append(f"{tok}={name}")
+    return ", ".join(parts) if parts else "(none)"
+
+
+
+def extract_reasoning_text(llm_output: str) -> str:
+    """Extract reasoning text from LLM output (text before <action> tag)."""
+    import re
+    match = re.search(r'<action>', llm_output, re.IGNORECASE)
+    if match:
+        reasoning = llm_output[:match.start()].strip()
+        reasoning = reasoning.strip()
+        if len(reasoning) > 200:
+            reasoning = reasoning[:200] + "..."
+        return reasoning if reasoning else ""
+    return ""
+
+
 def get_single_token_action_template_no_his() -> str:
     """Prompt for one-token action output; legend lists token=ACTION for all 17 actions."""
     from .action_tokens import action_token_legend
@@ -244,6 +277,9 @@ def get_single_token_action_template_no_his() -> str:
     return f"""
 Your goal is to complete the following task:
 **TASK:** {{task_description}}
+
+Actions already taken in this episode (oldest → newest):
+{{action_history}}
 
 This is what you currently see:
 {{current_observation}}
@@ -258,6 +294,9 @@ def get_single_token_return_template_no_his() -> str:
     return """
 Your goal is to complete the following task:
 **TASK:** {task_description}
+
+Actions already taken in this episode (oldest → newest):
+{action_history}
 
 This is what you currently see:
 {current_observation}
@@ -275,6 +314,9 @@ def get_single_token_action_vl_template_no_his() -> str:
 Your goal is to complete the following task:
 **TASK:** {{task_description}}
 
+Actions already taken in this episode (oldest → newest):
+{{action_history}}
+
 You currently see visual observation:
 
 Picture 1: <image>
@@ -284,11 +326,70 @@ Reply with exactly ONE token — your chosen action (no tags, no explanation):
 """
 
 
+
+
+def get_single_token_action_reasoning_template_no_his() -> str:
+    """Actor prompt with reasoning: action_history + reasoning_history, output <action>X</action>."""
+    from .action_tokens import action_token_legend
+
+    return f"""
+Your goal is to complete the following task:
+**TASK:** {{task_description}}
+
+Actions already taken in this episode (oldest → newest):
+{{action_history}}
+
+Recent reasoning from the last 5 steps (oldest → newest):
+{{reasoning_history}}
+
+This is what you currently see:
+{{current_observation}}
+
+Reason briefly about the environment and choose the next action.
+
+Finish your response with exactly one action in this format:
+<action>X</action>
+
+Available actions (token=name):
+{action_token_legend()}
+"""
+
+
+def get_single_token_action_reasoning_vl_template_no_his() -> str:
+    """VL actor prompt with reasoning: action_history + reasoning_history, visual observation."""
+    from .action_tokens import action_token_legend
+
+    return f"""
+Your goal is to complete the following task:
+**TASK:** {{task_description}}
+
+Actions already taken in this episode (oldest → newest):
+{{action_history}}
+
+Recent reasoning from the last 5 steps (oldest → newest):
+{{reasoning_history}}
+
+You currently see visual observation:
+
+Picture 1: <image>
+
+Reason briefly about the environment and choose the next action.
+
+Finish your response with exactly one action in this format:
+<action>X</action>
+
+Available actions (token=name):
+{action_token_legend()}
+"""
+
 def get_single_token_return_vl_template_no_his() -> str:
     """VL value prompt: one return-bin token; observation is the game frame (<image>)."""
     return """
 Your goal is to complete the following task:
 **TASK:** {task_description}
+
+Actions already taken in this episode (oldest → newest):
+{action_history}
 
 You currently see visual observation:
 
@@ -304,6 +405,9 @@ def get_per_action_return_template_no_his() -> str:
     return """
 Your goal is to complete the following task:
 **TASK:** {task_description}
+
+Actions already taken in this episode (oldest → newest):
+{action_history}
 
 This is what you currently see:
 {current_observation}
@@ -325,6 +429,7 @@ def format_per_action_return_prompt(
     action_token: str,
     return_bin_legend: str,
     constraint: str = "",
+    action_history: str = "(none)",
 ) -> str:
     prompt = get_per_action_return_template_no_his().format(
         task_description=task_description or "No task",
@@ -332,6 +437,7 @@ def format_per_action_return_prompt(
         action_name=action_name,
         action_token=action_token,
         return_bin_legend=return_bin_legend,
+        action_history=action_history or "(none)",
     )
     if constraint:
         prompt += f"\n\n**CONSTRAINT:** {constraint}"
@@ -423,6 +529,14 @@ def craftext_projection(actions: List[str]):
             extracted_action_text_raw = original_str.strip()
             if not extracted_action_text_raw:
                 continue
+
+        # Accept the compact label advertised in the prompt when it appears
+        # inside a tag too: <action>8</action> means PLACE_STONE.
+        tagged_token_id = parse_single_token_action(extracted_action_text_raw)
+        if tagged_token_id != INVALID_ACTION_ID and not re.search(r"[\u4e00-\u9fff]", original_str):
+            valids[i] = 1
+            processed_actions[i] = tagged_token_id
+            continue
 
         extracted_action_text_lower = extracted_action_text_raw.lower()
 

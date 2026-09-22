@@ -6,6 +6,7 @@
 #   critic prompt (single_token_return) -> 1 return bin token ([-5,6] step 0.4, 29 levels)
 #
 # GAE by response tokens (one env step for single-token actions), not to episode end.
+# Token reward / value target: remaining return-to-go G_t (not full episode return).
 # Episode GAE: algorithm.gae_by_trajectory=True
 # critic_warmup: first N PPO steps train only return-token CE (policy frozen).
 #

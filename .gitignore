@@ -142,3 +142,6 @@ evaluation_results
 .docker_caged_deps_installed
 # flash-attn wheels downloaded by docker/build_h200.sh
 .wheels/*.whl
+experiment_dashboard/.env
+experiments/runtime/
+experiments/metrics_cache/

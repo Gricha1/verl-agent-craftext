@@ -90,6 +90,11 @@ else
     echo "Предупреждение: requirements.txt не найден"
 fi
 
+# AlfWorld: pin pip==0.4.2 (same as vendored); textworld/termcolor required either way.
+echo "=== Установка AlfWorld 0.4.2 + TextWorld deps ==="
+pip install -q "alfworld==0.4.2" termcolor tqdm "textworld[pddl]>=1.6.1" || \
+echo "ОШИБКА: не удалось установить alfworld/textworld/termcolor"
+
 # Установка flash-attn в последнюю очередь (требуется для verl.workers.critic).
 # ВАЖНО: только prebuilt wheel — сборка из исходников на H200 занимает часы.
 echo "=== Установка flash-attn (prebuilt wheel, без компиляции) ==="
@@ -132,6 +137,7 @@ python -c "import gymnasium; print('✓ gymnasium', gymnasium.__version__)" || e
 python -c "import jax; print('✓ jax', jax.__version__)" || echo "✗ jax не установлен"
 python -c "import os; os.environ['CRAFTAX_RELOAD_TEXTURES']='True'; import craftax; print('✓ craftax OK')" || echo "✗ craftax не установлен"
 python -c "import flash_attn; print('✓ flash-attn OK')" || echo "✗ flash-attn не установлен"
+python -c "import termcolor, textworld; print('✓ termcolor/textworld', textworld.__version__)" || echo "✗ termcolor/textworld не установлены (AlfWorld)"
 
 echo ""
 echo "=== Установка завершена ==="

@@ -68,7 +68,7 @@ class AutoResetEnvWrapper(GymnaxWrapper):
 
         # Auto-reset environment based on termination
         def auto_reset(done, state_re, state_st, obs_re, obs_st):
-            state = jax.tree_map(
+            state = jax.tree.map(
                 lambda x, y: jax.lax.select(done, x, y), state_re, state_st
             )
             obs = jax.lax.select(done, obs_re, obs_st)
@@ -119,7 +119,7 @@ class DreamerOptimisticResetVecEnvWrapper(GymnaxWrapper):
         obs_reset, state_reset = self.reset_fn(reset_rngs, params)
         reset_indexes = jnp.arange(self.num_resets).repeat(self.reset_ratio)
         obs_reset = obs_reset[reset_indexes]
-        state_reset = jax.tree_map(lambda x: x[reset_indexes], state_reset)
+        state_reset = jax.tree.map(lambda x: x[reset_indexes], state_reset)
         
         # 2. Handle steps only for environments where reset=False (NEW)
         rng, _rng = jax.random.split(rng)
@@ -138,7 +138,7 @@ class DreamerOptimisticResetVecEnvWrapper(GymnaxWrapper):
             return jnp.where(reset_flag, reset_part, step_part)
         
         # Применяем merge_state ко всем элементам состояния
-        state = jax.tree_map(
+        state = jax.tree.map(
             lambda r, s: jax.vmap(merge_state)(reset_flags, r, s),  # <-- ПОЭЛЕМЕНТНОЕ ОБЪЕДИНЕНИЕ
             state_reset, state_step
         )
@@ -175,11 +175,11 @@ class DreamerOptimisticResetVecEnvWrapper(GymnaxWrapper):
         reset_indexes = reset_indexes.at[being_reset].set(jnp.arange(self.num_resets))
 
         obs_re = obs_re[reset_indexes]
-        state_re = jax.tree_map(lambda x: x[reset_indexes], state_re)
+        state_re = jax.tree.map(lambda x: x[reset_indexes], state_re)
 
         # Auto-reset environment based on termination
         def auto_reset(done, state_re, state_st, obs_re, obs_st):
-            state = jax.tree_map(
+            state = jax.tree.map(
                 lambda x, y: jax.lax.select(done, x, y), state_re, state_st
             )
             obs = jax.lax.select(done, obs_re, obs_st)
