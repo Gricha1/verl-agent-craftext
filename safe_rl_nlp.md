@@ -710,7 +710,58 @@ main line is Q_env and plan-Q.
   dynamics relevant to decision making, not reconstruct observations. PaW also
   motivated the robust MAE/CMAE investigation for noisy token prediction.
 
-## 16. Changelog
+## 16. 16x16 reasoning prompt incident: token actions vs action names (2026-09-23)
+
+### Symptom
+
+Two nominally similar 16x16 reasoning/DUAL PPO runs had a large gap in both
+`episode/valid_action_ratio` and success rate. The reference curve started its
+first rollout near **0.66--0.68** valid actions; the current token-prompt run
+started near **0.36**. This was present before the first optimizer update, so it
+could not be caused by PPO, KL, entropy, critic learning, or reward shaping.
+
+### Root cause
+
+The reference B run was launched before commit `393e031`. Although its config
+contained `reasoning_template=single_token_action_reasoning`, that field was
+not consumed by the old environment manager. It therefore used the generic
+action-**name** prompt (e.g. `UP`, `PLACE_STONE`). The later C4 run actually
+used the new prompt with a `token=name` legend and expected numeric action
+tokens. Thus the two runs did not have the same initial prompt.
+
+The encoding also made history needlessly harder to read (`2=LEFT`,
+`1=NOOP`) and invalid model output could previously expand into raw response
+text, increasing prompt length and eventually harming action formatting.
+
+### Evidence
+
+- Zero-shot first-action A/B with the same base model: the reconstructed
+  action-name B prompt produced **12/24 = 0.50** valid actions; the token
+  reasoning prompt produced **1/24 = 0.0417**.
+- After changing the reasoning actor prompt to action names, a 24-state
+  zero-shot probe produced **21/24 = 0.875** valid actions.
+- With `history_length=50`, action history rendered as names, and
+  `reasoning_history_length=3`, a 50-step static-observation parser/prompt
+  probe produced **143/150 = 0.9533** valid actions. This last number verifies
+  prompt/history and parsing, not task success, because the observation was
+  deliberately held fixed to avoid mixing in Craftax/JAX worker behaviour.
+
+### Resolution and current convention
+
+1. The reasoning actor prompt requests one action name in
+   `<action>NAME</action>`; the allowed list contains names, not numeric IDs.
+2. Executed action history is stored/rendered as names only, for example
+   `LEFT, NOOP, DOWN`; an invalid action executes and is remembered as `NOOP`.
+3. `history_length=50`; only the last three non-empty reasoning snippets are
+   included. No reasoning section is inserted until there is actual reasoning
+   from a prior turn.
+4. The current 16x16 training run is
+   `ppo_caged_craftext_16x16_action_names_h50_r3` on aicenteritl. Its actor
+   uses this prompt. Its critic currently shares the actor text prompt because
+   `env.value_prompt_template_type` is not set; it does **not** use the
+   optional one-token return prompt.
+
+## 17. Changelog
 
 - **2026-09-21** — Added §14a «Правило воспроизводимости экспериментов и
   изменения гиперпараметров» (обязательное референс-сравнение перед запуском,

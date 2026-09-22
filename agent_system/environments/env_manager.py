@@ -1148,18 +1148,40 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
                     )
             elif prompt_template_type == 'single_token_action_reasoning':
                 reasoning_history_str = self._reasoning_history(i, init=init)
+                # Keep the first prompt byte-for-byte in the familiar
+                # action-name format.  Reasoning is appended only when there
+                # is actual reasoning from previous turns.
+                try:
+                    records = self.memory[i] if self.memory is not None else []
+                except Exception:
+                    records = []
+                reasoning_section = (
+                    "\nRecent reasoning from prior steps (oldest → newest):\n"
+                    f"{reasoning_history_str}\n"
+                    if reasoning_history_str and reasoning_history_str != "(none)"
+                    else ""
+                )
+                action_history_for_prompt = (
+                    action_history_str
+                    if action_history_str and action_history_str != "(none)"
+                    else "No actions taken yet."
+                )
                 if is_vl_env:
                     prompt = template_no_his.format(
                         task_description=task,
-                        action_history=action_history_str,
-                        reasoning_history=reasoning_history_str,
+                        action_history=action_history_for_prompt,
+                        step_count=len(records),
+                        current_step=len(records),
+                        reasoning_section=reasoning_section,
                     )
                 else:
                     prompt = template_no_his.format(
                         task_description=task,
                         current_observation=text_render,
-                        action_history=action_history_str,
-                        reasoning_history=reasoning_history_str,
+                        action_history=action_history_for_prompt,
+                        step_count=len(records),
+                        current_step=len(records),
+                        reasoning_section=reasoning_section,
                     )
             elif prompt_template_type == 'extended_template' or history_length <= 0:
                 if prompt_template_type == 'extended_template':

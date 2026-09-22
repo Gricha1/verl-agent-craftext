@@ -29,7 +29,7 @@ export RAY_LOCAL_FS_CAPACITY_THRESHOLD=0.999
 # grounding needs initial/early/middle/final checkpoints; reference had -1).
 
 MODEL_PATH="Qwen/Qwen2.5-1.5B-Instruct"
-SAVE_PATH="/home/gorbov_gv/safe_rl_nlp/checkpoints/verl/ppo_caged_craftext_16x16_dual_reasoning_2gpu/"
+SAVE_PATH=${SAVE_PATH:-"/home/gorbov_gv/safe_rl_nlp/checkpoints/verl/ppo_caged_craftext_16x16_dual_reasoning_2gpu/"}
 
 # Environment parameters (reference: env.seed=0, env.max_steps=50, env.history_length=50)
 ENV_SEED=${ENV_SEED:-0}
