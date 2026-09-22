@@ -979,9 +979,13 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
             for i, raw in enumerate(text_actions):
                 try:
                     aid = int(to_numpy(action_ids[i]))
-                    stored_actions.append(action_token_label(aid) if aid >= 0 else str(raw))
+                    # Invalid actions must not enter the history as full raw LLM text:
+                    # with the reasoning template a raw response can be up to
+                    # max_response_length (320) tokens and ~10 such entries overflow
+                    # the prompt (observed crash: sequence_length=3228 > 3072).
+                    stored_actions.append(action_token_label(aid) if aid >= 0 else action_token_label(0))
                 except Exception:
-                    stored_actions.append(str(raw))
+                    stored_actions.append(action_token_label(0))
         except Exception:
             stored_actions = list(text_actions)
         # Extract reasoning text from LLM output (for reasoning mode)
