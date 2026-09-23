@@ -990,10 +990,21 @@ class CagedCraftextEnvironmentManager(EnvironmentManagerBase):
             stored_actions = list(text_actions)
         # Extract reasoning text from LLM output (for reasoning mode)
         reasoning_texts = []
+        # Experimental fallback: preserve a bounded raw generation as reasoning
+        # when the model omitted <action>.  The executed action remains NOOP;
+        # only the optional reasoning memory changes.
+        keep_raw_reasoning_without_action = bool(
+            getattr(self.config.env, "store_raw_reasoning_on_missing_action_tag", False)
+        )
         try:
             from agent_system.environments.env_package.caged_craftext.projection import extract_reasoning_text
             for raw in text_actions:
-                reasoning_texts.append(extract_reasoning_text(str(raw)))
+                reasoning = extract_reasoning_text(str(raw))
+                if not reasoning and keep_raw_reasoning_without_action:
+                    reasoning = str(raw).strip()
+                    if len(reasoning) > 200:
+                        reasoning = reasoning[:200] + "..."
+                reasoning_texts.append(reasoning)
         except Exception:
             reasoning_texts = [""] * len(text_actions)
         
