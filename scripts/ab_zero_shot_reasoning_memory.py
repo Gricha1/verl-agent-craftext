@@ -11,6 +11,11 @@ import json
 import os
 from pathlib import Path
 
+# The ITL environment has a transformers tokenizer newer than vLLM v1 accepts.
+# PPO's rollout stack uses the legacy engine successfully, so make this direct
+# validation runner use the same compatible engine.
+os.environ.setdefault("VLLM_USE_V1", "0")
+
 import numpy as np
 from omegaconf import OmegaConf
 from transformers import AutoTokenizer
@@ -71,7 +76,6 @@ def main():
     args = parse_args()
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
     config = build_config(args)
-    envs, _ = make_envs(config)
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True, use_fast=True)
     llm = LLM(
         model=args.model,
@@ -91,6 +95,10 @@ def main():
         top_k=-1,
         seed=args.seed,
     )
+
+    # vLLM v0 starts worker processes.  Initialise it before JAX/Ray, whose
+    # threads make a later fork unsafe on this cluster.
+    envs, _ = make_envs(config)
 
     observations, _ = envs.reset({})
     active = np.ones(args.num_envs, dtype=bool)
