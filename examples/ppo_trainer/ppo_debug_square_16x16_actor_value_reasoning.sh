@@ -53,6 +53,7 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   actor_rollout_ref.actor.actor_value_return_min=-26 \
   actor_rollout_ref.actor.actor_value_return_max=16 \
   actor_rollout_ref.actor.actor_value_return_bin_step=1.5 \
+  actor_rollout_ref.model.use_remove_padding=false \
   actor_rollout_ref.rollout.gpu_memory_utilization=0.55 \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
   actor_rollout_ref.actor.ppo_mini_batch_size=64 \
