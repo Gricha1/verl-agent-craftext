@@ -11,15 +11,10 @@ import json
 import os
 from pathlib import Path
 
-# The ITL environment has a transformers tokenizer newer than vLLM v1 accepts.
-# PPO's rollout stack uses the legacy engine successfully, so make this direct
-# validation runner use the same compatible engine.
-os.environ.setdefault("VLLM_USE_V1", "0")
-
 import numpy as np
+import torch
 from omegaconf import OmegaConf
-from transformers import AutoTokenizer
-from vllm import LLM, SamplingParams
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from agent_system.environments import make_envs
 
@@ -77,27 +72,20 @@ def main():
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
     config = build_config(args)
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True, use_fast=True)
-    llm = LLM(
-        model=args.model,
-        tensor_parallel_size=1,
-        dtype="auto",
-        enforce_eager=True,
-        gpu_memory_utilization=0.55,
-        max_model_len=3392,
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model,
+        torch_dtype=torch.bfloat16,
+        device_map={"": 0},
         trust_remote_code=True,
-        disable_custom_all_reduce=True,
     )
-    sampling = SamplingParams(
-        n=1,
-        max_tokens=320,
-        temperature=0.0 if args.greedy else args.temperature,
-        top_p=1.0,
-        top_k=-1,
-        seed=args.seed,
-    )
+    model.eval()
+    torch.manual_seed(args.seed)
 
-    # vLLM v0 starts worker processes.  Initialise it before JAX/Ray, whose
-    # threads make a later fork unsafe on this cluster.
+    # The environment uses JAX/Ray.  Initialise it after the actor model so no
+    # environment worker competes for the actor GPU.
     envs, _ = make_envs(config)
 
     observations, _ = envs.reset({})
@@ -115,8 +103,21 @@ def main():
         if not len(active_idx):
             break
         prompts = chat_prompts(tokenizer, [observations["text"][i] for i in active_idx])
-        generated = llm.generate(prompts, sampling)
-        responses = [item.outputs[0].text.strip() for item in generated]
+        encoded = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True, max_length=3072)
+        encoded = {key: value.to(model.device) for key, value in encoded.items()}
+        with torch.inference_mode():
+            generated = model.generate(
+                **encoded,
+                max_new_tokens=320,
+                do_sample=not args.greedy,
+                temperature=None if args.greedy else args.temperature,
+                top_p=1.0,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+        continuation = generated[:, encoded["input_ids"].shape[1] :]
+        responses = tokenizer.batch_decode(continuation, skip_special_tokens=True)
+        responses = [response.strip() for response in responses]
         actions = ["NOOP"] * args.num_envs
         for env_idx, response in zip(active_idx, responses):
             actions[env_idx] = response
