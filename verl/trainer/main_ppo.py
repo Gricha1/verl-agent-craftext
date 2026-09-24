@@ -24,8 +24,6 @@ import hydra
 import ray
 
 from verl.utils.ray_utils import ray_local_fs_capacity_system_config, silence_ray_disk_usage_warnings
-from verl.trainer.ppo.ray_trainer import RayPPOTrainer
-from verl.trainer.ppo.reward import load_reward_manager
 
 
 @hydra.main(config_path="config", config_name="ppo_trainer", version_base=None)
@@ -184,7 +182,10 @@ class TaskRunner:
         else:
             raise NotImplementedError
 
-        from verl.trainer.ppo.ray_trainer import ResourcePoolManager, Role
+        # Importing ray_trainer pulls the Craftext/JAX stack.  It must happen
+        # in this Ray worker, after the driver has started Ray: otherwise Ray
+        # forks a process from a multithreaded JAX driver and can deadlock.
+        from verl.trainer.ppo.ray_trainer import RayPPOTrainer, ResourcePoolManager, Role
 
         role_worker_mapping = {
             Role.ActorRollout: ray.remote(actor_rollout_cls),
