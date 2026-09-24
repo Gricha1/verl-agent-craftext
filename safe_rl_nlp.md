@@ -568,8 +568,8 @@ is ever a training target.
    committed file, including launch YAMLs and Datasphere descriptors — reference them
    as `${oc.env:COMET_API_KEY}` from an untracked `.env`.
 
-**Current state (2026-09-18).** This rule is now satisfied. All four hosts run from
-git clones at commit `47d9d7a` on branch `safe`:
+**Historical state (2026-09-18).** The paths below describe the old migration only;
+they are not an authorization to launch from those directories.
 
 - **aicenter3:** `/home/gorbov_gv/safe_rl_nlp` — reference tree converted in place,
   `.git` copied in, `git checkout -- .`. Pre-conversion backup:
@@ -591,9 +591,20 @@ git clones at commit `47d9d7a` on branch `safe`:
   `/storage/gorbov_gv/safe_rl_nlp` (s3fs, stale). To run from current code, recreate
   the bind mount to the git clone path and restart.
 
-**Legacy paths:** The old non-git locations (`~/safe_rl_nlp`, `/storage/gorbov_gv/safe_rl_nlp`)
-are reachable but must not be used for training. On aicenter3, the old tree was converted
-in place (see backup above). On aicenter2, the s3fs copy remains but is stale.
+**Strict active-launch rule (2026-09-24).** The only permitted launch source on ITL
+and A3 is a clean clone named
+`/home/gorbov_gv/verl-agent-craftext-safe-<full-or-short-current-SHA>` on branch
+`safe`, at exactly the same pushed commit on both hosts. `~/safe_rl_nlp`,
+`~/safe_rl_nlp_safe_*`, and an older `verl-agent-craftext-safe-*` directory are
+legacy source trees: never launch from them. The Python environments and checkpoints
+are kept outside a source tree (`~/venvs/verl-itl` on ITL and
+`~/quantization/async/.venv` on A3; `~/verl_checkpoints/<experiment>` on both).
+
+Before launch, record in the launcher log the branch, full SHA, clean status, host,
+experiment name, and resolved overrides; require both hosts to report the same SHA.
+After a new clean clone has been verified, remove the explicitly listed stale source
+trees rather than keeping several plausible launch targets. Do not delete an unknown
+repository merely because its name resembles this project.
 
 ## 11. Checkpoint & evaluation strategy
 
@@ -603,6 +614,24 @@ trainer state, no separate critic) — at **early / mid / late** stages
 (minimum 2 meaningful checkpoints, preferably 3). Record per checkpoint:
 global_step, env_steps, Comet key, git commit, config, stage.
 (Example: the 16x16 CE run uses `checkpoint_mode: actor_lora_only`, stages [40,110].)
+
+### 11.1 Mandatory checkpoint mode for the active 16x16 DUAL reasoning line
+
+The current DUAL PPO runs save **one actor LoRA adapter only**, at PPO step 4:
+
+```bash
+trainer.actor_lora_only_checkpoint=True
+'trainer.actor_lora_stage_steps=[4]'
+trainer.save_freq=-1
+```
+
+This path invokes `save_lora_adapter_only`; it must not write FSDP model shards,
+optimizer, scheduler, critic, trainer state, or dataloader state. The checkpoint lives
+under `~/verl_checkpoints/<experiment>/actor_lora_stage_4/` and its metadata must
+include the experiment name and exact Git SHA. `max_actor_checkpoints_to_keep=1` is
+kept as a guard, but the stage list contains exactly one entry. Never approximate this
+with a generic `save_freq=4`: generic FSDP saving serializes actor/critic state and
+previously exhausted host disk.
 
 **Value-understanding evaluation (future research block)** on saved checkpoints:
 
