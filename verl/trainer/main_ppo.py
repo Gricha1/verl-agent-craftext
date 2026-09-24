@@ -191,13 +191,23 @@ class TaskRunner:
             Role.Critic: ray.remote(CriticWorker),
         }
 
-        global_pool_id = "global_pool"
+        # A DUAL run has two simultaneously resident models.  Give actor/ref/
+        # rollout and critic disjoint GPU pools rather than allowing both roles
+        # to reserve every visible GPU from one global pool.
+        total_gpus = config.trainer.n_gpus_per_node
+        if total_gpus < 2:
+            raise ValueError("DUAL PPO requires at least two GPUs per node")
+        actor_gpus = total_gpus // 2
+        critic_gpus = total_gpus - actor_gpus
+        actor_pool_id = "actor_pool"
+        critic_pool_id = "critic_pool"
         resource_pool_spec = {
-            global_pool_id: [config.trainer.n_gpus_per_node] * config.trainer.nnodes,
+            actor_pool_id: [actor_gpus] * config.trainer.nnodes,
+            critic_pool_id: [critic_gpus] * config.trainer.nnodes,
         }
         mapping = {
-            Role.ActorRollout: global_pool_id,
-            Role.Critic: global_pool_id,
+            Role.ActorRollout: actor_pool_id,
+            Role.Critic: critic_pool_id,
         }
 
         # we should adopt a multi-source reward function here
@@ -214,12 +224,12 @@ class TaskRunner:
             else:
                 raise NotImplementedError
             role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
-            mapping[Role.RewardModel] = global_pool_id
+            mapping[Role.RewardModel] = critic_pool_id
 
         # use reference model
         if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
             role_worker_mapping[Role.RefPolicy] = ray.remote(ActorRolloutRefWorker)
-            mapping[Role.RefPolicy] = global_pool_id
+            mapping[Role.RefPolicy] = actor_pool_id
 
         reward_manager_name = config.reward_model.get("reward_manager", "episode")
         if reward_manager_name == 'episode':
