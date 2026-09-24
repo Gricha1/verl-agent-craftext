@@ -14,13 +14,12 @@ try:
 except ImportError:
     from craftax.craftax_classic.renderer import make_craftax_pixel_renderer
 
-    _pixel_renderer = None
+    _pixel_renderers = {}
 
-    def render_classic(state):
-        global _pixel_renderer
-        if _pixel_renderer is None:
-            _pixel_renderer = make_craftax_pixel_renderer(BLOCK_PIXEL_SIZE_HUMAN)
-        return _pixel_renderer(state)
+    def render_classic(state, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN):
+        if block_pixel_size not in _pixel_renderers:
+            _pixel_renderers[block_pixel_size] = make_craftax_pixel_renderer(block_pixel_size)
+        return _pixel_renderers[block_pixel_size](state)
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import textwrap
