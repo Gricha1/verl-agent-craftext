@@ -84,6 +84,15 @@ def run_ppo(config) -> None:
                 f"no Ray GPU reservation — keeps {config.trainer.n_gpus_per_node} GPUs for vLLM/FSDP). "
                 f"XLA_PYTHON_CLIENT_MEM_FRACTION={jax_gpu_fraction}"
             )
+        # Fresh Ray runtime: when the launch script sets FORCE_NEW_RAY_CLUSTER=1,
+        # force a private new local cluster instead of attaching to a leftover one
+        # that may still hold GPU reservations from a previous run.
+        if os.environ.get("FORCE_NEW_RAY_CLUSTER", "0") == "1":
+            ray_init_kwargs["address"] = "local"
+            ray_temp_dir = os.environ.get("RAY_TEMP_DIR")
+            if ray_temp_dir:
+                ray_init_kwargs["_temp_dir"] = ray_temp_dir
+            print(f"[INFO] FORCE_NEW_RAY_CLUSTER=1: starting a private Ray cluster (address=local, _temp_dir={ray_temp_dir})")
         ray.init(**ray_init_kwargs)
 
     # Do not set num_gpus on TaskRunner: Ray would subtract it from the pool and

@@ -78,6 +78,88 @@ def _repeat_interleave(value: Union[torch.Tensor, np.ndarray], repeats: int) -> 
         return np.repeat(value, repeats, axis=0)
 
 
+def _preflight_gpu_check(expected_num_devices=None, gpu_memory_utilization=None):
+    """Verify the Ray worker's assigned GPUs have room for vLLM before init.
+
+    Runs inside the rollout worker process, so CUDA_VISIBLE_DEVICES already reflects
+    the physical devices Ray handed to this worker. Queries exactly those devices via
+    nvidia-smi and refuses to continue if any is missing or does not have enough FREE
+    memory for vLLM's reservation (gpu_memory_utilization * total). actor/critic may
+    legitimately hold multiple GB before vLLM is created, so we check free-vs-required
+    rather than a crude "used > N" threshold.
+
+    Disable with VERL_GPU_PREFLIGHT=0; hard-floor the required free memory (MiB) with
+    VERL_GPU_PREFLIGHT_MIN_FREE_MIB.
+    """
+    import subprocess
+
+    if os.getenv("VERL_GPU_PREFLIGHT", "1") == "0":
+        return
+
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cvd is None or cvd.strip() == "":
+        raise RuntimeError(
+            "GPU preflight: CUDA_VISIBLE_DEVICES is not set inside the rollout worker. "
+            "Refusing to start vLLM without an explicit device assignment."
+        )
+    device_ids = [d.strip() for d in cvd.split(",") if d.strip() != ""]
+    if expected_num_devices is not None and len(device_ids) != int(expected_num_devices):
+        raise RuntimeError(
+            f"GPU preflight: worker sees CUDA_VISIBLE_DEVICES={cvd!r} "
+            f"({len(device_ids)} device(s)) but tensor_parallel_size expects {expected_num_devices}."
+        )
+
+    try:
+        out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,memory.free,memory.total,memory.used,utilization.gpu",
+                "--format=csv,noheader,nounits",
+                "-i",
+                ",".join(device_ids),
+            ],
+            text=True,
+            timeout=30,
+        )
+    except Exception as exc:  # nvidia-smi missing / query failed
+        raise RuntimeError(
+            f"GPU preflight: nvidia-smi query for devices {cvd!r} failed: {exc}"
+        ) from exc
+
+    logger.warning(
+        "GPU preflight for CUDA_VISIBLE_DEVICES=%s (gpu_memory_utilization=%s):\n%s",
+        cvd,
+        gpu_memory_utilization,
+        out.strip(),
+    )
+
+    min_free_floor = int(os.getenv("VERL_GPU_PREFLIGHT_MIN_FREE_MIB", "0"))
+    insufficient = []
+    for line in out.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 3:
+            continue
+        idx, free, total = parts[0], parts[1], parts[2]
+        try:
+            free_mib = int(free)
+            total_mib = int(total)
+        except ValueError:
+            continue
+        required_mib = min_free_floor
+        if gpu_memory_utilization is not None:
+            required_mib = max(required_mib, int(float(gpu_memory_utilization) * total_mib))
+        if free_mib < required_mib:
+            insufficient.append(
+                f"GPU {idx}: free {free_mib} MiB < required {required_mib} MiB "
+                f"(gpu_memory_utilization={gpu_memory_utilization}, total {total_mib} MiB)"
+            )
+    if insufficient:
+        raise RuntimeError(
+            "GPU preflight: assigned device(s) lack free memory for vLLM: "
+            f"{'; '.join(insufficient)}. Free the GPU or pick different devices."
+        )
+
+
 class vLLMRollout(BaseRollout):
     def __init__(self, model_path: str, config: DictConfig, tokenizer, model_hf_config, **kwargs):
         """A vLLM rollout. It requires the module is supported by the vllm.
@@ -160,6 +242,7 @@ class vLLMRollout(BaseRollout):
         #    (which can vary across different vLLM versions);
         # - Otherwise it's the desired value we want to explicitly set.
         engine_kwargs = {key: val for key, val in engine_kwargs.items() if val is not None}
+        _preflight_gpu_check(tensor_parallel_size, config.gpu_memory_utilization)
         self.inference_engine = LLM(
             model=model_path,
             enable_sleep_mode=True,

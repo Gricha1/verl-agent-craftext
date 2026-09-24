@@ -74,6 +74,45 @@ import json
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
+
+def _config_looks_like_vlm(model_config):
+    """Best-effort detection of a vision-language config without AutoModelForVision2Seq.
+
+    Used only when transformers is too old to expose AutoModelForVision2Seq, so we
+    can still tell a genuine VLM apart from a text-only model (e.g. our Qwen).
+    """
+    if getattr(model_config, "vision_config", None) is not None:
+        return True
+    model_type = (getattr(model_config, "model_type", "") or "").lower()
+    vlm_markers = ("vision", "_vl", "vl_", "vlm", "qwen2_vl", "qwen2_5_vl", "llava", "internvl", "kimi_vl", "clip")
+    return any(marker in model_type for marker in vlm_markers)
+
+
+def _resolve_vlm_class(model_config):
+    """Return (is_vlm, AutoModelForVision2Seq_or_None) for the given config.
+
+    When transformers provides AutoModelForVision2Seq we use its model mapping to
+    decide. When it does not (old transformers), we treat the model as text-only,
+    but raise a clear error if the config actually looks like a VLM instead of
+    silently selecting a text AutoModel with the wrong architecture.
+    """
+    try:
+        from transformers import AutoModelForVision2Seq
+    except ImportError:
+        AutoModelForVision2Seq = None
+
+    if AutoModelForVision2Seq is not None:
+        is_vlm = type(model_config) in AutoModelForVision2Seq._model_mapping.keys()
+        return is_vlm, AutoModelForVision2Seq
+
+    if _config_looks_like_vlm(model_config):
+        raise RuntimeError(
+            "This model appears to be a vision-language model, but the installed "
+            "transformers version does not provide AutoModelForVision2Seq. Upgrade "
+            "transformers to load a VLM; refusing to fall back to a text-only AutoModel."
+        )
+    return False, None
+
 device_name = get_device_name()
 
 
@@ -191,7 +230,7 @@ class ActorRolloutRefWorker(Worker):
         from torch import optim, nn
         from torch.distributed.fsdp import CPUOffload, MixedPrecision
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-        from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForVision2Seq
+        from transformers import AutoConfig, AutoModelForCausalLM
 
         from verl.utils.model import get_generation_config, print_model_size, update_model_config
         from verl.utils.torch_dtypes import PrecisionType
@@ -238,8 +277,9 @@ class ActorRolloutRefWorker(Worker):
 
         with init_context(), warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            if type(actor_model_config) in AutoModelForVision2Seq._model_mapping.keys():
-                actor_module_class = AutoModelForVision2Seq
+            is_vlm, vision2seq_cls = _resolve_vlm_class(actor_model_config)
+            if is_vlm:
+                actor_module_class = vision2seq_cls
             else:
                 actor_module_class = AutoModelForCausalLM
 
@@ -1486,12 +1526,12 @@ class CriticWorker(Worker):
         torch_dtype = self.config.model.fsdp_config.get("model_dtype", "fp32")
         torch_dtype = PrecisionType.to_dtype(torch_dtype)
 
-        from transformers import AutoConfig, AutoModelForTokenClassification, AutoModelForVision2Seq
+        from transformers import AutoConfig, AutoModelForTokenClassification
 
         # Используем flash_attention_2 только если CUDA доступна
         attn_impl = "flash_attention_2" if is_cuda_available else "eager"
         critic_model_config = AutoConfig.from_pretrained(local_path, attn_implementation=attn_impl, trust_remote_code=config.model.get("trust_remote_code", False))
-        is_vlm_critic = type(critic_model_config) in AutoModelForVision2Seq._model_mapping.keys()
+        is_vlm_critic, vision2seq_cls = _resolve_vlm_class(critic_model_config)
         if not is_vlm_critic:
             critic_model_config.num_labels = 1
         # patch for kimi-vl
@@ -1508,7 +1548,7 @@ class CriticWorker(Worker):
             if is_vlm_critic:
                 from verl.models.transformers.vl_value import wrap_vl_backbone_for_critic
 
-                backbone = AutoModelForVision2Seq.from_pretrained(
+                backbone = vision2seq_cls.from_pretrained(
                     pretrained_model_name_or_path=local_path,
                     torch_dtype=torch_dtype,
                     config=critic_model_config,
