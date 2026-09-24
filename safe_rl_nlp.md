@@ -761,7 +761,90 @@ text, increasing prompt length and eventually harming action formatting.
    `env.value_prompt_template_type` is not set; it does **not** use the
    optional one-token return prompt.
 
-## 17. Changelog
+## 17. Current 16x16 DUAL reasoning investigation (2026-09-24)
+
+### What is established
+
+- The actor now asks for an action **name** in `<action>NAME</action>`.  If it
+  cannot be parsed, the environment executes `NOOP`; action history then
+  contains `NOOP`, not `?` or a numeric action ID.
+- `history_length=50` stores executed action names.  `reasoning_history_length=3`
+  adds only the last three reasoning snippets to the next actor prompt.
+- With `env.store_raw_reasoning_on_missing_action_tag=True`, an unparsed answer
+  still executes as `NOOP`, but its bounded raw text (at most 200 characters)
+  is retained as a reasoning snippet.  This is intentionally separate from
+  action parsing: an invalid action does not erase its text memory.
+- The action-name change solved the initial valid-action regression: a
+  static-history zero-shot probe reached `143/150 = 0.9533` valid actions.
+  In a separate 32-episode transformer zero-shot A/B, empty reasoning memory
+  was `94.56%` valid and raw fallback was `95.74%`.  Thus raw fallback changes
+  formatting only slightly and is **not** evidence for a large reward/success
+  improvement by itself.
+
+### Why the old curves are not a clean baseline
+
+The Comet experiment `f39114bc...` was reused by later launches through a
+shared Comet key file.  Its current parameter page therefore combines values
+from different sessions and cannot be treated as the resolved config of the
+early metric points.  The early strong runs also predate the reproducible DUAL
+launcher and were from a NOGIT/dirty tree.  Their exact source is unavailable.
+
+The short-history run `fc25dfa9...` did have a materially different observed
+configuration: action history `2`, reasoning history `5`, `max_prompt=2560`,
+KL `0.001`, entropy `0.001`.  Its early success spike was not stable: success
+rose to about `0.77` near step 4704 and later collapsed.  It must therefore be
+treated as a hypothesis source, not as a proven target curve.
+
+### Active matched DUAL ablation
+
+Both active runs are DUAL PPO (separate actor and critic), 16x16, 32
+environments, action history 50, reasoning history 3, 3072 prompt tokens,
+reasoning enabled and raw fallback enabled.  Both are on safe commit
+`789414a`.
+
+| Host | Experiment name | KL | Entropy |
+| --- | --- | ---: | ---: |
+| aicenteritl | `ds16_dual_reasoning_raw_kl001_itl_retry_20260924` | 0.001 | 0.01 |
+| aicenter3 | `ds16_dual_reasoning_raw_kl001_ent001_a3_retry_20260924` | 0.001 | 0.001 |
+
+This isolates the effect of reducing KL by 10x and then additionally reducing
+entropy by 10x.  Do not compare either with shared actor-value/CMAE runs as a
+policy-learning baseline.
+
+### Launch problems found and fixed
+
+1. A3 initially scheduled vLLM onto busy GPUs, so free memory was below its
+   `gpu_memory_utilization=0.55` requirement.  The retry is pinned to GPU 0,1.
+2. A3's installed Craftax has replaced module-level
+   `render_craftax_pixels` with `make_craftax_pixel_renderer`.  This caused
+   imports to fail before any rollout.  Commits `92b6f64`, `5c7ac9a`, and
+   `789414a` add a lazy compatibility wrapper in the regular, oracle, and
+   caged environments.  It affects only pixel/video rendering; the ASCII
+   observation prompt and RL method are unchanged.
+3. Each retry has its own `RAY_TEMP_DIR` and `COMET_EXPERIMENT_KEY_FILE`; never
+   reuse the shared key file, otherwise a new run attaches to an old Comet
+   experiment and pollutes its parameters and curves.
+
+### Remaining hypotheses, in priority order
+
+1. **Optimization constraint:** current KL/entropy `0.01` may have prevented
+   the policy from moving enough; the active pair tests `0.001` directly.
+2. **Prompt/history distribution:** old short-history settings (`h_action=2`,
+   `h_reasoning=5`) may make early exploration and credit assignment easier
+   than 50 action records, even though the latter parses well.  This needs a
+   clean matched A/B after the current KL/entropy result.
+3. **Old dirty-tree behaviour:** reward, sampling, prompt construction, or
+   rollout semantics in the unversioned historical run could differ.  This
+   cannot be inferred from the contaminated Comet parameter page.
+4. **Raw reasoning memory:** it is now tested as a controlled feature, but the
+   zero-shot A/B says it is unlikely to explain the large success-rate gap on
+   its own.
+5. **Parser/valid-action rate is not the main remaining explanation:** current
+   zero-shot validity is about 95%, while the weak training curve still has low
+   success.  Valid syntax and task-solving/credit assignment must be measured
+   separately.
+
+## 18. Changelog
 
 ### 17.1 16x16 shared actor/value CMAE with reasoning (2026-09-23)
 
