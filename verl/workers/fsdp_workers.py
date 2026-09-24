@@ -113,6 +113,17 @@ def _resolve_vlm_class(model_config):
         )
     return False, None
 
+
+def _attention_implementation():
+    """Use FlashAttention2 only when its optional package is installed."""
+    if not is_cuda_available:
+        return "eager"
+    try:
+        import flash_attn  # noqa: F401
+    except ImportError:
+        return "eager"
+    return "flash_attention_2"
+
 device_name = get_device_name()
 
 
@@ -252,8 +263,7 @@ class ActorRolloutRefWorker(Worker):
             torch_dtype = PrecisionType.to_dtype(torch_dtype)
 
         # override model kwargs
-        # Используем flash_attention_2 только если CUDA доступна
-        attn_impl = "flash_attention_2" if is_cuda_available else "eager"
+        attn_impl = _attention_implementation()
         actor_model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=trust_remote_code, attn_implementation=attn_impl)
                 
         # patch for kimi-vl
@@ -1528,8 +1538,7 @@ class CriticWorker(Worker):
 
         from transformers import AutoConfig, AutoModelForTokenClassification
 
-        # Используем flash_attention_2 только если CUDA доступна
-        attn_impl = "flash_attention_2" if is_cuda_available else "eager"
+        attn_impl = _attention_implementation()
         critic_model_config = AutoConfig.from_pretrained(local_path, attn_implementation=attn_impl, trust_remote_code=config.model.get("trust_remote_code", False))
         is_vlm_critic, vision2seq_cls = _resolve_vlm_class(critic_model_config)
         if not is_vlm_critic:
