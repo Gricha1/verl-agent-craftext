@@ -6,8 +6,18 @@ import jax
 import jax.numpy as jnp
 from craftax.craftax.constants import MAX_OBS_DIM, BLOCK_PIXEL_SIZE_HUMAN
 from craftax.craftax_classic.constants import OBS_DIM, BlockType
-# from craftax.craftax.renderer import render
-from craftax.craftax_classic.renderer import render_craftax_pixels as render_classic
+# `render_craftax_pixels` is a factory product in newer pip Craftax releases.
+try:
+    from craftax.craftax_classic.renderer import render_craftax_pixels as render_classic
+except ImportError:
+    from craftax.craftax_classic.renderer import make_craftax_pixel_renderer
+
+    _pixel_renderers = {}
+
+    def render_classic(state, block_pixel_size=BLOCK_PIXEL_SIZE_HUMAN):
+        if block_pixel_size not in _pixel_renderers:
+            _pixel_renderers[block_pixel_size] = make_craftax_pixel_renderer(block_pixel_size)
+        return _pixel_renderers[block_pixel_size](state)
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import textwrap

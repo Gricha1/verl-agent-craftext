@@ -33,8 +33,8 @@ from .utility import (
     render_craftax_ascii,
     render_craftax_ascii_v2,
     overlay_episode_cumulative_stats,
+    render_classic,
 )
-from craftax.craftax_classic.renderer import render_craftax_pixels as render_classic
 from craftax.craftax.constants import BLOCK_PIXEL_SIZE_HUMAN
 
 
