@@ -16,6 +16,13 @@ from typing import Iterable
 
 import numpy as np
 
+# When launched as ``python scripts/evaluate_...py``, Python adds ``scripts/``
+# rather than the repository root to sys.path.  The production renderer lives
+# under agent_system/, so make the evaluator self-contained in a clean clone.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 QUADRANTS = ("RIGHT_UP", "RIGHT_DOWN", "LEFT_UP", "LEFT_DOWN")
 CONSEQUENCES = ("CLOSER", "FARTHER", "SAME")
 OBJECTS = ("STONE", "WOOD", "WATER")
