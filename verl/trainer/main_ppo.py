@@ -187,29 +187,33 @@ class TaskRunner:
         # forks a process from a multithreaded JAX driver and can deadlock.
         from verl.trainer.ppo.ray_trainer import RayPPOTrainer, ResourcePoolManager, Role
 
-        role_worker_mapping = {
-            Role.ActorRollout: ray.remote(actor_rollout_cls),
-            Role.Critic: ray.remote(CriticWorker),
-        }
+        use_actor_value_token = bool(config.algorithm.get("use_actor_value_token", False))
+        role_worker_mapping = {Role.ActorRollout: ray.remote(actor_rollout_cls)}
 
-        # A DUAL run has two simultaneously resident models.  Give actor/ref/
-        # rollout and critic disjoint GPU pools rather than allowing both roles
-        # to reserve every visible GPU from one global pool.
+        # Actor-value token uses one shared actor worker as both policy and
+        # critic, so it neither creates a CriticWorker nor needs two GPU pools.
+        # DUAL PPO, in contrast, keeps actor/ref/rollout and critic resident at
+        # the same time and must use disjoint pools.
         total_gpus = config.trainer.n_gpus_per_node
-        if total_gpus < 2:
-            raise ValueError("DUAL PPO requires at least two GPUs per node")
-        actor_gpus = total_gpus // 2
-        critic_gpus = total_gpus - actor_gpus
         actor_pool_id = "actor_pool"
-        critic_pool_id = "critic_pool"
-        resource_pool_spec = {
-            actor_pool_id: [actor_gpus] * config.trainer.nnodes,
-            critic_pool_id: [critic_gpus] * config.trainer.nnodes,
-        }
-        mapping = {
-            Role.ActorRollout: actor_pool_id,
-            Role.Critic: critic_pool_id,
-        }
+        if use_actor_value_token:
+            resource_pool_spec = {actor_pool_id: [total_gpus] * config.trainer.nnodes}
+            mapping = {Role.ActorRollout: actor_pool_id}
+        else:
+            if total_gpus < 2:
+                raise ValueError("DUAL PPO requires at least two GPUs per node")
+            actor_gpus = total_gpus // 2
+            critic_gpus = total_gpus - actor_gpus
+            critic_pool_id = "critic_pool"
+            role_worker_mapping[Role.Critic] = ray.remote(CriticWorker)
+            resource_pool_spec = {
+                actor_pool_id: [actor_gpus] * config.trainer.nnodes,
+                critic_pool_id: [critic_gpus] * config.trainer.nnodes,
+            }
+            mapping = {
+                Role.ActorRollout: actor_pool_id,
+                Role.Critic: critic_pool_id,
+            }
 
         # we should adopt a multi-source reward function here
         # - for rule-based rm, we directly call a reward score
@@ -225,7 +229,7 @@ class TaskRunner:
             else:
                 raise NotImplementedError
             role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
-            mapping[Role.RewardModel] = critic_pool_id
+            mapping[Role.RewardModel] = actor_pool_id if use_actor_value_token else critic_pool_id
 
         # use reference model
         if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
