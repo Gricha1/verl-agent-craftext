@@ -983,6 +983,11 @@ class DataParallelPPOActor(BasePPOActor):
         actor_value_separate_steps = bool(
             actor_value_token and self.config.get("actor_value_separate_optimizer_steps", False)
         )
+        actor_value_kl_in_value_step = bool(
+            actor_value_separate_steps
+            and self.config.use_kl_loss
+            and self.config.get("actor_value_kl_in_value_step", False)
+        )
         value_warmup = bool(data.meta_info.get("actor_value_warmup", False))
         effective_entropy_coeff = float(
             data.meta_info.get("entropy_coeff", self.config.entropy_coeff)
@@ -1217,6 +1222,7 @@ class DataParallelPPOActor(BasePPOActor):
                                 micro_batch=data,
                                 temperature=temperature,
                             )
+                            value_objective = value_loss * actor_value_loss_coef
                             value_entropy_coef = float(self.config.get("actor_value_entropy_coef", 0.0))
                             value_metrics = {
                                     "actor/value_token_loss": value_loss.detach().item(),
@@ -1230,11 +1236,33 @@ class DataParallelPPOActor(BasePPOActor):
                             diag = getattr(value_loss, "_actor_value_diag", None)
                             if isinstance(diag, dict):
                                 value_metrics.update(diag)
+                            if actor_value_kl_in_value_step:
+                                # The critic prompt is supervised by return bins, but this is a shared
+                                # adapter. Anchor its value-only optimizer step by the same action-policy
+                                # KL used during the actor step.
+                                _, value_step_log_prob, _ = self._forward_micro_batch(
+                                    micro_batch=data,
+                                    temperature=temperature,
+                                    calculate_entropy=False,
+                                )
+                                value_step_kld = kl_penalty(
+                                    logprob=value_step_log_prob,
+                                    ref_logprob=data["ref_log_prob"],
+                                    kl_penalty=self.config.kl_loss_type,
+                                )
+                                value_step_kl_loss = agg_loss(
+                                    loss_mat=value_step_kld,
+                                    loss_mask=response_mask,
+                                    loss_agg_mode=loss_agg_mode,
+                                )
+                                value_objective = value_objective + value_step_kl_loss * self.config.kl_loss_coef
+                                value_metrics["actor/value_step_kl_loss"] = value_step_kl_loss.detach().item()
+                                value_metrics["actor/value_step_kl_coef"] = self.config.kl_loss_coef
                             append_to_dict(
                                 metrics,
                                 value_metrics,
                             )
-                            (value_loss * actor_value_loss_coef * loss_scale).backward()
+                            (value_objective * loss_scale).backward()
                             get_torch_device().empty_cache()
 
                     if actor_value_token and (

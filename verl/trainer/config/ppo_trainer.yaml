@@ -110,6 +110,9 @@ actor_rollout_ref:
     actor_value_target_from_returns: False
     # If true with actor_value_token: policy and value each get zero_grad -> backward -> step.
     actor_value_separate_optimizer_steps: False
+    # In a separate value step, also apply the action-policy KL to the frozen reference.
+    # This prevents the shared backbone from drifting solely due to return-token supervision.
+    actor_value_kl_in_value_step: False
     use_invalid_action_penalty: True
     invalid_action_penalty_coef: 0.1
     use_kl_loss: False # True for GRPO
