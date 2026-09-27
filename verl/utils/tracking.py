@@ -238,12 +238,13 @@ class CometMLLogger:
         run_name = os.environ.get("RUN_NAME", None)
         final_experiment_name = run_name if run_name else experiment_name
         
-        key_file = os.environ.get(
-            "COMET_EXPERIMENT_KEY_FILE",
-            os.path.join(os.environ.get("RAY_TEMP_DIR", "/tmp/ray_temp"), "comet_experiment_key.txt"),
-        )
+        # Resuming is opt-in.  A static fallback under /tmp survives separate
+        # launches and can silently attach a new training job to an unrelated
+        # old experiment.  Launchers that need retry/resume must explicitly
+        # provide a fresh, run-scoped COMET_EXPERIMENT_KEY_FILE.
+        key_file = os.environ.get("COMET_EXPERIMENT_KEY_FILE")
         existing_key = None
-        if os.path.isfile(key_file):
+        if key_file and os.path.isfile(key_file):
             try:
                 with open(key_file, encoding="utf-8") as f:
                     existing_key = f.read().strip() or None
@@ -273,12 +274,13 @@ class CometMLLogger:
                 auto_metric_logging=False,  # We'll log metrics manually
                 display_summary_level=0,
             )
-            try:
-                os.makedirs(os.path.dirname(key_file) or ".", exist_ok=True)
-                with open(key_file, "w", encoding="utf-8") as f:
-                    f.write(self.experiment.get_key())
-            except Exception as exc:
-                print(f"[comet] failed to write experiment key file {key_file}: {exc}", flush=True)
+            if key_file:
+                try:
+                    os.makedirs(os.path.dirname(key_file) or ".", exist_ok=True)
+                    with open(key_file, "w", encoding="utf-8") as f:
+                        f.write(self.experiment.get_key())
+                except Exception as exc:
+                    print(f"[comet] failed to write experiment key file {key_file}: {exc}", flush=True)
         
         # Explicitly set the experiment name to ensure it's used
         # This is a safeguard in case the constructor parameter doesn't work as expected
