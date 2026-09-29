@@ -26,13 +26,14 @@ def debug_square_inner_corner_cells(h: int, w: int) -> jnp.ndarray:
     )
 
 
-def generate_debug_square_world(rng, params, static_params):
+def generate_debug_square_world(rng, params, static_params, fixed_layout: bool = False):
     """
     Layout (NxN with N in {8, 16}, 0-indexed):
       - Border (row/col 0 and N-1): TREE
       - Inner floor: GRASS
       - Player spawn: map center (N//2, N//2)
-      - STONE / WOOD / WATER on three distinct inner corners (permutation each reset)
+      - STONE / WOOD / WATER on three distinct inner corners (permutation each reset,
+        or fixed canonical corners when ``fixed_layout=True``)
     No mobs, ores, lava, procedural noise, or starting saplings in inventory.
     """
     h, w = static_params.map_size
@@ -49,10 +50,15 @@ def generate_debug_square_world(rng, params, static_params):
     map = map.at[:, w - 1].set(BlockType.TREE.value)
 
     corners = debug_square_inner_corner_cells(h, w)
-    perm = jax.random.permutation(rng, corners.shape[0])
-    stone_rc = corners[perm[0]]
-    wood_rc = corners[perm[1]]
-    water_rc = corners[perm[2]]
+    if fixed_layout:
+        # Canonical, reproducible layout: top-left=STONE, top-right=WOOD,
+        # bottom-left=WATER; bottom-right remains GRASS.
+        stone_rc, wood_rc, water_rc = corners[0], corners[1], corners[2]
+    else:
+        perm = jax.random.permutation(rng, corners.shape[0])
+        stone_rc = corners[perm[0]]
+        wood_rc = corners[perm[1]]
+        water_rc = corners[perm[2]]
     map = map.at[stone_rc[0], stone_rc[1]].set(BlockType.STONE.value)
     map = map.at[wood_rc[0], wood_rc[1]].set(BlockType.WOOD.value)
     map = map.at[water_rc[0], water_rc[1]].set(BlockType.WATER.value)

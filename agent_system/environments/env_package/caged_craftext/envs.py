@@ -202,8 +202,15 @@ def _make_craftax_classic_pixels_env(env_kwargs: dict):
         )
 
         # Pip-installed craftax has no debug generator; patch reset (procedural gen breaks on small maps).
+        fixed_debug_square_layout = bool(env_kwargs.get("fixed_debug_square_layout", False))
+
         def reset_env(rng, params):
-            state = generate_debug_square_world(rng, params, env.static_env_params)
+            state = generate_debug_square_world(
+                rng,
+                params,
+                env.static_env_params,
+                fixed_layout=fixed_debug_square_layout,
+            )
             state = _strip_all_mobs_state(state, env.static_env_params)
             return env.get_obs(state), state
 
