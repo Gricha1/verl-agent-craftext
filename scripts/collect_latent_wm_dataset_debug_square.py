@@ -108,11 +108,18 @@ class LocalCagedVector:
             CagedCraftextWorker(seed=int(config.env.seed) + index, env_kwargs=env_kwargs)
             for index in range(num_envs)
         ]
+        # Same seeded sampling used by CagedCraftextMultiProcessEnv.reset().
+        self._rng = np.random.RandomState(int(config.env.seed))
 
     def reset(self):
-        # ``None`` is the worker's ordinary training reset: it samples the
-        # debug-square instruction instead of pinning a scenario.
-        pairs = [worker.reset(scenario_idx=None, return_render=False) for worker in self.workers]
+        # Production CagedCraftextMultiProcessEnv samples among all three
+        # debug-square scenarios with its seeded NumPy RNG before calling each
+        # worker.  Reproduce that selection exactly without Ray transport.
+        scenario_indices = self._rng.choice(np.arange(3), size=len(self.workers), replace=True)
+        pairs = [
+            worker.reset(scenario_idx=int(scenario_idx), return_render=False)
+            for worker, scenario_idx in zip(self.workers, scenario_indices)
+        ]
         observations, infos = zip(*pairs)
         return list(observations), list(infos)
 
