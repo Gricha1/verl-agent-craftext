@@ -110,7 +110,9 @@ class LocalCagedVector:
         ]
 
     def reset(self):
-        pairs = [worker.reset(return_render=False) for worker in self.workers]
+        # ``None`` is the worker's ordinary training reset: it samples the
+        # debug-square instruction instead of pinning a scenario.
+        pairs = [worker.reset(scenario_idx=None, return_render=False) for worker in self.workers]
         observations, infos = zip(*pairs)
         return list(observations), list(infos)
 
