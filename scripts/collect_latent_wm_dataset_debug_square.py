@@ -27,7 +27,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from agent_system.environments import make_envs
+os.environ.setdefault("CAGED_CRAFTEXT_PATH", str(REPO_ROOT / "caged_craftext"))
+
+from agent_system.environments.env_manager import CagedCraftextEnvironmentManager
+from agent_system.environments.env_package.caged_craftext.envs import CagedCraftextWorker
+from agent_system.environments.env_package.caged_craftext.projection import craftext_projection
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,6 +85,48 @@ def chat_prompts(tokenizer: AutoTokenizer, prompts: list[str]) -> list[str]:
         )
         for prompt in prompts
     ]
+
+
+class LocalCagedVector:
+    """Local transport for the production manager, avoiding JAX-after-Ray fork.
+
+    PPO normally puts these same workers behind Ray.  That is unsafe after this
+    standalone process has initialized torch/JAX threads; prompt construction,
+    parsing and stepping remain the production implementations.
+    """
+
+    def __init__(self, config: Any, num_envs: int):
+        env_kwargs = {
+            "config_name": str(config.env.craftext_settings),
+            "use_debug_square_map": True,
+            "observation_type": str(config.env.observation_type),
+            "encode_form": "embedding",
+        }
+        if bool(getattr(config.env, "fixed_debug_square_layout", False)):
+            env_kwargs["fixed_debug_square_layout"] = True
+        self.workers = [
+            CagedCraftextWorker(seed=int(config.env.seed) + index, env_kwargs=env_kwargs)
+            for index in range(num_envs)
+        ]
+
+    def reset(self):
+        pairs = [worker.reset(return_render=False) for worker in self.workers]
+        observations, infos = zip(*pairs)
+        return list(observations), list(infos)
+
+    def step(self, actions):
+        results = [
+            worker.step(int(action), return_render=False)
+            for worker, action in zip(self.workers, actions)
+        ]
+        observations, rewards, dones, infos = zip(*results)
+        return list(observations), np.asarray(rewards), np.asarray(dones), list(infos)
+
+    def close(self):
+        for worker in self.workers:
+            close = getattr(worker, "close", None)
+            if close is not None:
+                close()
 
 
 def response_metadata(tokenizer: AutoTokenizer, token_ids: torch.Tensor, response: str) -> dict[str, Any]:
@@ -137,8 +183,11 @@ def main() -> None:
         args.model, torch_dtype=torch.bfloat16, trust_remote_code=True
     ).to(args.device).eval()
 
-    # This is the actual manager/factory used by PPO, not a hand-built prompt or parser.
-    envs, _ = make_envs(config)
+    # This is the production manager and parser, not a hand-built prompt.  The
+    # worker transport is local because Ray forks after JAX initialisation here.
+    envs = CagedCraftextEnvironmentManager(
+        LocalCagedVector(config, args.num_envs), craftext_projection, config
+    )
     transitions_path = args.output_dir / "transitions.jsonl"
     episodes_path = args.output_dir / "episodes.jsonl"
     started = time.monotonic()
