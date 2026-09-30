@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,12 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+# ``python scripts/foo.py`` puts ``scripts/`` rather than the repository root
+# on sys.path.  Keep this standalone entry point importable on every host.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from agent_system.environments import make_envs
 
