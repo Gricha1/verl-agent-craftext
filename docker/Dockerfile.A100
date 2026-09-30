@@ -42,7 +42,7 @@ RUN echo ". /opt/conda/etc/profile.d/conda.sh" >> ~/.bashrc \
 
 SHELL ["conda", "run", "-n", "verl-agent-311", "/bin/bash", "-c"]
 RUN pip install torch==2.5.1+cu118 torchvision --index-url https://download.pytorch.org/whl/cu118
-RUN pip install alfworld
+RUN pip install "alfworld==0.4.2" termcolor tqdm "textworld[pddl]>=1.6.1"
 # flash-attn needs a torch/CUDA-matched wheel; final install is done at runtime in entrypoint
 # after workspace deps upgrade torch (see entrypoint.sh).
 

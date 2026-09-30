@@ -64,6 +64,7 @@ class AlfredExpert(textworld.core.Wrapper):
 
         self.expert_type = expert_type
         self.prev_command = ""
+
         if expert_type not in (AlfredExpertType.HANDCODED, AlfredExpertType.PLANNER):
             msg = "Unknown type of AlfredExpert: {}.\nExpecting either '{}' or '{}'."
             msg = msg.format(expert_type, AlfredExpertType.HANDCODED, AlfredExpertType.PLANNER)
@@ -125,8 +126,7 @@ class AlfredTWEnv(object):
             print(colored(msg, "yellow"))
 
         self.collect_game_files()
-        self.use_expert = False
-        print(f"use_expert = {self.use_expert}")
+
     def collect_game_files(self, verbose=False):
         def log(info):
             if verbose:
@@ -194,6 +194,17 @@ class AlfredTWEnv(object):
 
         print(f"Overall we have {len(self.game_files)} games in split={self.train_eval}")
         self.num_games = len(self.game_files)
+        if self.num_games == 0:
+            data_path = os.path.expandvars(
+                self.config['dataset']['data_path'] if self.train_eval == "train"
+                else self.config['dataset']['eval_id_data_path'] if self.train_eval == "eval_in_distribution"
+                else self.config['dataset']['eval_ood_data_path']
+            )
+            raise FileNotFoundError(
+                f"AlfWorld found 0 games for split={self.train_eval} under {data_path}. "
+                f"Set ALFWORLD_DATA (currently {os.environ.get('ALFWORLD_DATA', '<unset>')}) "
+                f"and run: bash scripts/download_alfworld_data.sh"
+            )
 
         if self.train_eval == "train":
             num_train_games = self.config['dataset']['num_train_games'] if self.config['dataset']['num_train_games'] > 0 else len(self.game_files)
@@ -247,8 +258,17 @@ class AlfredTWEnv(object):
         if self.train_eval != "train":
             domain_randomization = False
 
-        alfred_demangler = AlfredDemangler(shuffle=domain_randomization)
-        wrappers = [alfred_demangler, AlfredInfos]
+        # IMPORTANT: pass factories/classes, not shared wrapper *instances*.
+        # With asynchronous=False (SyncVectorEnv), a single AlfredDemangler/AlfredExpert
+        # instance is reused across the whole batch → one shared move counter.
+        # Then max_episode_steps≈50 fires after ~50/batch_size vec-steps
+        # (e.g. batch=128 → done in 1–2 steps; batch=8 → done around step 7).
+        shuffle = domain_randomization
+
+        def _make_demangler(env=None, shuffle=shuffle):
+            return AlfredDemangler(env, shuffle=shuffle)
+
+        wrappers = [_make_demangler, AlfredInfos]
 
         # Register a new Gym environment.
         request_infos = textworld.EnvInfos(won=True, admissible_commands=True, extras=["gamefile"])
@@ -259,20 +279,22 @@ class AlfredTWEnv(object):
             max_nb_steps_per_episode = self.config["rl"]["training"]["max_nb_steps_per_episode"]
         elif training_method == "dagger":
             max_nb_steps_per_episode = self.config["dagger"]["training"]["max_nb_steps_per_episode"]
-            if self.use_expert:
-                expert_plan = True if self.train_eval == "train" else False
-            else:
-                expert_plan = False
+
+            expert_plan = True if self.train_eval == "train" else False
             if expert_plan:
-                wrappers.append(AlfredExpert(expert_type))
+                def _make_expert(env=None, expert_type=expert_type):
+                    return AlfredExpert(env, expert_type=expert_type)
+
+                wrappers.append(_make_expert)
                 request_infos.extras.append("expert_plan")
 
         else:
             raise NotImplementedError
 
+        # asynchronous=False: AsyncVectorEnv uses os.fork(); JAX in this process deadlocks reset.
         env_id = textworld.gym.register_games(self.game_files, request_infos,
                                               batch_size=batch_size,
-                                              asynchronous=True,
+                                              asynchronous=False,
                                               max_episode_steps=max_nb_steps_per_episode,
                                               wrappers=wrappers)
         # Launch Gym environment.

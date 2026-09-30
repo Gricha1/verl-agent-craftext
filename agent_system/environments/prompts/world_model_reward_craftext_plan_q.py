@@ -37,11 +37,20 @@ def format_craftext_plan_q_prompt(
     plan_actions: Sequence[str],
     return_bin_legend: str,
     constraint: str = "",
+    executed_actions: Sequence[str] | None = None,
 ) -> str:
+    from agent_system.environments.env_package.caged_craftext.projection import (
+        format_executed_actions_history,
+    )
+
     plan_display = format_plan_actions_display(plan_actions)
+    executed_display = format_executed_actions_history(executed_actions or [])
     h = len([a for a in plan_actions if normalize_action_token(a)])
     prompt = f"""Your goal is to complete the following task:
 **TASK:** {task or "No task"}
+
+Actions already taken in this episode (oldest → newest):
+{executed_display}
 
 This is what you currently see:
 {state or "(empty observation)"}
@@ -148,6 +157,7 @@ def expand_craftext_plan_q_examples(
                     state=steps[t][1],
                     plan_actions=plan,
                     return_bin_legend=legend,
+                    executed_actions=actions[:t],
                 )
                 rows.append((prompt, float(target)))
 

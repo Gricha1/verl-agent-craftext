@@ -19,8 +19,15 @@ if [ -f /opt/conda/etc/profile.d/conda.sh ]; then
 fi
 export CRAFTAX_RELOAD_TEXTURES=True
 
-# Safety net: if image was built without base deps, install them once.
-if ! python -c "import gymnasium, jax, flash_attn, craftax, vllm" >/dev/null 2>&1; then
+# Safety net: check base deps without importing JAX/Craftax.
+# Importing JAX before AlfWorld's TextWorld workers fork can deadlock.
+if ! python - <<'PY' >/dev/null 2>&1
+import importlib.util as u
+mods = ["gymnasium", "flash_attn", "vllm", "jax", "craftax"]
+missing = [m for m in mods if u.find_spec(m) is None]
+raise SystemExit(1 if missing else 0)
+PY
+then
   echo "=== Base deps missing in image — installing (docker/install_h200_base_deps.sh) ==="
   if [ -f docker/install_h200_base_deps.sh ]; then
     bash docker/install_h200_base_deps.sh
@@ -39,12 +46,14 @@ install_workspace_editables() {
   if [ -d caged_craftext ]; then
     pip install --no-deps -e caged_craftext || echo "WARN: caged_craftext editable install failed"
   fi
-  echo "=== Verify critical imports ==="
+  echo "=== Verify critical imports (fork-safe) ==="
   python - <<'PY'
-import gymnasium, jax, flash_attn
-print("gymnasium/jax/flash_attn OK")
-from agent_system.environments.env_package.craftext import envs  # noqa: F401
-print("craftext envs OK")
+import importlib.util as u
+mods = ["gymnasium", "flash_attn", "jax"]
+missing = [m for m in mods if u.find_spec(m) is None]
+if missing:
+    raise SystemExit(f"Missing modules: {missing}")
+print("gymnasium/flash_attn/jax specs OK")
 PY
 }
 
@@ -65,6 +74,16 @@ fi
 
 # AlfWorld game files (AlfredTWEnv). Persisted via host mount .cache/alfworld.
 export ALFWORLD_DATA="${ALFWORLD_DATA:-/root/.cache/alfworld}"
+ensure_alfworld_python_deps() {
+  # Match working server: pip alfworld==0.4.2 (+ textworld/termcolor). Vendored tree stays on PYTHONPATH.
+  if python -c "import importlib.metadata as m, termcolor, textworld; assert m.version('alfworld')=='0.4.2'" >/dev/null 2>&1; then
+    echo "=== AlfWorld python deps OK (alfworld==0.4.2, termcolor/textworld); skip ==="
+    return 0
+  fi
+  echo "=== Installing AlfWorld python deps (alfworld==0.4.2, termcolor, textworld[pddl]) ==="
+  pip install -q "alfworld==0.4.2" termcolor tqdm "textworld[pddl]>=1.6.1"
+  python -c "import importlib.metadata as m, termcolor, textworld; print('alfworld', m.version('alfworld'), 'textworld', textworld.__version__, 'OK')"
+}
 ensure_alfworld_data() {
   local need=0
   if [ ! -d "${ALFWORLD_DATA}/json_2.1.1/train" ]; then
@@ -83,6 +102,7 @@ ensure_alfworld_data() {
 if [ "${SKIP_ALFWORLD_DATA_SETUP}" = "1" ]; then
   echo "=== SKIP_ALFWORLD_DATA_SETUP=1 — not checking AlfWorld data ==="
 else
+  ensure_alfworld_python_deps
   ensure_alfworld_data
 fi
 

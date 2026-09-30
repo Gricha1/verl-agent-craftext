@@ -1,0 +1,172 @@
+{
+  "gsm8k_dual_vs_shared_mae": {
+    "title": "GSM8K: dual LoRA64 vs shared AV LoRA64 + MAE",
+    "status": "awaiting_mae_run_launch",
+    "gpu_blocker": "aicenter3 GPU2+3 occupied by foreign root VLLM::EngineCore; GPU0 foreign dynalang; our Gt0.99 on 4+5; free=1,6. Will not silently relocate; await free 2+3 or explicit OK for 1+6.",
+    "dual_lora": {
+      "key": "b7573e3eacd949a099afe9682c8df516",
+      "name": "dual PPO LoRA64",
+      "url": "https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/b7573e3eacd949a099afe9682c8df516",
+      "lora_rank": 64,
+      "architecture": "dual_actor_critic"
+    },
+    "dual_lora_alt_128": {
+      "key": "0a0271de2c934001b24bf19503411612",
+      "lora_rank": 128,
+      "note": "worse LoRA-rank match than b7573e3e"
+    },
+    "shared_mae": {
+      "key": null,
+      "name": "gsm8k_shared_av_lora64_mae",
+      "status": "not_launched_yet",
+      "value_loss_type": "mae",
+      "lora_rank": 64,
+      "architecture": "shared_actor_value"
+    },
+    "compare_url_when_ready": null,
+    "main_metrics": [
+      "episode/success_rate",
+      "episode/reward/mean",
+      "actor/entropy_loss",
+      "actor/pg_loss",
+      "actor/value_token_loss"
+    ],
+    "compare_url_baseline_only": "https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/compare?selected=b7573e3eacd949a099afe9682c8df516",
+    "compare_url_template": "https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/compare?selected=b7573e3eacd949a099afe9682c8df516&selected=REPLACE_WITH_MAE_KEY"
+  },
+  "craftext_8x8_reward_targets": {
+    "title": "CrafText 8x8: shared r_t / dual G_t undisc / dual G_t 0.99 / dual r_t",
+    "runs": [
+      {
+        "role": "current_g099",
+        "key": "90deefed8ddc458da4f27349a14bf4f4",
+        "architecture": "dual_actor_separate_critic",
+        "reward": "G_t_discounted",
+        "gamma_token": 0.99,
+        "history": 50,
+        "note": "Stopped for shared AV; was live dual G_t^0.99 (key 90deefed; aa4f5c97 earlier).",
+        "status": "stopped_for_next_experiment"
+      },
+      {
+        "role": "shared_rt",
+        "key": "4be19de5e50949359891ce852700d565",
+        "architecture": "shared_actor_value",
+        "reward": "r_t_via_GAE_returns_bins",
+        "gamma_token": 1.0,
+        "history": null,
+        "success_last_approx": 0.98
+      },
+      {
+        "role": "dual_gt_undisc",
+        "key": "2a42e153bdb0448789a56140e70fdf50",
+        "architecture": "dual_actor_separate_critic",
+        "reward": "G_t_undiscounted",
+        "gamma_token": 1.0,
+        "history": 50,
+        "status": "failed_historically"
+      },
+      {
+        "role": "dual_rt_h50",
+        "key": "874bc480b5224efb9b92795d271ca81c",
+        "architecture": "dual_actor_separate_critic",
+        "reward": "r_t",
+        "gamma_token": 1.0,
+        "history": 50,
+        "success_last_approx": 0.96
+      }
+    ],
+    "shared_gt_gamma1_8x8": {
+      "found": false,
+      "statement": "matched shared actor-value G_t gamma=1 run \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d",
+      "note": "No 8x8 shared AV + undiscounted remaining-return G_t in registry/caches. Do not substitute 16x16 AV runs or traj-GAE double-count.",
+      "nearest_available": "4be19de5 shared AV but r_t/bins (not G_t remaining)"
+    },
+    "compare_url": "https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/compare?selected=aa4f5c97f8654dbaa58e0931ce88d627&selected=4be19de5e50949359891ce852700d565&selected=2a42e153bdb0448789a56140e70fdf50&selected=874bc480b5224efb9b92795d271ca81c",
+    "main_metrics": [
+      "episode/success_rate",
+      "episode/reward/mean",
+      "critic/returns/mean",
+      "critic/vf_explained_var",
+      "actor/value_token_loss",
+      "actor/value_token_accuracy"
+    ]
+  },
+  "craftext_shared_vs_dual_gt_g099": {
+    "title": "CRAFTEXT SHARED VS DUAL: G_t^0.99 + historical r_t / G_t^1",
+    "main_metric": "episode/success_rate",
+    "runs": [
+      {
+        "role": "A_dual_gt_g099_stopped",
+        "key": "90deefed8ddc458da4f27349a14bf4f4",
+        "architecture": "dual_actor_separate_critic",
+        "reward": "G_t_discounted",
+        "gamma_token": 0.99,
+        "history": 50,
+        "status": "stopped_for_next_experiment"
+      },
+      {
+        "role": "B_shared_av_gt_g099_new",
+        "key": "f70ad71b8b414747a32d443a8d545431",
+        "architecture": "shared_actor_value",
+        "reward": "G_t_discounted",
+        "gamma_token": 0.99,
+        "history": 50,
+        "value_loss": "two_hot_ce",
+        "status": "running"
+      },
+      {
+        "role": "C_shared_av_rt_historical",
+        "key": "4be19de5e50949359891ce852700d565",
+        "architecture": "shared_actor_value",
+        "reward": "r_t_or_asymmetric_bins",
+        "history": null,
+        "note": "debug_square_8x8 shared AV; reward/setup not identical to G_t^0.99"
+      },
+      {
+        "role": "D_dual_rt_h50",
+        "key": "874bc480b5224efb9b92795d271ca81c",
+        "architecture": "dual_actor_separate_critic",
+        "reward": "r_t",
+        "history": 50
+      },
+      {
+        "role": "E_dual_gt_gamma1",
+        "key": "2a42e153bdb0448789a56140e70fdf50",
+        "architecture": "dual_actor_separate_critic",
+        "reward": "G_t_undiscounted",
+        "gamma_token": 1.0,
+        "history": 50
+      }
+    ],
+    "optional_runs": [
+      {
+        "key": "02e2744",
+        "note": "dual r_t history0"
+      },
+      {
+        "key": "1a064d01",
+        "note": "old dual G_t"
+      },
+      {
+        "key": "c3a5e727",
+        "note": "dual trajGAE"
+      }
+    ],
+    "metrics": [
+      "episode/success_rate",
+      "episode/reward/mean",
+      "actor/value_token_loss",
+      "actor/value_token_accuracy",
+      "value_target/min",
+      "value_target/max",
+      "edge_bin_fraction",
+      "clipping_fraction",
+      "critic/vf_explained_var",
+      "actor/entropy_loss",
+      "actor/pg_loss",
+      "actor/ppo_kl"
+    ],
+    "compare_url_template": "https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/compare?selected=90deefed8ddc458da4f27349a14bf4f4&selected=REPLACE_NEW&selected=4be19de5e50949359891ce852700d565&selected=874bc480b5224efb9b92795d271ca81c&selected=2a42e153bdb0448789a56140e70fdf50",
+    "compare_url": "https://www.comet.com/gregory-gorbov/verl-agent-caged-craftext/compare?selected=90deefed8ddc458da4f27349a14bf4f4&selected=f70ad71b8b414747a32d443a8d545431&selected=4be19de5e50949359891ce852700d565&selected=874bc480b5224efb9b92795d271ca81c&selected=2a42e153bdb0448789a56140e70fdf50"
+  }
+}

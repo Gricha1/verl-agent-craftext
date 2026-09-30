@@ -40,6 +40,14 @@ def run_ppo(config) -> None:
             "runtime_env": {"env_vars": {"TOKENIZERS_PARALLELISM": "true", "NCCL_DEBUG": "WARN", "VLLM_LOGGING_LEVEL": "WARN", "VLLM_ALLOW_RUNTIME_LORA_UPDATING": "true"}},
             "num_cpus": config.ray_init.num_cpus,
         }
+        if os.environ.get("FORCE_NEW_RAY_CLUSTER", "").strip() in ("1", "true", "True"):
+            # Second concurrent job on same host: do not attach to existing Ray.
+            ray_init_kwargs["address"] = "local"
+            print("[INFO] FORCE_NEW_RAY_CLUSTER=1 -> ray.init(address='local')")
+        ray_temp_dir = os.environ.get("RAY_TEMP_DIR", "").strip()
+        if ray_temp_dir:
+            ray_init_kwargs["_temp_dir"] = ray_temp_dir
+            print(f"[INFO] Ray temp directory: {ray_temp_dir}")
         # Добавляем num_gpus, если указано в конфиге
         # Если не указано, пытаемся определить из trainer.n_gpus_per_node
         if hasattr(config.ray_init, 'num_gpus') and config.ray_init.num_gpus is not None:

@@ -1,34 +1,103 @@
 #!/bin/bash
-# PPO on debug_square_8x8: dual actor+critic, vocab entropy.
-# Resources shuffled each reset; GAE by response (one env step for single-token actions).
+# PPO on debug_square_8x8: dual actor+critic LLMs (ordinary PPO baseline).
+#
+# - history_length=50 (executed actions in prompt)
+# - Token score = per-step env reward r_t
+# - gae_by_trajectory=False (response_len=1 → returns≈r_t)
+#
+# Hyperparams: examples/ppo_trainer/config/ppo_debug_square_8x8_dual.yaml
 #
 # Usage:
 #   bash examples/ppo_trainer/ppo_debug_square.sh
-#   NUM_OPTIMISTIC_ENVS=32 bash examples/ppo_trainer/ppo_debug_square.sh
+#   NUM_OPTIMISTIC_ENVS=32 HISTORY_LENGTH=20 bash examples/ppo_trainer/ppo_debug_square.sh
 
 set -e
 
-NUM_OPTIMISTIC_ENVS="${NUM_OPTIMISTIC_ENVS:-128}"
-OPTIMISTIC_RESET_RATIO="${OPTIMISTIC_RESET_RATIO:-8}"
-USE_ACTOR_LORA="${USE_ACTOR_LORA:-true}"
-CRITIC_LORA_RANK="${CRITIC_LORA_RANK:-64}"
-CRITIC_LORA_ALPHA="${CRITIC_LORA_ALPHA:-64}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HYPER_YAML="${HYPER_YAML:-$SCRIPT_DIR/config/ppo_debug_square_8x8_dual.yaml}"
+
+if [ ! -f "$HYPER_YAML" ]; then
+  echo "[ERROR] Hyperparam yaml not found: $HYPER_YAML"
+  exit 1
+fi
+
+eval "$(python3 - "$HYPER_YAML" <<'PY'
+import os, shlex, sys
+from omegaconf import OmegaConf
+
+cfg = OmegaConf.load(sys.argv[1])
+job = cfg.get("job") or {}
+
+def j(key, default, env=None):
+    env = env or key.upper()
+    if env in os.environ and os.environ[env] != "":
+        return os.environ[env]
+    v = OmegaConf.select(job, key)
+    return default if v is None else v
+
+def emit(name, value):
+    print(f"export {name}={shlex.quote(str(value))}")
+
+emit("NUM_OPTIMISTIC_ENVS", j("num_optimistic_envs", 64, "NUM_OPTIMISTIC_ENVS"))
+emit("OPTIMISTIC_RESET_RATIO", j("optimistic_reset_ratio", 8, "OPTIMISTIC_RESET_RATIO"))
+emit("USE_ACTOR_LORA", j("use_actor_lora", True, "USE_ACTOR_LORA"))
+emit("CRITIC_LORA_RANK", j("critic_lora_rank", 64, "CRITIC_LORA_RANK"))
+emit("CRITIC_LORA_ALPHA", j("critic_lora_alpha", 64, "CRITIC_LORA_ALPHA"))
+emit("TOTAL_EPOCHS", j("total_epochs", 8000, "TOTAL_EPOCHS"))
+emit("HISTORY_LENGTH", j("history_length", 50, "HISTORY_LENGTH"))
+emit("CHECKPOINT_DIR", j(
+    "checkpoint_dir",
+    "training_checkpoints/verl_agent_caged_craftext_debug_square_dual",
+    "CHECKPOINT_DIR",
+))
+emit("RUN_NAME", j(
+    "run_name",
+    "PPO Debug Square 8x8 dual LLM + r_t + history",
+    "RUN_NAME",
+))
+
+overrides = [str(x) for x in (cfg.get("overrides") or [])]
+replacements = {
+    "+env.optimistic_reset_ratio=": f"+env.optimistic_reset_ratio={j('optimistic_reset_ratio', 8, 'OPTIMISTIC_RESET_RATIO')}",
+    "env.history_length=": f"env.history_length={j('history_length', 50, 'HISTORY_LENGTH')}",
+    "critic.model.lora_rank=": f"critic.model.lora_rank={j('critic_lora_rank', 64, 'CRITIC_LORA_RANK')}",
+    "critic.model.lora_alpha=": f"critic.model.lora_alpha={j('critic_lora_alpha', 64, 'CRITIC_LORA_ALPHA')}",
+    "trainer.default_local_dir=": f"trainer.default_local_dir={j('checkpoint_dir', 'training_checkpoints/verl_agent_caged_craftext_debug_square_dual', 'CHECKPOINT_DIR')}",
+}
+
+def apply(item: str) -> str:
+    for prefix, replacement in replacements.items():
+        if item.startswith(prefix):
+            return replacement
+    return item
+
+overrides = [apply(o) for o in overrides]
+print("HYPER_OVERRIDES=(")
+for o in overrides:
+    print(f"  {shlex.quote(o)}")
+print(")")
+PY
+)"
+
+_bool() {
+  case "${1,,}" in
+    1|true|yes|on) echo true ;;
+    *) echo false ;;
+  esac
+}
+USE_ACTOR_LORA="$(_bool "$USE_ACTOR_LORA")"
 
 echo "=========================================="
-echo "PPO debug_square_8x8 (dual actor+critic, vocab entropy)"
+echo "PPO debug_square_8x8 (dual actor+critic LLM)"
 echo "=========================================="
+echo "[INFO] hyper yaml: $HYPER_YAML"
 echo "[INFO] NUM_OPTIMISTIC_ENVS=$NUM_OPTIMISTIC_ENVS"
-echo "[INFO] OPTIMISTIC_RESET_RATIO=$OPTIMISTIC_RESET_RATIO"
-echo "[INFO] Map: 8x8 — stone / wood / water shuffled corners (adjacent = success)"
-echo "[INFO] prompt: single_token_action, max_response_length=1"
-echo "[INFO] entropy: full vocabulary (entropy_over_valid_actions=False)"
-echo "[INFO] GAE: by response / one env step (gae_by_trajectory=False)"
-echo "[INFO] USE_ACTOR_LORA=$USE_ACTOR_LORA (actor lora_rank=64 when true)"
-echo "[INFO] CRITIC_LORA_RANK=$CRITIC_LORA_RANK CRITIC_LORA_ALPHA=$CRITIC_LORA_ALPHA"
-echo "[INFO] auto_reset: false (one episode per env slot, max 50 steps)"
-echo "[INFO] checkpoints -> training_checkpoints/verl_agent_caged_craftext_debug_square"
-
-export RUN_NAME="${RUN_NAME:-PPO Debug Square 8x8 dual}"
+echo "[INFO] HISTORY_LENGTH=$HISTORY_LENGTH (actions already taken → prompt)"
+echo "[INFO] token score: per-step r_t (use_episode_return_as_token_reward=False)"
+echo "[INFO] gae_by_trajectory=False (returns≈r_t at response_len=1)"
+echo "[INFO] actor_value_token=False (separate critic LLM)"
+echo "[INFO] USE_ACTOR_LORA=$USE_ACTOR_LORA CRITIC_LORA_RANK=$CRITIC_LORA_RANK"
+echo "[INFO] checkpoints -> $CHECKPOINT_DIR"
 
 bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   vllm \
@@ -38,30 +107,10 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   1 \
   false \
   false \
-  8000 \
+  "$TOTAL_EPOCHS" \
   "$USE_ACTOR_LORA" \
   single_token_action \
   0 \
   ascii \
-  ++env.craftext_settings='debug_square_8x8' \
-  +env.use_optimistic_parallel=True \
-  +env.optimistic_reset_ratio="$OPTIMISTIC_RESET_RATIO" \
-  +env.use_ray_text_render_workers=False \
-  +env.value_return_min=-5 \
-  +env.value_return_max=6 \
-  +env.value_return_bin_step=0.4 \
-  ++env.use_jax_gpu=False \
-  ++env.jax_gpu_fraction=0.15 \
-  algorithm.gae_by_trajectory=False \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.9 \
-  actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
-  actor_rollout_ref.actor.entropy_coeff=0.01 \
-  actor_rollout_ref.actor.entropy_over_valid_actions=False \
-  critic.model.lora_rank="$CRITIC_LORA_RANK" \
-  critic.model.lora_alpha="$CRITIC_LORA_ALPHA" \
-  trainer.resume_mode=disable \
-  trainer.save_freq=-1 \
-  trainer.test_freq=20 \
-  trainer.max_actor_ckpt_to_keep=1 \
-  trainer.max_critic_ckpt_to_keep=1 \
-  trainer.default_local_dir=training_checkpoints/verl_agent_caged_craftext_debug_square
+  "${HYPER_OVERRIDES[@]}" \
+  "$@"

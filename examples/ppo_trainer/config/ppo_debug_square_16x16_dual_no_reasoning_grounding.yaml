@@ -1,0 +1,51 @@
+# PLANNED / NOT RUN. Clean current-code 16x16 DUAL baseline.
+# Launch: HYPER_YAML=this_file bash examples/ppo_trainer/ppo_debug_square_16x16.sh
+job:
+  run_name: ds16_dual_no_reasoning_grounding
+  num_optimistic_envs: 64
+  optimistic_reset_ratio: 8
+  use_actor_lora: true
+  critic_lora_rank: 64
+  critic_lora_alpha: 64
+  total_epochs: 8000
+  history_length: 50
+  checkpoint_dir: training_checkpoints/verl_agent_caged_craftext_ds16_dual_no_reasoning_grounding
+overrides:
+  - ++env.craftext_settings=debug_square_16x16
+  - env.enable_reasoning=False
+  - +env.use_optimistic_parallel=True
+  - +env.optimistic_reset_ratio=8
+  - +env.use_ray_text_render_workers=False
+  - ++env.use_jax_gpu=False
+  - ++env.jax_gpu_fraction=0.15
+  - env.history_length=50
+  # Existing 16x16 DUAL source-of-truth target: per-step r_t.
+  - reward_model.use_episode_return_as_token_reward=False
+  - algorithm.gae_by_trajectory=False
+  - algorithm.use_actor_value_token=False
+  - actor_rollout_ref.actor.actor_value_token=False
+  # aicenter2 runs offline; use the mounted, immutable local Qwen snapshot.
+  - actor_rollout_ref.model.path=/storage/gorbov_gv/models/hf/hub/models--Qwen--Qwen2.5-1.5B-Instruct/snapshots/989aa7980e4cf806f80c7fef2b1adb7bc71aa306
+  - critic.model.path=/storage/gorbov_gv/models/hf/hub/models--Qwen--Qwen2.5-1.5B-Instruct/snapshots/989aa7980e4cf806f80c7fef2b1adb7bc71aa306
+  - data.max_prompt_length=1536
+  - actor_rollout_ref.rollout.gpu_memory_utilization=0.5
+  - actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16
+  - actor_rollout_ref.actor.ppo_mini_batch_size=64
+  - critic.ppo_micro_batch_size_per_gpu=16
+  - critic.ppo_mini_batch_size=64
+  - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8
+  - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=8
+  - actor_rollout_ref.rollout.val_kwargs.temperature=1.0
+  - actor_rollout_ref.actor.entropy_coeff=0.01
+  - actor_rollout_ref.actor.entropy_over_valid_actions=False
+  - critic.model.lora_rank=64
+  - critic.model.lora_alpha=64
+  - trainer.resume_mode=disable
+  - trainer.val_before_train=True
+  - trainer.save_freq=5
+  - trainer.test_freq=20
+  - trainer.max_actor_ckpt_to_keep=8
+  - trainer.max_critic_ckpt_to_keep=8
+  - trainer.default_local_dir=training_checkpoints/verl_agent_caged_craftext_ds16_dual_no_reasoning_grounding
+  - trainer.n_gpus_per_node=2
+  - trainer.nnodes=1

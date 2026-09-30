@@ -49,6 +49,11 @@ from verl.utils.dataset.vision_utils import (
     resolve_qwen_image_pad_token_ids,
 )
 from verl.utils.torch_functional import get_response_mask, pad_2d_list_to_length
+
+# Force non-xformers attention on bare-metal (xformers cpp missing for torch 2.8).
+import os as _os
+_os.environ["VLLM_ATTENTION_BACKEND"] = "FLASH_ATTN"
+
 from verl.workers.rollout.base import BaseRollout
 from vllm.lora.request import LoRARequest
 

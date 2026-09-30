@@ -22,6 +22,12 @@ export COMET_WS_CONNECTION_IDLE_TIMEOUT="${COMET_WS_CONNECTION_IDLE_TIMEOUT:-120
 export COMET_OFFLINE_DIRECTORY="${COMET_OFFLINE_DIRECTORY:-}"
 unset COMET_OFFLINE_MODE 2>/dev/null || true
 
+# Offline validation/preflight must not wait for an external Comet connection.
+if [ "${COMET_DISABLED:-0}" = "1" ]; then
+    unset COMET_API_KEY
+    export GPU_PROFILER_ENABLED=0
+fi
+
 # JAX backend: configured in main_ppo via ++env.use_jax_gpu=True (GPU if jaxlib+cuda works, else CPU fallback).
 # Do NOT set JAX_PLATFORMS=cuda here — breaks when jaxlib has no CUDA backend (vLLM can still use GPU).
 # Regenerate Craftax texture pickle when JAX version changes (avoids ShapedArray/named_shape pickle errors).
@@ -89,7 +95,7 @@ if [ "$USE_ACTION_HEAD" = "true" ] || [ "$PROMPT_TEMPLATE_TYPE" = "single_token_
     echo "[INFO] max_response_length=1 (USE_ACTION_HEAD=$USE_ACTION_HEAD, PROMPT_TEMPLATE_TYPE=$PROMPT_TEMPLATE_TYPE)"
 fi
 
-export VLLM_ATTENTION_BACKEND=XFORMERS
+export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-XFORMERS}
 
 # Путь к пакету caged_craftext (должен содержать модуль craftext.environment)
 # Путь к клонированному репозиторию CAGED-CrafText
@@ -125,7 +131,9 @@ val_data_size=${VAL_DATA_SIZE:-16}
 export RUN_NAME="${RUN_NAME:-run_ppo_qwen2.5_1.5b_caged_craftext_energy_collect_wood_$(date +%Y%m%d-%H%M%S)}"
 
 rm -f "$COMET_EXPERIMENT_KEY_FILE"
-python3 "$PROJECT_ROOT/scripts/init_comet_experiment.py" \
+# Comet's metadata uploader may remain alive after it has written the key.  Do
+# not let that optional early-registration helper block PPO startup forever.
+timeout "${COMET_INIT_TIMEOUT:-45}" python3 "$PROJECT_ROOT/scripts/init_comet_experiment.py" \
   --project "$COMET_PROJECT_NAME" \
   --experiment "$RUN_NAME" \
   --key-file "$COMET_EXPERIMENT_KEY_FILE" || true
@@ -145,10 +153,18 @@ else
   echo "[INFO] GPU profiler disabled or nvidia-smi unavailable (GPU_PROFILER_ENABLED=$GPU_PROFILER_ENABLED)"
 fi
 
-python -m examples.data_preprocess.prepare \
-    --mode 'text' \
-    --train_data_size $train_data_size \
-    --val_data_size $val_data_size
+# On offline clusters the ready-made rollout parquet files are mounted into the
+# container.  Do not replace them by downloading the unrelated demo dataset.
+if [ "${SKIP_DATA_PREP:-0}" = "1" ]; then
+  echo "[INFO] SKIP_DATA_PREP=1: using existing $HOME/data/verl-agent/text/*.parquet"
+elif [ -f "$HOME/data/verl-agent/text/train.parquet" ] && [ -f "$HOME/data/verl-agent/text/test.parquet" ]; then
+  echo "[INFO] Existing parquet dataset found; skipping demo data preparation"
+else
+  python -m examples.data_preprocess.prepare \
+      --mode 'text' \
+      --train_data_size $train_data_size \
+      --val_data_size $val_data_size
+fi
 
 python -m verl.trainer.main_ppo \
     algorithm.adv_estimator=gae \
@@ -156,7 +172,7 @@ python -m verl.trainer.main_ppo \
     data.val_files=$HOME/data/verl-agent/text/test.parquet \
     data.train_batch_size=$train_data_size \
     data.val_batch_size=$val_data_size \
-    data.max_prompt_length=512 \
+    data.max_prompt_length="${MAX_PROMPT_LENGTH:-1024}" \
     data.max_response_length=$max_response_length \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
@@ -199,6 +215,7 @@ python -m verl.trainer.main_ppo \
     critic.model.fsdp_config.param_offload=False \
     critic.model.fsdp_config.optimizer_offload=False \
     algorithm.use_kl_in_reward=False \
+    reward_model.use_episode_return_as_token_reward=False \
     +algorithm.log_prob_action_only=$LOG_PROB_ACTION_ONLY \
     env.env_name='caged_craftext/CagedCraftextEnv' \
     +env.enable_reasoning=$(if [ "$NO_REASONING" = "true" ]; then echo "False"; else echo "True"; fi) \
@@ -213,7 +230,7 @@ python -m verl.trainer.main_ppo \
     +actor_rollout_ref.model.num_actions=17 \
     env.seed=0 \
     env.max_steps=50 \
-    env.history_length=0 \
+    env.history_length="${HISTORY_LENGTH:-50}" \
     env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
     trainer.critic_warmup=$CRITIC_WARMUP \
     trainer.logger=['console','comet'] \

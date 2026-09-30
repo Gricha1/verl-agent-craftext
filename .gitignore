@@ -142,3 +142,23 @@ evaluation_results
 .docker_caged_deps_installed
 # flash-attn wheels downloaded by docker/build_h200.sh
 .wheels/*.whl
+experiment_dashboard/.env
+experiments/runtime/
+experiments/metrics_cache/
+
+# Generated on working hosts, not source (aicenter3 reference tree, 2026-09-18)
+validation_text/
+experiments/metrics_cache/*
+\!experiments/metrics_cache/.gitkeep
+experiments/runtime/*
+\!experiments/runtime/.gitkeep
+experiment_dashboard/_*
+experiment_dashboard/.env
+examples/ppo_trainer/*_output.txt
+caged_craftext/**/texture_cache*.pbz2
+SOURCE_GIT_COMMIT
+CACHEDIR.TAG
+.docker_caged_deps_installed
+.cursor/
+*.orig
+*.rej
