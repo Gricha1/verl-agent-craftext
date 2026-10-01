@@ -6,9 +6,9 @@ seed: 20261001
 lora_rank: 64
 lora_alpha: 64
 lora_dropout: 0.0
-learning_rate: 1.0e-5
+learning_rate: 1.0e-6
 weight_decay: 0.0
-train_batch_size: 8
+train_batch_size: 16
 gradient_accumulation_steps: 4
 epochs: 3
 max_sequence_length: 3072
@@ -16,6 +16,9 @@ predictor_hidden: 512
 latent_dim: 256
 target_projection_seed: 9173
 infonce_temperature: 0.1
-checkpoint_every_steps: 200
+checkpoint_every_steps: 100
+eval_every_steps: 100
+eval_seeds_path: examples/latent_wm/ds8_actor_eval_seeds.json
+eval_max_response_length: 320
 comet_workspace: gregory-gorbov
 comet_project: verl-agent-caged-craftext
