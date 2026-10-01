@@ -66,18 +66,18 @@ def final_hidden(model,tok,texts,device,grad,max_len,require_eos):
 def infonce(p,z,t):
     p=F.normalize(p.float(),dim=-1); z=F.normalize(z.float(),dim=-1); logits=p@z.T/t; same=torch.isclose(z@z.T,torch.ones_like(logits),atol=1e-6); return (torch.logsumexp(logits,1)-torch.logsumexp(logits.masked_fill(~same,float("-inf")),1)).mean(),logits,same
 
-def env_cfg(seed):
-    return OmegaConf.create({"env":{"env_name":"caged_craftext/CagedCraftextEnv","craftext_settings":"debug_square_8x8","seed":seed,"max_steps":50,"history_length":50,"reasoning_history_length":3,"enable_reasoning":True,"prompt_template_type":"single_token_action_reasoning","store_raw_reasoning_on_missing_action_tag":True,"observation_type":"ascii","auto_reset":False,"rollout":{"n":1},"resources_per_worker":{"num_cpus":0.03},"use_jax_gpu":False,"jax_gpu_fraction":0.0,"use_optimistic_parallel":True,"optimistic_reset_ratio":8,"use_ray_text_render_workers":False},"data":{"train_batch_size":1,"val_batch_size":1}})
+def env_cfg(seed, max_steps):
+    return OmegaConf.create({"env":{"env_name":"caged_craftext/CagedCraftextEnv","craftext_settings":"debug_square_8x8","seed":seed,"max_steps":max_steps,"history_length":50,"reasoning_history_length":3,"enable_reasoning":True,"prompt_template_type":"single_token_action_reasoning","store_raw_reasoning_on_missing_action_tag":False,"observation_type":"ascii","auto_reset":False,"rollout":{"n":1},"resources_per_worker":{"num_cpus":0.03},"use_jax_gpu":False,"jax_gpu_fraction":0.0,"use_optimistic_parallel":False,"use_ray_text_render_workers":False},"data":{"train_batch_size":1,"val_batch_size":1}})
 
-def actor_eval(model,tok,device,seeds,max_new):
+def actor_eval(model,tok,device,seeds,max_new,max_steps,temperature):
     """No-gradient shuffled 8x8 evaluation using production prompt, parser and memory."""
     model.eval(); out=[]
     for seed in seeds:
-        cfg=env_cfg(int(seed)); vec=LocalVector(cfg,int(seed)); env=CagedCraftextEnvironmentManager(vec,craftext_projection,cfg); obs,_=env.reset({}); reward=0.; valid=errors=repeated=0; acts=[]; trace=[]
+        cfg=env_cfg(int(seed),max_steps); vec=LocalVector(cfg,int(seed)); env=CagedCraftextEnvironmentManager(vec,craftext_projection,cfg); obs,_=env.reset({}); reward=0.; valid=errors=repeated=0; acts=[]; trace=[]
         try:
-            for step in range(50):
+            for step in range(max_steps):
                 text=tok.apply_chat_template([{"role":"user","content":obs["text"][0]}],tokenize=False,add_generation_prompt=True); x=tok(text,return_tensors="pt",add_special_tokens=False).to(device); torch.manual_seed(int(seed)*1000+step)
-                with torch.no_grad(): y=model.generate(**x,do_sample=True,temperature=1.,top_p=1.,top_k=0,max_new_tokens=max_new,pad_token_id=tok.pad_token_id,eos_token_id=tok.eos_token_id)
+                with torch.no_grad(): y=model.generate(**x,do_sample=True,temperature=temperature,top_p=1.,top_k=0,max_new_tokens=max_new,pad_token_id=tok.pad_token_id,eos_token_id=tok.eos_token_id)
                 response=tok.decode(y[0,x["input_ids"].shape[1]:],skip_special_tokens=True); obs,rs,dones,infos=env.step([response]); info=infos[0]; action=str(info.get("action_name","NOOP")); reward+=float(rs[0]); valid+=int(bool(info.get("is_action_valid",False))); errors+=int(not bool(info.get("is_action_valid",False))); repeated+=int(bool(acts) and acts[-1]==action); acts.append(action); trace.append({"step":step,"response":response,"action":action})
                 if bool(dones[0]): break
             out.append({"seed":int(seed),"success":float(bool(infos[0].get("won",False))),"reward":reward,"length":len(acts),"valid":valid/max(1,len(acts)),"errors":errors/max(1,len(acts)),"repeated":repeated/max(1,len(acts)),"trace":trace})
@@ -85,12 +85,12 @@ def actor_eval(model,tok,device,seeds,max_new):
     mean=lambda k:float(np.mean([x[k] for x in out])); rewards=[x["reward"] for x in out]
     return {"success_rate":mean("success"),"mean_episode_reward":mean("reward"),"median_episode_reward":float(np.median(rewards)),"std_episode_reward":float(np.std(rewards)),"mean_episode_length":mean("length"),"valid_action_rate":mean("valid"),"parse_error_rate":mean("errors"),"repeated_action_rate":mean("repeated"),"episodes":out}
 
-def offline(loader,online,frozen,tok,head,proj,device,cfg):
+def offline(loader,online,frozen,tok,head,proj,device,cfg,loss_type):
     online.eval(); head.eval(); allm=[]
     with torch.no_grad():
         for rows in loader:
-            p=head(final_hidden(online,tok,[actor_text(tok,r) for r in rows],device,False,int(cfg["max_sequence_length"]),True).float()); z=final_hidden(frozen,tok,[target_text(tok,r) for r in rows],device,False,int(cfg["max_sequence_length"]),False).to(proj.dtype)@proj; _,logits,same=infonce(p,z,float(cfg["infonce_temperature"])); rank=logits.argsort(descending=True); allm.append((F.mse_loss(p.float(),z.float()),F.cosine_similarity(p.float(),z.float(),dim=-1).mean(),same.gather(1,rank[:,:1]).any(1).float().mean(),same.gather(1,rank[:,:5]).any(1).float().mean()))
-    return dict(zip(("mse","cosine","retrieval_top1","retrieval_top5"),[float(torch.stack([m[i] for m in allm]).mean()) for i in range(4)]))
+            p=head(final_hidden(online,tok,[actor_text(tok,r) for r in rows],device,False,int(cfg["max_sequence_length"]),True).float()); z=final_hidden(frozen,tok,[target_text(tok,r) for r in rows],device,False,int(cfg["max_sequence_length"]),False).to(proj.dtype)@proj; nce,logits,same=infonce(p,z,float(cfg["infonce_temperature"])); rank=logits.argsort(descending=True); pos=F.cosine_similarity(F.normalize(p.float(),dim=-1),F.normalize(z.float(),dim=-1),dim=-1).mean(); neg=(F.normalize(p.float(),dim=-1)@F.normalize(z.float(),dim=-1).T); neg=neg[~torch.eye(len(rows),device=device,dtype=torch.bool)].mean(); loss=F.mse_loss(p.float(),z.float()) if loss_type=="mse" else nce; allm.append((loss,F.mse_loss(p.float(),z.float()),pos,neg,same.gather(1,rank[:,:1]).any(1).float().mean(),same.gather(1,rank[:,:5]).any(1).float().mean()))
+    return dict(zip(("loss","mse","positive_cosine","negative_cosine","retrieval_top1","retrieval_top5"),[float(torch.stack([m[i] for m in allm]).mean()) for i in range(6)]))
 
 def main():
     a=args(); cfg=yaml.safe_load(Path(a.config).read_text()); seed=int(cfg["seed"]); random.seed(seed); torch.manual_seed(seed); torch.cuda.manual_seed_all(seed); device=torch.device(a.device); root=Path(cfg["output_root"])/a.run_name; root.mkdir(parents=True,exist_ok=False)
@@ -104,8 +104,14 @@ def main():
         from comet_ml import Experiment
         comet=Experiment(workspace=cfg["comet_workspace"],project_name=cfg["comet_project"],auto_output_logging="simple"); comet.set_name(a.run_name); comet.add_tags(["latent_wm","reward_free","random_transitions","actor_matched_optimization","periodic_env_eval",a.loss_type]); comet.log_parameters({**cfg,**counts,"loss_type":a.loss_type,"git_commit":commit,"effective_optimizer_batch":bs*accum,"dataset_hash":hashlib.sha256((Path(cfg["dataset_dir"])/"transitions.jsonl").read_bytes()).hexdigest()})
     except Exception as e: comet=None; print(f"[comet disabled] {e}",flush=True)
+    def save_checkpoint(name, include_optimizer=True):
+        d=root/name; d.mkdir(exist_ok=True); online.save_pretrained(d/"adapter")
+        state={"predictor":head.state_dict(),"step":step}
+        if include_optimizer: state["optimizer"]=opt.state_dict()
+        torch.save(state,d/"state.pt")
+        (d/"resolved_config.yaml").write_text((root/"resolved_config.yaml").read_text())
     def logeval(step):
-        r=actor_eval(online,tok,device,seeds,int(cfg["eval_max_response_length"])); (root/f"env_eval_step_{step}.json").write_text(json.dumps(r,indent=2)); metrics={"env_eval/"+k:v for k,v in r.items() if k!="episodes"}; print(json.dumps({"step":step,**metrics}),flush=True); comet and comet.log_metrics(metrics,step=step)
+        r=actor_eval(online,tok,device,seeds,int(cfg["eval_max_response_length"]),int(cfg["eval_max_steps"]),float(cfg["eval_temperature"])); (root/f"env_eval_step_{step}.json").write_text(json.dumps(r,indent=2)); metrics={"env_eval/"+k:v for k,v in r.items() if k!="episodes"}; print(json.dumps({"step":step,**metrics}),flush=True); comet and comet.log_metrics(metrics,step=step)
     logeval(0); step=0; best=float("inf"); opt.zero_grad(set_to_none=True)
     for epoch in range(int(cfg["epochs"])):
         online.train(); head.train()
@@ -116,10 +122,14 @@ def main():
             else: loss,logits,_=infonce(p,z,float(cfg["infonce_temperature"])); extra={"train/infonce":float(loss.detach()),"latent/positive_logits":float(logits.diag().mean())}
             (loss/accum).backward()
             if (i+1)%accum==0 or i+1==len(tr):
-                grad=float(torch.nn.utils.clip_grad_norm_(list(online.parameters())+list(head.parameters()),1.0)); opt.step(); opt.zero_grad(set_to_none=True); step+=1; metrics={"train/loss":float(loss.detach()),"train/lr":opt.param_groups[0]["lr"],"train/grad_norm":grad,"latent/z_pred_std":float(p.float().std()),"latent/z_target_std":float(z.float().std()),"latent/z_pred_norm":float(p.float().norm(dim=-1).mean()),"latent/z_target_norm":float(z.float().norm(dim=-1).mean()),**extra}; comet and comet.log_metrics(metrics,step=step)
-                if step%int(cfg["checkpoint_every_steps"])==0: d=root/f"checkpoint_{step}"; d.mkdir(); online.save_pretrained(d/"adapter"); torch.save({"predictor":head.state_dict(),"optimizer":opt.state_dict(),"step":step},d/"state.pt")
+                lora_params=[p for n,p in online.named_parameters() if p.requires_grad and "lora_" in n]
+                pred_params=list(head.parameters())
+                lora_grad=float(torch.sqrt(sum((p.grad.detach().float().norm()**2 for p in lora_params if p.grad is not None), torch.zeros((),device=device))))
+                predictor_grad=float(torch.sqrt(sum((p.grad.detach().float().norm()**2 for p in pred_params if p.grad is not None), torch.zeros((),device=device))))
+                grad=float(torch.nn.utils.clip_grad_norm_(list(online.parameters())+pred_params,1.0)); opt.step(); opt.zero_grad(set_to_none=True); step+=1; metrics={"train/loss":float(loss.detach()),"train/lr":opt.param_groups[0]["lr"],"train/grad_norm":grad,"train/predictor_grad_norm":predictor_grad,"train/lora_grad_norm":lora_grad,"latent/z_pred_std":float(p.float().std()),"latent/z_target_std":float(z.float().std()),"latent/z_pred_norm":float(p.float().norm(dim=-1).mean()),"latent/z_target_norm":float(z.float().norm(dim=-1).mean()),**extra}; comet and comet.log_metrics(metrics,step=step)
+                if step%int(cfg["checkpoint_every_steps"])==0: save_checkpoint(f"checkpoint_{step}")
                 if step%int(cfg["eval_every_steps"])==0: logeval(step)
-        m=offline(va,online,frozen,tok,head,proj,device,cfg); (root/f"val_epoch_{epoch}.json").write_text(json.dumps(m,indent=2)); comet and comet.log_metrics({"val/"+k:v for k,v in m.items()},step=step)
-        if m["mse"]<best: best=m["mse"]; d=root/"best"; d.mkdir(exist_ok=True); online.save_pretrained(d/"adapter"); torch.save({"predictor":head.state_dict(),"step":step,"metrics":m},d/"state.pt")
-    logeval(step); m=offline(DataLoader(Rows(test),batch_size=bs,collate_fn=lambda x:x),online,frozen,tok,head,proj,device,cfg); (root/"test_metrics.json").write_text(json.dumps(m,indent=2)); online.save_pretrained(root/"final_adapter"); torch.save({"predictor":head.state_dict(),"optimizer":opt.state_dict(),"step":step},root/"final_state.pt"); comet and comet.log_metrics({"test/"+k:v for k,v in m.items()},step=step); comet and comet.end(); print(json.dumps({"run_dir":str(root),"steps":step,"test":m}),flush=True)
+        m=offline(va,online,frozen,tok,head,proj,device,cfg,a.loss_type); (root/f"val_epoch_{epoch}.json").write_text(json.dumps(m,indent=2)); comet and comet.log_metrics({"val/"+k:v for k,v in m.items()},step=step)
+        if m["loss"]<best: best=m["loss"]; save_checkpoint("best",include_optimizer=False)
+    logeval(step); m=offline(DataLoader(Rows(test),batch_size=bs,collate_fn=lambda x:x),online,frozen,tok,head,proj,device,cfg,a.loss_type); (root/"test_metrics.json").write_text(json.dumps(m,indent=2)); save_checkpoint("final"); comet and comet.log_metrics({"test/"+k:v for k,v in m.items()},step=step); comet and comet.end(); print(json.dumps({"run_dir":str(root),"steps":step,"test":m}),flush=True)
 if __name__=="__main__": main()

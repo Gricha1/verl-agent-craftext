@@ -21,5 +21,7 @@ checkpoint_every_steps: 100
 eval_every_steps: 100
 eval_seeds_path: examples/latent_wm/ds8_actor_eval_seeds.json
 eval_max_response_length: 320
+eval_max_steps: 50
+eval_temperature: 1.0
 comet_workspace: gregory-gorbov
 comet_project: verl-agent-caged-craftext
