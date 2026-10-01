@@ -86,7 +86,7 @@ def evaluate(loader, online, frozen, tok, head, proj, loss_type, temp, device):
     online.eval(); head.eval(); losses=[]; cos=[]; top1=[]; top5=[]
     with torch.no_grad():
       for rows in loader:
-        pred=head(last_hidden(online,tok,[actor_with_forced_action(tok,r) for r in rows],device,False))
+        pred=head(last_hidden(online,tok,[actor_with_forced_action(tok,r) for r in rows],device,False).float())
         target=last_hidden(frozen,tok,[target_text(tok,r) for r in rows],device,False).to(proj.dtype)@proj
         mse=F.mse_loss(pred.float(),target.float()); c=F.cosine_similarity(pred.float(),target.float(),dim=-1).mean()
         _, logits, same=multi_positive_infonce(pred,target,temp); ranks=logits.argsort(descending=True)
@@ -123,7 +123,7 @@ def main():
     for epoch in range(int(cfg["epochs"])):
       opt.zero_grad(set_to_none=True)
       for batch_i,rows in enumerate(train_loader):
-        pred=head(last_hidden(online,tok,[actor_with_forced_action(tok,r) for r in rows],device,True))
+        pred=head(last_hidden(online,tok,[actor_with_forced_action(tok,r) for r in rows],device,True).float())
         with torch.no_grad(): target=last_hidden(frozen,tok,[target_text(tok,r) for r in rows],device,False).to(proj.dtype)@proj
         if args.loss_type=="mse": loss=F.mse_loss(pred.float(),target.float()); extra={"train/mse":float(loss.detach())}
         else:
