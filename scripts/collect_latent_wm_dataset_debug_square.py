@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import sys
 import time
 from pathlib import Path
@@ -48,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--top-k", type=int, default=-1)
     parser.add_argument("--fixed-layout", action="store_true")
+    parser.add_argument("--random-navigation", action="store_true")
     return parser.parse_args()
 
 
@@ -171,7 +173,8 @@ def main() -> None:
         json.dumps(
             {
                 "dataset_kind": "reward_free_latent_wm_transitions",
-                "model": args.model,
+                "model": None if args.random_navigation else args.model,
+                "policy": "uniform_UP_DOWN_LEFT_RIGHT" if args.random_navigation else "sampled_base_qwen",
                 "sampling": {"temperature": args.temperature, "top_p": args.top_p, "top_k": args.top_k},
                 "environment": OmegaConf.to_container(config.env, resolve=True),
                 "episodes_requested": args.episodes,
@@ -184,13 +187,14 @@ def main() -> None:
         encoding="utf-8",
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True, use_fast=True)
-    tokenizer.padding_side = "left"
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, torch_dtype=torch.bfloat16, trust_remote_code=True
-    ).to(args.device).eval()
+    tokenizer = model = None
+    if not args.random_navigation:
+        tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True, use_fast=True)
+        tokenizer.padding_side = "left"
+        if tokenizer.pad_token_id is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.bfloat16, trust_remote_code=True).to(args.device).eval()
+    action_rng = random.Random(args.seed)
 
     # This is the production manager and parser, not a hand-built prompt.  The
     # worker transport is local because Ray forks after JAX initialisation here.
@@ -219,7 +223,11 @@ def main() -> None:
                 while bool(active.any()):
                     active_indices = np.flatnonzero(active).tolist()
                     actor_prompts = [str(observations["text"][i]) for i in active_indices]
-                    encoded = tokenizer(
+                    if args.random_navigation:
+                        raw_responses = [f"<action>{action_rng.choice(('UP', 'DOWN', 'LEFT', 'RIGHT'))}</action>" for _ in active_indices]
+                        continuation = None
+                    else:
+                     encoded = tokenizer(
                         chat_prompts(tokenizer, actor_prompts),
                         return_tensors="pt",
                         padding=True,
@@ -227,7 +235,7 @@ def main() -> None:
                         max_length=3072,
                         add_special_tokens=False,
                     ).to(model.device)
-                    with torch.inference_mode():
+                     with torch.inference_mode():
                         generated = model.generate(
                             **encoded,
                             do_sample=True,
@@ -238,8 +246,8 @@ def main() -> None:
                             pad_token_id=tokenizer.pad_token_id,
                             eos_token_id=tokenizer.eos_token_id,
                         )
-                    continuation = generated[:, encoded["input_ids"].shape[1] :]
-                    raw_responses = tokenizer.batch_decode(continuation, skip_special_tokens=True)
+                     continuation = generated[:, encoded["input_ids"].shape[1] :]
+                     raw_responses = tokenizer.batch_decode(continuation, skip_special_tokens=True)
                     # Supply empty strings for completed slots. The manager itself owns parsing.
                     responses = [""] * args.num_envs
                     metadata: dict[int, dict[str, Any]] = {}
@@ -247,9 +255,9 @@ def main() -> None:
                     for j, index in enumerate(active_indices):
                         raw = raw_responses[j]
                         responses[index] = raw
-                        meta = response_metadata(tokenizer, continuation[j], raw)
+                        meta = ({"response_token_count": 0, "ended_with_eos": False, "truncated_at_max_new_tokens": False, "raw_response": raw} if args.random_navigation else response_metadata(tokenizer, continuation[j], raw))
                         meta["truncated_at_max_new_tokens"] = bool(
-                            meta["response_token_count"] >= int(args.max_new_tokens) and not meta["ended_with_eos"]
+                            (not args.random_navigation) and meta["response_token_count"] >= int(args.max_new_tokens) and not meta["ended_with_eos"]
                         )
                         metadata[index] = meta
 
@@ -266,12 +274,15 @@ def main() -> None:
                             "environment_worker_seed": int(args.seed + index),
                             "step": int(local_steps[index]),
                             "actor_prompt_t": prompt_by_index[index],
+                            "task": str(envs.tasks[index]),
+                            "action_history_t": [str(x.get("action", "")) for x in envs.memory[index][-50:]],
                             "observation_t": current_obs[index],
                             **metadata[index],
                             "reasoning_t": str(info.get("action_text", "")) if False else None,
                             "parsed_action_t": parsed_action,
                             "parsed_action_id_t": action_id,
                             "executed_action_t": parsed_action if action_id >= 0 else "INVALID_ACTION",
+                            "action_t": parsed_action if action_id >= 0 else "INVALID_ACTION",
                             "action_parse_error": bool(not info.get("is_action_valid", False)),
                             "observation_t_plus_1": str(next_observations["anchor"][index]),
                             "env_done": bool(dones[index]),
