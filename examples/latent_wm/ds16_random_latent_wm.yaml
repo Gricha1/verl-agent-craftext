@@ -1,5 +1,6 @@
 # Matched reward-free latent world-model experiment. Only ``loss_type`` differs.
-base_model: Qwen/Qwen2.5-1.5B-Instruct
+# A3's immutable local snapshot; avoids Hugging Face cache writes during startup.
+base_model: /storage/gorbov_gv/models/hf/hub/models--Qwen--Qwen2.5-1.5B-Instruct/snapshots/989aa7980e4cf806f80c7fef2b1adb7bc71aa306
 dataset_dir: /mnt/aicenter1-datasets/gorbov_gv/latent_wm/debug_square_16x16_uniform500_clean_20261001
 output_root: /mnt/aicenter1-datasets/gorbov_gv/latent_wm/runs
 seed: 20261001
