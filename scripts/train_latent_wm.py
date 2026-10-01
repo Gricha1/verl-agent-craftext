@@ -76,8 +76,8 @@ def actor_eval(model,tok,device,seeds,max_new):
         cfg=env_cfg(int(seed)); vec=LocalVector(cfg,int(seed)); env=CagedCraftextEnvironmentManager(vec,craftext_projection,cfg); obs,_=env.reset({}); reward=0.; valid=errors=repeated=0; acts=[]; trace=[]
         try:
             for step in range(50):
-                text=tok.apply_chat_template([{"role":"user","content":obs["text"][0]}],tokenize=False,add_generation_prompt=True); x=tok(text,return_tensors="pt",add_special_tokens=False).to(device); g=torch.Generator(device=device).manual_seed(int(seed)*1000+step)
-                with torch.no_grad(): y=model.generate(**x,do_sample=True,temperature=1.,top_p=1.,top_k=0,max_new_tokens=max_new,pad_token_id=tok.pad_token_id,eos_token_id=tok.eos_token_id,generator=g)
+                text=tok.apply_chat_template([{"role":"user","content":obs["text"][0]}],tokenize=False,add_generation_prompt=True); x=tok(text,return_tensors="pt",add_special_tokens=False).to(device); torch.manual_seed(int(seed)*1000+step)
+                with torch.no_grad(): y=model.generate(**x,do_sample=True,temperature=1.,top_p=1.,top_k=0,max_new_tokens=max_new,pad_token_id=tok.pad_token_id,eos_token_id=tok.eos_token_id)
                 response=tok.decode(y[0,x["input_ids"].shape[1]:],skip_special_tokens=True); obs,rs,dones,infos=env.step([response]); info=infos[0]; action=str(info.get("action_name","NOOP")); reward+=float(rs[0]); valid+=int(bool(info.get("is_action_valid",False))); errors+=int(not bool(info.get("is_action_valid",False))); repeated+=int(bool(acts) and acts[-1]==action); acts.append(action); trace.append({"step":step,"response":response,"action":action})
                 if bool(dones[0]): break
             out.append({"seed":int(seed),"success":float(bool(infos[0].get("won",False))),"reward":reward,"length":len(acts),"valid":valid/max(1,len(acts)),"errors":errors/max(1,len(acts)),"repeated":repeated/max(1,len(acts)),"trace":trace})
