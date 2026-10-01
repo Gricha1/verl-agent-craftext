@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Reward-free latent WM pretraining with periodic production-actor evaluation."""
 from __future__ import annotations
-import argparse, hashlib, json, math, random, subprocess, sys
+import argparse, hashlib, json, math, os, random, subprocess, sys
 from pathlib import Path
 import numpy as np
 import torch
@@ -15,6 +15,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
+# The actor is on CUDA; the tiny text environment must never reserve its GPU
+# through JAX while periodic evaluation is running.
+os.environ.setdefault("JAX_PLATFORMS", "cpu")
 from agent_system.environments.env_manager import CagedCraftextEnvironmentManager
 from agent_system.environments.env_package.caged_craftext.envs import CagedCraftextWorker
 from agent_system.environments.env_package.caged_craftext.projection import craftext_projection
