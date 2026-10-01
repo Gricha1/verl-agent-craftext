@@ -262,6 +262,12 @@ def main() -> None:
                         metadata[index] = meta
 
                     current_obs = [str(observations["anchor"][i]) for i in range(args.num_envs)]
+                    # Capture history before the action is executed.  The
+                    # manager appends the action during ``step``.
+                    history_before = {
+                        index: [str(record.get("action", "")) for record in envs.memory[index][-50:]]
+                        for index in active_indices
+                    }
                     next_observations, _rewards, dones, step_infos = envs.step(responses)
                     dones = np.asarray(dones, dtype=bool)
                     for index in active_indices:
@@ -275,7 +281,7 @@ def main() -> None:
                             "step": int(local_steps[index]),
                             "actor_prompt_t": prompt_by_index[index],
                             "task": str(envs.tasks[index]),
-                            "action_history_t": [str(x.get("action", "")) for x in envs.memory[index][-50:]],
+                            "action_history_t": history_before[index],
                             "observation_t": current_obs[index],
                             **metadata[index],
                             "reasoning_t": str(info.get("action_text", "")) if False else None,
