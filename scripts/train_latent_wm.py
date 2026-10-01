@@ -26,15 +26,18 @@ class Rows(Dataset):
 
 class LocalVector:
     """Production CrafText worker/manager API without Ray in an offline trainer."""
-    def __init__(self, cfg, seed):
-        self.worker=CagedCraftextWorker(seed=seed, env_kwargs={"config_name":cfg.env.craftext_settings,"use_debug_square_map":True,"observation_type":"ascii","encode_form":"embedding"})
-        self.rng=np.random.RandomState(seed)
+    def __init__(self, cfg, seeds):
+        self.workers=[CagedCraftextWorker(seed=int(seed), env_kwargs={"config_name":cfg.env.craftext_settings,"use_debug_square_map":True,"observation_type":"ascii","encode_form":"embedding"}) for seed in seeds]
+        self.rngs=[np.random.RandomState(int(seed)) for seed in seeds]
     def reset(self):
-        o,i=self.worker.reset(scenario_idx=int(self.rng.choice(np.arange(3))), return_render=False); return [o],[i]
+        pairs=[worker.reset(scenario_idx=int(rng.choice(np.arange(3))), return_render=False) for worker,rng in zip(self.workers,self.rngs)]
+        return [x[0] for x in pairs],[x[1] for x in pairs]
     def step(self, actions):
-        o,r,d,i=self.worker.step(int(actions[0]), return_render=False); return [o],np.asarray([r]),np.asarray([d]),[i]
+        pairs=[worker.step(int(action), return_render=False) for worker,action in zip(self.workers,actions)]
+        return [x[0] for x in pairs],np.asarray([x[1] for x in pairs]),np.asarray([x[2] for x in pairs]),[x[3] for x in pairs]
     def close(self):
-        if hasattr(self.worker,"close"): self.worker.close()
+        for worker in self.workers:
+            if hasattr(worker,"close"): worker.close()
 
 def args():
     p=argparse.ArgumentParser(); p.add_argument("--config",required=True); p.add_argument("--loss-type",choices=("mse","infonce"),required=True); p.add_argument("--run-name",required=True); p.add_argument("--device",default="cuda:0"); return p.parse_args()
@@ -71,17 +74,24 @@ def env_cfg(seed, max_steps):
 
 def actor_eval(model,tok,device,seeds,max_new,max_steps,temperature):
     """No-gradient shuffled 8x8 evaluation using production prompt, parser and memory."""
-    model.eval(); out=[]
-    for seed in seeds:
-        cfg=env_cfg(int(seed),max_steps); vec=LocalVector(cfg,int(seed)); env=CagedCraftextEnvironmentManager(vec,craftext_projection,cfg); obs,_=env.reset({}); reward=0.; valid=errors=repeated=0; acts=[]; trace=[]
-        try:
-            for step in range(max_steps):
-                text=tok.apply_chat_template([{"role":"user","content":obs["text"][0]}],tokenize=False,add_generation_prompt=True); x=tok(text,return_tensors="pt",add_special_tokens=False).to(device); torch.manual_seed(int(seed)*1000+step)
-                with torch.no_grad(): y=model.generate(**x,do_sample=True,temperature=temperature,top_p=1.,top_k=0,max_new_tokens=max_new,pad_token_id=tok.pad_token_id,eos_token_id=tok.eos_token_id)
-                response=tok.decode(y[0,x["input_ids"].shape[1]:],skip_special_tokens=True); obs,rs,dones,infos=env.step([response]); info=infos[0]; action=str(info.get("action_name","NOOP")); reward+=float(rs[0]); valid+=int(bool(info.get("is_action_valid",False))); errors+=int(not bool(info.get("is_action_valid",False))); repeated+=int(bool(acts) and acts[-1]==action); acts.append(action); trace.append({"step":step,"response":response,"action":action})
-                if bool(dones[0]): break
-            out.append({"seed":int(seed),"success":float(bool(infos[0].get("won",False))),"reward":reward,"length":len(acts),"valid":valid/max(1,len(acts)),"errors":errors/max(1,len(acts)),"repeated":repeated/max(1,len(acts)),"trace":trace})
-        finally: vec.close()
+    model.eval(); cfg=env_cfg(int(seeds[0]),max_steps); vec=LocalVector(cfg,seeds); env=CagedCraftextEnvironmentManager(vec,craftext_projection,cfg); obs,_=env.reset({}); n=len(seeds); active=np.ones(n,dtype=bool); rewards=np.zeros(n); valid=np.zeros(n); errors=np.zeros(n); repeated=np.zeros(n); lengths=np.zeros(n,dtype=int); wins=np.zeros(n); actions=[[] for _ in range(n)]; traces=[[] for _ in range(n)]
+    try:
+        for step in range(max_steps):
+            idx=np.flatnonzero(active)
+            if not len(idx): break
+            texts=[tok.apply_chat_template([{"role":"user","content":obs["text"][i]}],tokenize=False,add_generation_prompt=True) for i in idx]
+            x=tok(texts,return_tensors="pt",padding=True,add_special_tokens=False).to(device)
+            torch.manual_seed(int(seeds[0])*1000+step)
+            with torch.no_grad(): y=model.generate(**x,do_sample=True,temperature=temperature,top_p=1.,top_k=0,max_new_tokens=max_new,pad_token_id=tok.pad_token_id,eos_token_id=tok.eos_token_id)
+            decoded=tok.batch_decode(y[:,x["input_ids"].shape[1]:],skip_special_tokens=True)
+            responses=["<action>NOOP</action>"]*n
+            for i,response in zip(idx,decoded): responses[i]=response
+            obs,rs,dones,infos=env.step(responses)
+            for i in idx:
+                info=infos[i]; action=str(info.get("action_name","NOOP")); rewards[i]+=float(rs[i]); valid[i]+=int(bool(info.get("is_action_valid",False))); errors[i]+=int(not bool(info.get("is_action_valid",False))); repeated[i]+=int(bool(actions[i]) and actions[i][-1]==action); actions[i].append(action); lengths[i]+=1; wins[i]=float(bool(info.get("won",False))); traces[i].append({"step":step,"response":responses[i],"action":action})
+            active[idx] &= ~np.asarray(dones,dtype=bool)[idx]
+    finally: vec.close()
+    out=[{"seed":int(seed),"success":float(wins[i]),"reward":float(rewards[i]),"length":int(lengths[i]),"valid":float(valid[i]/max(1,lengths[i])),"errors":float(errors[i]/max(1,lengths[i])),"repeated":float(repeated[i]/max(1,lengths[i])),"trace":traces[i]} for i,seed in enumerate(seeds)]
     mean=lambda k:float(np.mean([x[k] for x in out])); rewards=[x["reward"] for x in out]
     return {"success_rate":mean("success"),"mean_episode_reward":mean("reward"),"median_episode_reward":float(np.median(rewards)),"std_episode_reward":float(np.std(rewards)),"mean_episode_length":mean("length"),"valid_action_rate":mean("valid"),"parse_error_rate":mean("errors"),"repeated_action_rate":mean("repeated"),"episodes":out}
 
