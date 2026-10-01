@@ -11,7 +11,9 @@ learning_rate: 1.0e-6
 weight_decay: 0.0
 train_batch_size: 16
 gradient_accumulation_steps: 4
-epochs: 3
+# Three epochs produce approximately 600 optimizer updates on this fixed split.
+# Keep the matched MSE and InfoNCE runs at a 5x training budget (~3,000 updates).
+epochs: 15
 max_sequence_length: 3072
 predictor_hidden: 512
 latent_dim: 256
