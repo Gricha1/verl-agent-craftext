@@ -115,7 +115,8 @@ def main():
  def log_validation(s):
   met=validate(m,qwen,tok,vl,dev,c);(root/f'val_step_{s}.json').write_text(json.dumps(met,indent=2));print(json.dumps({'step':s,**met}),flush=True);comet and comet.log_metrics(met,step=s)
  def log_env(s,mode):
-  result=production_env_eval(qwen,tok,m,proj,dev,c,seeds,mode);(root/f'env_{mode}_step_{s}.json').write_text(json.dumps(result,indent=2));met={f'env_{mode}/'+k:v for k,v in result.items() if k!='episodes'};print(json.dumps({'step':s,**met}),flush=True);comet and comet.log_metrics(met,step=s)
+  prefix={'base':'env_base','zero':'env_zero_latent','learned':'env_eval'}[mode]
+  result=production_env_eval(qwen,tok,m,proj,dev,c,seeds,mode);(root/f'{prefix}_step_{s}.json').write_text(json.dumps(result,indent=2));met={prefix+'/'+k:v for k,v in result.items() if k!='episodes'};print(json.dumps({'step':s,**met}),flush=True);comet and comet.log_metrics(met,step=s)
  # Same fixed 32 seeds, parser and prompt: base once, then zero/learned at every cadence.
  log_env(0,'base');log_env(0,'zero');log_env(0,'learned');log_validation(0)
  step=0
