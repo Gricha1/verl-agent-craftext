@@ -345,8 +345,8 @@ def main():
             save("best")
     test = validate(model, test_loader, device, cfg)
     print(json.dumps({"final_step": global_step, **test}), flush=True)
-    if comet: comet.log_metrics({"test/" + key.split("/", 1)[-1]: value for key, value in test.items()}, step=global_step); comet.end()
     save("final")
+    if comet: comet.log_metrics({"test/" + key.split("/", 1)[-1]: value for key, value in test.items()}, step=global_step); comet.end()
 
 
 if __name__ == "__main__":
