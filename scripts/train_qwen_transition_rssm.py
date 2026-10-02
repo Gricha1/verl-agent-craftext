@@ -76,7 +76,7 @@ def transition(qwen, tokenizer, model, row, h, z, device, cfg):
     full = data.actor_full(tokenizer, row)
     prefix_len = len(tokenizer(pre, add_special_tokens=False)['input_ids'])
     ids = tokenizer(full, add_special_tokens=False, truncation=True, max_length=int(cfg['max_sequence_length']))['input_ids']
-    emb = qwen.get_input_embeddings(); state = model.state_tokens(h[None], z[None])[0].to(emb.weight.dtype)
+    emb = qwen.get_input_embeddings(); state = model.state_tokens(h, z)[0].to(emb.weight.dtype)
     x = torch.cat((emb(torch.tensor(ids[:prefix_len], device=device)), state, emb(torch.tensor(ids[prefix_len:], device=device))), 0)[None]
     out = qwen(inputs_embeds=x, attention_mask=torch.ones((1, x.shape[1]), device=device, dtype=torch.long), output_hidden_states=True, use_cache=False).hidden_states[-1][0, -1].float()
     return model.transition_head(out[None])
