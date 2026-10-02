@@ -28,6 +28,8 @@ def parse_args():
     parser.add_argument("--config", required=True)
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--source-commit", default=None,
+                        help="Commit of the copied source when the host checkout is intentionally unchanged.")
     parser.add_argument("--smoke-batches", type=int, default=0,
                         help="Run this many optimizer batches and exit after validation.")
     return parser.parse_args()
@@ -250,7 +252,7 @@ def main():
     test_chunks = sequence_chunks(test_rows, int(cfg["sequence_length"]), int(cfg["chunk_stride"]))
     if not train_chunks or not val_chunks or not test_chunks:
         raise RuntimeError("One split has no full sequence chunks.")
-    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    commit = args.source_commit or subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     resolved = {**cfg, "run_name": args.run_name, "git_commit": commit}
     (root / "resolved_config.yaml").write_text(yaml.safe_dump(resolved, sort_keys=True), encoding="utf-8")
     split_info = {"train_transitions": len(train_rows), "val_transitions": len(val_rows), "test_transitions": len(test_rows),
