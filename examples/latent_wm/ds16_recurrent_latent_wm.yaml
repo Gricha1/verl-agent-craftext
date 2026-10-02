@@ -1,0 +1,23 @@
+# Offline deterministic recurrent latent world model.  No actor, LoRA, PPO or KL.
+base_model: /home/gorbov_gv/models/qwen2.5-1.5b-instruct
+dataset_dir: /home/gorbov_gv/latent_wm/dataset
+output_root: /home/gorbov_gv/latent_wm/runs
+seed: 20261002
+# Kept separate from the training seed to retain the existing episode split.
+split_seed: 20261001
+epochs: 10
+sequence_length: 16
+chunk_stride: 16
+train_batch_size: 32
+target_encode_batch_size: 32
+max_sequence_length: 3072
+latent_dim: 256
+action_embedding_dim: 32
+transition_hidden_dim: 512
+target_projection_seed: 9173
+infonce_temperature: 0.1
+learning_rate: 1.0e-4
+weight_decay: 0.0
+max_grad_norm: 1.0
+comet_workspace: gregory-gorbov
+comet_project: verl-agent-caged-craftext
