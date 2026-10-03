@@ -82,6 +82,22 @@ def transition(qwen, tokenizer, model, row, h, z, device, cfg):
     return model.transition_head(out[None])
 
 
+@torch.no_grad()
+def posterior_dependence(qwen, tokenizer, model, rows, device, cfg):
+    """Hold h fixed and replace only o_next: direct anti-collapse diagnostic."""
+    task=str(rows[0]['task']); h=torch.zeros(1,int(cfg['latent_h_dim']),device=device); z=torch.zeros(1,int(cfg['latent_z_dim']),device=device)
+    qm,qs,_,_=posterior(qwen,tokenizer,model,task,str(rows[0]['observation_t']),h[0],device,cfg); z=qm
+    hs=[]; real=[]; shuffled=[]
+    for row in rows:
+        h=transition(qwen,tokenizer,model,row,h,z,device,cfg); hs.append(h[0]); real.append(str(row['observation_t_plus_1']))
+        qm,qs,_,_=posterior(qwen,tokenizer,model,task,real[-1],h[0],device,cfg); z=qm
+    shuffled=real[1:]+real[:1]
+    q_real=[posterior(qwen,tokenizer,model,task,ob,h,device,cfg) for h,ob in zip(hs,real)]
+    q_shuf=[posterior(qwen,tokenizer,model,task,ob,h,device,cfg) for h,ob in zip(hs,shuffled)]
+    rmu=torch.cat([x[0] for x in q_real]); rst=torch.cat([x[1] for x in q_real]); smu=torch.cat([x[0] for x in q_shuf]); sst=torch.cat([x[1] for x in q_shuf])
+    return {'val/posterior_real_vs_shuffled_mu_l2':float((rmu-smu).norm(dim=-1).mean()),'val/posterior_real_vs_shuffled_kl':float(kl(rmu,rst,smu,sst).mean()),'posterior/mu_std':float(rmu.std()),'posterior/std_mean':float(rst.mean())}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', required=True)
@@ -97,7 +113,7 @@ def main():
     for p in qwen.parameters(): p.requires_grad_(False)
     model = QwenTransitionRSSM(cfg, qwen.config.hidden_size).to(args.device)
     train, val, test = data.split(cfg['dataset_dir'], cfg['split_seed'])
-    train_chunks = data.chunks(train, cfg['sequence_length'], cfg['chunk_stride'])
+    train_chunks = data.chunks(train, cfg['sequence_length'], cfg['chunk_stride']); val_chunks=data.chunks(val, cfg['sequence_length'], cfg['chunk_stride'])
     loader = DataLoader(Chunks(train_chunks), batch_size=1, shuffle=True, collate_fn=lambda x: x[0])
     root = Path(cfg['output_root']) / args.run_name; root.mkdir(parents=True, exist_ok=False)
     (root/'resolved_config.yaml').write_text(yaml.safe_dump(cfg)); (root/'splits.json').write_text(json.dumps({'train_transitions':len(train),'val_transitions':len(val),'test_transitions':len(test)}))
@@ -117,9 +133,13 @@ def main():
             for row in rows:
                 h=transition(qwen,tokenizer,model,row,h,z,device,cfg); pm,ps,pl=gaussian(model.prior_head(h)); qm,qs,ql,_=posterior(qwen,tokenizer,model,task,str(row['observation_t_plus_1']),h[0],device,cfg)
                 raw.append(kl(qm,qs,pm,ps)); dyn.append(kl(qm.detach(),qs.detach(),pm,ps)); rep.append(kl(qm,qs,pm.detach(),ps.detach())); z=qm+qs*torch.randn_like(qs)
-            raw=torch.stack(raw).mean(); dyn=torch.stack(dyn).mean(); rep=torch.stack(rep).mean(); used=torch.clamp(raw,min=float(cfg['free_nats'])); loss=float(cfg['kl_balance'])*dyn+(1-float(cfg['kl_balance']))*rep
+            raw_values=torch.stack(raw); dyn_values=torch.stack(dyn); rep_values=torch.stack(rep)
+            # Free-nats must be part of the objective, per state/sample, not a display-only metric.
+            raw=raw_values.mean(); dyn=dyn_values.mean(); rep=rep_values.mean(); dyn_used=torch.clamp(dyn_values,min=float(cfg['free_nats'])).mean(); rep_used=torch.clamp(rep_values,min=float(cfg['free_nats'])).mean(); used=torch.clamp(raw_values,min=float(cfg['free_nats'])).mean(); loss=float(cfg['kl_balance'])*dyn_used+(1-float(cfg['kl_balance']))*rep_used
             opt.zero_grad(); loss.backward(); grad=float(torch.nn.utils.clip_grad_norm_(model.parameters(),float(cfg['max_grad_norm']))); opt.step(); step+=1
-            metrics={'train/loss':float(loss),'train/kl_raw':float(raw),'train/kl_dyn':float(dyn),'train/kl_rep':float(rep),'train/kl_used':float(used),'train/grad_norm':grad}; print(json.dumps({'step':step,**metrics}),flush=True); comet and comet.log_metrics(metrics,step=step)
+            metrics={'train/loss':float(loss),'train/kl_raw':float(raw),'train/kl_dyn':float(dyn),'train/kl_rep':float(rep),'train/kl_used':float(used),'train/grad_norm_preclip':grad,'train/grad_clip_max':float(cfg['max_grad_norm'])}; print(json.dumps({'step':step,**metrics}),flush=True); comet and comet.log_metrics(metrics,step=step)
+            if step == 1 or step % 500 == 0:
+                val_metrics=posterior_dependence(qwen,tokenizer,model,val_chunks[0],device,cfg); print(json.dumps({'step':step,**val_metrics}),flush=True); comet and comet.log_metrics(val_metrics,step=step)
             if step==1: print(json.dumps({'h_next.shape':[1,512],'posterior_soft_tokens.shape':[1,int(cfg['soft_tokens']),qwen.config.hidden_size],'posterior_qwen_eos.shape':[1,qwen.config.hidden_size],'mu_post.shape':list(qm.shape),'logstd_post.shape':list(ql.shape),'posterior_uses_prior':False}),flush=True)
             if step >= (args.smoke_steps or int(cfg['max_optimizer_steps'])): torch.save({'model':model.state_dict(),'optimizer':opt.state_dict(),'step':step},root/'final.pt'); comet and comet.end(); return
 
