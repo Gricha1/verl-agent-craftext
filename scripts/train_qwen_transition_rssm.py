@@ -39,9 +39,19 @@ class QwenTransitionRSSM(nn.Module):
         self.register_buffer('soft_token_target_rms', torch.tensor(float(cfg['soft_token_target_rms'])))
 
     def match_qwen_embedding_scale(self, tokens):
-        """Per-token RMS matches frozen Qwen's native input-embedding RMS."""
-        rms=tokens.float().square().mean(dim=-1, keepdim=True).add(1e-8).sqrt()
-        return tokens * (self.soft_token_target_rms.to(tokens.dtype) / rms.to(tokens.dtype))
+        """Keep soft tokens in Qwen's embedding range without a 1/RMS backward gain.
+
+        The normalizer is deliberately detached.  A differentiable per-token
+        ``target_rms / rms`` normalizer has a large Jacobian when a projector
+        initially produces a small vector; that was the source of the large
+        gradient observed in the scaled-token trace.  For the usual case
+        (projector RMS > Qwen embedding RMS) the forward RMS is exactly the
+        target; if a projector output is already smaller, we leave it alone
+        rather than amplify its backward gradient.
+        """
+        rms = tokens.detach().float().square().mean(dim=-1, keepdim=True).add(1e-8).sqrt()
+        gain = (self.soft_token_target_rms / rms).clamp(max=1.0).to(tokens.dtype)
+        return tokens * gain
 
     def state_tokens(self, h, z):
         tokens=self.state_projector(torch.cat((h, z), -1)).reshape(*h.shape[:-1], self.k, self.d_model)
