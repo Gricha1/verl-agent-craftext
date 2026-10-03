@@ -42,8 +42,11 @@ class QwenTransitionRSSM(nn.Module):
         # embeddings at initialization without normalizing each individual
         # token during the forward/backward pass.
         with torch.no_grad():
-            probe_h = torch.randn(64, h)
-            probe_z = torch.randn(64, z)
+            # Do not consume the training RNG: posterior samples must remain
+            # reproducible when this calibration is enabled.
+            probe_generator = torch.Generator(device='cpu').manual_seed(0)
+            probe_h = torch.randn(64, h, generator=probe_generator)
+            probe_z = torch.randn(64, z, generator=probe_generator)
             state_rms = self.state_projector(torch.cat((probe_h, probe_z), -1)).float().square().mean().sqrt()
             posterior_rms = self.posterior_h_projector(probe_h).float().square().mean().sqrt()
         self.register_buffer('state_soft_token_gain', self.soft_token_target_rms / state_rms.clamp_min(1e-8))
@@ -162,7 +165,7 @@ def main():
             raw=raw_values.mean(); dyn=dyn_values.mean(); rep=rep_values.mean(); dyn_used=torch.clamp(dyn_values,min=float(cfg['free_nats'])).mean(); rep_used=torch.clamp(rep_values,min=float(cfg['free_nats'])).mean(); used=torch.clamp(raw_values,min=float(cfg['free_nats'])).mean(); loss=float(cfg['kl_balance'])*dyn_used+(1-float(cfg['kl_balance']))*rep_used
             opt.zero_grad(); loss.backward(); components={f'train/grad_preclip/{name}':module_grad_norm(getattr(model,name)) for name in ('state_projector','posterior_h_projector','transition_head','prior_head','posterior_head')}; grad=float(torch.nn.utils.clip_grad_norm_(model.parameters(),float(cfg['max_grad_norm']))); opt.step(); step+=1
             state_rms=model.state_tokens(h,z).float().square().mean().sqrt(); posterior_rms=model.posterior_tokens(h).float().square().mean().sqrt()
-            metrics={'train/loss':float(loss),'train/kl_raw':float(raw),'train/kl_dyn':float(dyn),'train/kl_rep':float(rep),'train/kl_used':float(used),'train/grad_norm_preclip':grad,'train/grad_clip_max':float(cfg['max_grad_norm']),'soft_tokens/qwen_embedding_rms':float(model.soft_token_target_rms),'soft_tokens/state_rms':float(state_rms),'soft_tokens/posterior_rms':float(posterior_rms),'latent/h_absmax':float(h.abs().max()),'prior/logstd_absmax':float(pl.abs().max()),'posterior/logstd_absmax':float(ql.abs().max()),**components}; print(json.dumps({'step':step,**metrics}),flush=True); comet and comet.log_metrics(metrics,step=step)
+            metrics={'train/loss':float(loss),'train/kl_raw':float(raw),'train/kl_dyn':float(dyn),'train/kl_rep':float(rep),'train/kl_used':float(used),'train/grad_norm_preclip':grad,'train/grad_clip_max':float(cfg['max_grad_norm']),'soft_tokens/qwen_embedding_rms':float(model.soft_token_target_rms),'soft_tokens/state_fixed_gain':float(model.state_soft_token_gain),'soft_tokens/posterior_fixed_gain':float(model.posterior_soft_token_gain),'soft_tokens/state_rms':float(state_rms),'soft_tokens/posterior_rms':float(posterior_rms),'latent/h_absmax':float(h.abs().max()),'prior/logstd_absmax':float(pl.abs().max()),'posterior/logstd_absmax':float(ql.abs().max()),**components}; print(json.dumps({'step':step,**metrics}),flush=True); comet and comet.log_metrics(metrics,step=step)
             if step == 1 or step % 500 == 0:
                 val_metrics=posterior_dependence(qwen,tokenizer,model,val_chunks[0],device,cfg); print(json.dumps({'step':step,**val_metrics}),flush=True); comet and comet.log_metrics(val_metrics,step=step)
             if step==1: print(json.dumps({'h_next.shape':[1,512],'posterior_soft_tokens.shape':[1,int(cfg['soft_tokens']),qwen.config.hidden_size],'posterior_qwen_eos.shape':[1,qwen.config.hidden_size],'mu_post.shape':list(qm.shape),'logstd_post.shape':list(ql.shape),'posterior_uses_prior':False}),flush=True)
