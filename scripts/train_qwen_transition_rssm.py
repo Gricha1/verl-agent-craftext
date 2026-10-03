@@ -37,30 +37,30 @@ class QwenTransitionRSSM(nn.Module):
         self.posterior_head = nn.Sequential(nn.Linear(d_model, h), nn.GELU(), nn.Linear(h, 2 * z))
         self.k, self.d_model = k, d_model
         self.register_buffer('soft_token_target_rms', torch.tensor(float(cfg['soft_token_target_rms'])))
+        # Calibrate one fixed gain per projector from representative initial
+        # latents.  This matches the *distributional* RMS of native Qwen
+        # embeddings at initialization without normalizing each individual
+        # token during the forward/backward pass.
+        with torch.no_grad():
+            probe_h = torch.randn(64, h)
+            probe_z = torch.randn(64, z)
+            state_rms = self.state_projector(torch.cat((probe_h, probe_z), -1)).float().square().mean().sqrt()
+            posterior_rms = self.posterior_h_projector(probe_h).float().square().mean().sqrt()
+        self.register_buffer('state_soft_token_gain', self.soft_token_target_rms / state_rms.clamp_min(1e-8))
+        self.register_buffer('posterior_soft_token_gain', self.soft_token_target_rms / posterior_rms.clamp_min(1e-8))
 
-    def match_qwen_embedding_scale(self, tokens):
-        """Keep soft tokens in Qwen's embedding range without a 1/RMS backward gain.
-
-        The normalizer is deliberately detached.  A differentiable per-token
-        ``target_rms / rms`` normalizer has a large Jacobian when a projector
-        initially produces a small vector; that was the source of the large
-        gradient observed in the scaled-token trace.  For the usual case
-        (projector RMS > Qwen embedding RMS) the forward RMS is exactly the
-        target; if a projector output is already smaller, we leave it alone
-        rather than amplify its backward gradient.
-        """
-        rms = tokens.detach().float().square().mean(dim=-1, keepdim=True).add(1e-8).sqrt()
-        gain = (self.soft_token_target_rms / rms).clamp(max=1.0).to(tokens.dtype)
-        return tokens * gain
+    def match_qwen_embedding_scale(self, tokens, gain):
+        """Apply the fixed, initialization-calibrated Qwen-scale gain."""
+        return tokens * gain.to(tokens.dtype)
 
     def state_tokens(self, h, z):
         tokens=self.state_projector(torch.cat((h, z), -1)).reshape(*h.shape[:-1], self.k, self.d_model)
-        return self.match_qwen_embedding_scale(tokens)
+        return self.match_qwen_embedding_scale(tokens, self.state_soft_token_gain)
 
     def posterior_tokens(self, h):
         # Architectural invariant: this module receives h only, never prior z/mu/logstd.
         tokens=self.posterior_h_projector(h).reshape(*h.shape[:-1], self.k, self.d_model)
-        return self.match_qwen_embedding_scale(tokens)
+        return self.match_qwen_embedding_scale(tokens, self.posterior_soft_token_gain)
 
 
 def kl(qm, qs, pm, ps):
