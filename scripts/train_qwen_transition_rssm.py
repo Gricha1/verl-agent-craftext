@@ -160,6 +160,12 @@ def main():
             for row in rows:
                 h=transition(qwen,tokenizer,model,row,h,z,device,cfg); pm,ps,pl=gaussian(model.prior_head(h)); qm,qs,ql,_=posterior(qwen,tokenizer,model,task,str(row['observation_t_plus_1']),h[0],device,cfg)
                 raw.append(kl(qm,qs,pm,ps)); dyn.append(kl(qm.detach(),qs.detach(),pm,ps)); rep.append(kl(qm,qs,pm.detach(),ps.detach())); z=qm+qs*torch.randn_like(qs)
+                # The Qwen transition remains recurrent in the forward pass,
+                # but gradients do not multiply through an entire 16-step
+                # frozen-transformer chain.  Each transition is therefore
+                # trained from real sequence states (truncated BPTT=1).
+                if int(cfg.get('truncate_bptt_steps', 1)) == 1:
+                    h, z = h.detach(), z.detach()
             raw_values=torch.stack(raw); dyn_values=torch.stack(dyn); rep_values=torch.stack(rep)
             # Free-nats must be part of the objective, per state/sample, not a display-only metric.
             raw=raw_values.mean(); dyn=dyn_values.mean(); rep=rep_values.mean(); dyn_used=torch.clamp(dyn_values,min=float(cfg['free_nats'])).mean(); rep_used=torch.clamp(rep_values,min=float(cfg['free_nats'])).mean(); used=torch.clamp(raw_values,min=float(cfg['free_nats'])).mean(); loss=float(cfg['kl_balance'])*dyn_used+(1-float(cfg['kl_balance']))*rep_used

@@ -5,6 +5,7 @@ seed: 20261002
 split_seed: 20261001
 sequence_length: 16
 chunk_stride: 16
+truncate_bptt_steps: 1
 train_batch_size: 1
 eval_batch_size: 4
 max_sequence_length: 3072
