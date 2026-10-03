@@ -36,13 +36,21 @@ class QwenTransitionRSSM(nn.Module):
         self.prior_head = nn.Sequential(nn.Linear(h, h), nn.GELU(), nn.Linear(h, 2 * z))
         self.posterior_head = nn.Sequential(nn.Linear(d_model, h), nn.GELU(), nn.Linear(h, 2 * z))
         self.k, self.d_model = k, d_model
+        self.register_buffer('soft_token_target_rms', torch.tensor(float(cfg['soft_token_target_rms'])))
+
+    def match_qwen_embedding_scale(self, tokens):
+        """Per-token RMS matches frozen Qwen's native input-embedding RMS."""
+        rms=tokens.float().square().mean(dim=-1, keepdim=True).add(1e-8).sqrt()
+        return tokens * (self.soft_token_target_rms.to(tokens.dtype) / rms.to(tokens.dtype))
 
     def state_tokens(self, h, z):
-        return self.state_projector(torch.cat((h, z), -1)).reshape(*h.shape[:-1], self.k, self.d_model)
+        tokens=self.state_projector(torch.cat((h, z), -1)).reshape(*h.shape[:-1], self.k, self.d_model)
+        return self.match_qwen_embedding_scale(tokens)
 
     def posterior_tokens(self, h):
         # Architectural invariant: this module receives h only, never prior z/mu/logstd.
-        return self.posterior_h_projector(h).reshape(*h.shape[:-1], self.k, self.d_model)
+        tokens=self.posterior_h_projector(h).reshape(*h.shape[:-1], self.k, self.d_model)
+        return self.match_qwen_embedding_scale(tokens)
 
 
 def kl(qm, qs, pm, ps):
@@ -116,6 +124,7 @@ def main():
     tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
     qwen = AutoModelForCausalLM.from_pretrained(cfg['base_model'], torch_dtype=torch.bfloat16, trust_remote_code=True).to(args.device).eval()
     for p in qwen.parameters(): p.requires_grad_(False)
+    cfg['soft_token_target_rms']=float(qwen.get_input_embeddings().weight.detach().float().square().mean().sqrt())
     model = QwenTransitionRSSM(cfg, qwen.config.hidden_size).to(args.device)
     train, val, test = data.split(cfg['dataset_dir'], cfg['split_seed'])
     train_chunks = data.chunks(train, cfg['sequence_length'], cfg['chunk_stride']); val_chunks=data.chunks(val, cfg['sequence_length'], cfg['chunk_stride'])
@@ -123,7 +132,7 @@ def main():
     root = Path(cfg['output_root']) / args.run_name; root.mkdir(parents=True, exist_ok=False)
     (root/'resolved_config.yaml').write_text(yaml.safe_dump(cfg)); (root/'splits.json').write_text(json.dumps({'train_transitions':len(train),'val_transitions':len(val),'test_transitions':len(test)}))
     opt = torch.optim.AdamW(model.parameters(), lr=cfg['learning_rate'], weight_decay=cfg['weight_decay'])
-    print(json.dumps({'trainable_parameters': sum(p.numel() for p in model.parameters()), 'posterior_uses_prior': False, 'posterior_uses_h_next': True, 'posterior_uses_real_observation': True, 'steps_per_epoch':len(loader)}), flush=True)
+    print(json.dumps({'trainable_parameters': sum(p.numel() for p in model.parameters()), 'soft_token_target_rms':cfg['soft_token_target_rms'], 'posterior_uses_prior': False, 'posterior_uses_h_next': True, 'posterior_uses_real_observation': True, 'steps_per_epoch':len(loader)}), flush=True)
     try:
         from comet_ml import Experiment
         comet=Experiment(workspace=cfg['comet_workspace'],project_name=cfg['comet_project'],auto_output_logging='simple'); comet.set_name(args.run_name); comet.log_parameters(cfg)
@@ -142,7 +151,8 @@ def main():
             # Free-nats must be part of the objective, per state/sample, not a display-only metric.
             raw=raw_values.mean(); dyn=dyn_values.mean(); rep=rep_values.mean(); dyn_used=torch.clamp(dyn_values,min=float(cfg['free_nats'])).mean(); rep_used=torch.clamp(rep_values,min=float(cfg['free_nats'])).mean(); used=torch.clamp(raw_values,min=float(cfg['free_nats'])).mean(); loss=float(cfg['kl_balance'])*dyn_used+(1-float(cfg['kl_balance']))*rep_used
             opt.zero_grad(); loss.backward(); components={f'train/grad_preclip/{name}':module_grad_norm(getattr(model,name)) for name in ('state_projector','posterior_h_projector','transition_head','prior_head','posterior_head')}; grad=float(torch.nn.utils.clip_grad_norm_(model.parameters(),float(cfg['max_grad_norm']))); opt.step(); step+=1
-            metrics={'train/loss':float(loss),'train/kl_raw':float(raw),'train/kl_dyn':float(dyn),'train/kl_rep':float(rep),'train/kl_used':float(used),'train/grad_norm_preclip':grad,'train/grad_clip_max':float(cfg['max_grad_norm']),'latent/h_absmax':float(h.abs().max()),'prior/logstd_absmax':float(pl.abs().max()),'posterior/logstd_absmax':float(ql.abs().max()),**components}; print(json.dumps({'step':step,**metrics}),flush=True); comet and comet.log_metrics(metrics,step=step)
+            state_rms=model.state_tokens(h,z).float().square().mean().sqrt(); posterior_rms=model.posterior_tokens(h).float().square().mean().sqrt()
+            metrics={'train/loss':float(loss),'train/kl_raw':float(raw),'train/kl_dyn':float(dyn),'train/kl_rep':float(rep),'train/kl_used':float(used),'train/grad_norm_preclip':grad,'train/grad_clip_max':float(cfg['max_grad_norm']),'soft_tokens/qwen_embedding_rms':float(model.soft_token_target_rms),'soft_tokens/state_rms':float(state_rms),'soft_tokens/posterior_rms':float(posterior_rms),'latent/h_absmax':float(h.abs().max()),'prior/logstd_absmax':float(pl.abs().max()),'posterior/logstd_absmax':float(ql.abs().max()),**components}; print(json.dumps({'step':step,**metrics}),flush=True); comet and comet.log_metrics(metrics,step=step)
             if step == 1 or step % 500 == 0:
                 val_metrics=posterior_dependence(qwen,tokenizer,model,val_chunks[0],device,cfg); print(json.dumps({'step':step,**val_metrics}),flush=True); comet and comet.log_metrics(val_metrics,step=step)
             if step==1: print(json.dumps({'h_next.shape':[1,512],'posterior_soft_tokens.shape':[1,int(cfg['soft_tokens']),qwen.config.hidden_size],'posterior_qwen_eos.shape':[1,qwen.config.hidden_size],'mu_post.shape':list(qm.shape),'logstd_post.shape':list(ql.shape),'posterior_uses_prior':False}),flush=True)
