@@ -88,15 +88,20 @@ def encode_observations(qwen, tokenizer, model, tasks, observations, device, max
 
 
 def reconstruction(qwen, tokenizer, model, observations, z, device, max_length):
-    """Teacher-forced CE and token accuracy. Target observations never condition prefix."""
+    """Teacher-forced CE and token accuracy, including an explicit end-of-sequence target."""
     embedding = qwen.get_input_embeddings()
     prefix_ids = tokenizer(DECODER_INSTRUCTION, add_special_tokens=False)['input_ids']
     all_losses, all_correct, all_tokens, shapes = [], [], [], None
     for observation, latent in zip(observations, z):
         target_ids = tokenizer(observation, add_special_tokens=False, truncation=True,
-                               max_length=max_length - len(prefix_ids) - model.k)['input_ids']
+                               max_length=max_length - len(prefix_ids) - model.k - 1)['input_ids']
         if not target_ids:
-            target_ids = [tokenizer.eos_token_id]
+            target_ids = []
+        if tokenizer.eos_token_id is None:
+            raise RuntimeError('tokenizer must define eos_token_id for reconstruction training')
+        # Without this supervised stop token, greedy generation continues into
+        # unrelated base-model text even after a correct reconstruction.
+        target_ids.append(tokenizer.eos_token_id)
         prefix = embedding(torch.tensor(prefix_ids, device=device))
         soft = model.soft_tokens(latent[None])[0].to(embedding.weight.dtype)
         target = embedding(torch.tensor(target_ids, device=device))
@@ -112,9 +117,14 @@ def reconstruction(qwen, tokenizer, model, observations, z, device, max_length):
     return torch.stack(all_losses).mean(), torch.stack(all_correct).sum(), torch.stack(all_tokens).sum(), shapes
 
 
+def validation_subset(rows, cfg):
+    count = min(len(rows), int(cfg['validation_examples']))
+    return random.Random(int(cfg['validation_shuffle_seed'])).sample(rows, count)
+
+
 def evaluate_teacher_forced(qwen, tokenizer, model, rows, device, cfg):
     model.eval()
-    rows = rows[:int(cfg['validation_examples'])]
+    rows = validation_subset(rows, cfg)
     tasks, observations = zip(*(target_row(row) for row in rows))
     with torch.no_grad():
         z = encode_observations(qwen, tokenizer, model, tasks, observations, device, int(cfg['max_sequence_length']))
@@ -136,7 +146,7 @@ def evaluate_teacher_forced(qwen, tokenizer, model, rows, device, cfg):
 @torch.no_grad()
 def generate_examples(qwen, tokenizer, model, rows, device, cfg):
     model.eval()
-    rows = rows[:int(cfg['generation_examples'])]
+    rows = validation_subset(rows, cfg)[:int(cfg['generation_examples'])]
     tasks, targets = zip(*(target_row(row) for row in rows))
     z = encode_observations(qwen, tokenizer, model, tasks, targets, device, int(cfg['max_sequence_length']))
     embedding = qwen.get_input_embeddings()
@@ -145,10 +155,18 @@ def generate_examples(qwen, tokenizer, model, rows, device, cfg):
     for target, latent in zip(targets, z):
         initial = torch.cat((instruction, model.soft_tokens(latent[None])[0].to(embedding.weight.dtype)), dim=0)[None]
         mask = torch.ones(initial.shape[:2], dtype=torch.long, device=device)
-        generated_ids = qwen.generate(inputs_embeds=initial, attention_mask=mask, do_sample=False,
-                                      max_new_tokens=int(cfg['generation_max_new_tokens']), pad_token_id=tokenizer.eos_token_id)
-        generated = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
         target_ids = tokenizer(target, add_special_tokens=False)['input_ids']
+        generated_ids = qwen.generate(
+            inputs_embeds=initial,
+            attention_mask=mask,
+            do_sample=False,
+            eos_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.eos_token_id,
+            # Generation should be allowed to finish the reference, but it
+            # cannot dominate the run by continuing unrelated command text.
+            max_new_tokens=min(int(cfg['generation_max_new_tokens']), len(target_ids) + int(cfg['generation_stop_margin'])),
+        )
+        generated = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
         output_ids = tokenizer(generated, add_special_tokens=False)['input_ids']
         length = max(len(target_ids), len(output_ids), 1)
         matches = sum(a == b for a, b in zip(target_ids, output_ids)) / length
@@ -208,6 +226,10 @@ def main():
         (root / f'validation_step_{step}.json').write_text(json.dumps(metrics, indent=2))
         (root / f'generation_step_{step}.json').write_text(json.dumps(examples, indent=2, ensure_ascii=False))
         print(json.dumps({'step': step, **metrics}), flush=True); comet.log_metrics(metrics, step=step)
+        torch.save(
+            {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step},
+            root / f'checkpoint_step_{step}.pt',
+        )
 
     validate(0)
     order = list(range(len(train_rows))); step = 0
@@ -239,7 +261,10 @@ def main():
             if step == 1 or step % int(cfg.get('log_every_steps', 25)) == 0:
                 print(json.dumps({'step': step, **metrics}), flush=True)
                 comet.log_metrics(metrics, step=step)
-            if step in (100, 500) or (step > 500 and step % 500 == 0): validate(step)
+            if step in (100, int(cfg['validation_every_steps'])) or (
+                step > int(cfg['validation_every_steps']) and step % int(cfg['validation_every_steps']) == 0
+            ):
+                validate(step)
             if step >= (args.smoke_steps or int(cfg['max_optimizer_steps'])): break
     validate(step)
     torch.save({'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, root / 'final.pt')

@@ -11,6 +11,8 @@ validation_examples: 32
 validation_shuffle_seed: 20261001
 generation_examples: 32
 generation_max_new_tokens: 256
+generation_stop_margin: 8
+validation_every_steps: 1000
 max_sequence_length: 3072
 learning_rate: 1.0e-4
 weight_decay: 0.0
