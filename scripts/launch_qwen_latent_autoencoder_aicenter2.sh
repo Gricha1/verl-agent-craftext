@@ -14,13 +14,13 @@ fi
 repo_root=/home/gorbov_gv/verl-agent-craftext
 output_root=/home/gorbov_gv/latent_wm/runs
 mkdir -p "$output_root"
+exec >"$output_root/${run_name}.log" 2>&1
 
 if [[ -z "${COMET_API_KEY:-}" ]]; then
   echo "COMET_API_KEY is not available in this login shell" >&2
   exit 1
 fi
 
-exec >"$output_root/${run_name}.log" 2>&1
 cd "$repo_root"
 extra_args=("$@")
 if [[ -n "${AE_SMOKE_STEPS:-}" ]]; then
