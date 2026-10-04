@@ -115,7 +115,8 @@ def evaluate_teacher_forced(qwen, tokenizer, model, rows, device, cfg):
     tasks, observations = zip(*(target_row(row) for row in rows))
     with torch.no_grad():
         z = encode_observations(qwen, tokenizer, model, tasks, observations, device, int(cfg['max_sequence_length']))
-        shuffled = z[torch.randperm(len(z), generator=torch.Generator().manual_seed(int(cfg['validation_shuffle_seed'])), device=device)]
+        shuffle_generator = torch.Generator(device=device).manual_seed(int(cfg['validation_shuffle_seed']))
+        shuffled = z[torch.randperm(len(z), generator=shuffle_generator, device=device)]
         zero = torch.zeros_like(z)
     metrics = {}
     for name, latent in [('correct', z), ('shuffled', shuffled), ('zero', zero)]:
