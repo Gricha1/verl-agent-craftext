@@ -16,5 +16,7 @@ learning_rate: 1.0e-4
 weight_decay: 0.0
 max_grad_norm: 1.0
 max_optimizer_steps: 15000
+# Step 1 is always logged; subsequent optimization metrics are reported at this cadence.
+log_every_steps: 5
 comet_workspace: gregory-gorbov
 comet_project: verl-agent-caged-craftext

@@ -73,12 +73,15 @@ class LatentAutoencoder(nn.Module):
         return tokens * self.decoder_soft_token_gain.to(tokens.dtype)
 
 
-@torch.no_grad()
 def encode_observations(qwen, tokenizer, model, tasks, observations, device, max_length):
+    """Encode observations while keeping gradients for the trainable encoder head only."""
     texts = [encoder_prompt(task, observation) for task, observation in zip(tasks, observations)]
     batch = tokenizer(texts, return_tensors='pt', padding=True, truncation=True,
                       max_length=max_length, add_special_tokens=False).to(device)
-    hidden = qwen(**batch, output_hidden_states=True, use_cache=False).hidden_states[-1]
+    # Qwen is frozen, so storing its graph would only waste memory.  Do not put
+    # encoder_head under this context: it must receive reconstruction gradients.
+    with torch.no_grad():
+        hidden = qwen(**batch, output_hidden_states=True, use_cache=False).hidden_states[-1]
     if not batch['attention_mask'][:, -1].bool().all():
         raise RuntimeError('left-padded encoder invariant failed')
     return model.encoder_head(hidden[:, -1].float())
@@ -233,7 +236,9 @@ def main():
             metrics = {'train/recon_ce': float(loss.detach()), 'train/recon_ppl': float(math.exp(min(float(loss.detach()), 20.0))),
                        'train/token_accuracy': float(correct.float() / tokens.clamp_min(1)), 'train/grad_norm_preclip': gradient,
                        'train/grad_clip_max': float(cfg['max_grad_norm']), **{f'train/{key}': value for key, value in diagnostics.items()}}
-            print(json.dumps({'step': step, **metrics}), flush=True); comet.log_metrics(metrics, step=step)
+            if step == 1 or step % int(cfg.get('log_every_steps', 25)) == 0:
+                print(json.dumps({'step': step, **metrics}), flush=True)
+                comet.log_metrics(metrics, step=step)
             if step in (100, 500) or (step > 500 and step % 500 == 0): validate(step)
             if step >= (args.smoke_steps or int(cfg['max_optimizer_steps'])): break
     validate(step)
