@@ -11,7 +11,7 @@ else
   source_commit=${AE_SOURCE_COMMIT:?set AE_SOURCE_COMMIT or pass RUN_NAME SOURCE_COMMIT}
 fi
 
-repo_root=/home/gorbov_gv/verl-agent-craftext
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 output_root=/home/gorbov_gv/latent_wm/runs
 mkdir -p "$output_root"
 exec >"$output_root/${run_name}.log" 2>&1
