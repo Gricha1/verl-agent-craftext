@@ -33,6 +33,11 @@ def parse_args():
     parser.add_argument('--run-name', required=True)
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--smoke-steps', type=int, default=0)
+    parser.add_argument(
+        '--source-commit',
+        default=None,
+        help='Commit identifier to record when the launch host has not checked out this source.',
+    )
     return parser.parse_args()
 
 
@@ -175,7 +180,9 @@ def main():
     train_rows, val_rows, test_rows = data.split(cfg['dataset_dir'], cfg['split_seed'])
     root = Path(cfg['output_root']) / args.run_name
     root.mkdir(parents=True, exist_ok=False)
-    commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+    commit = args.source_commit or subprocess.check_output(
+        ['git', 'rev-parse', 'HEAD'], text=True
+    ).strip()
     model = LatentAutoencoder(cfg, qwen.config.hidden_size).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(cfg['learning_rate']), weight_decay=float(cfg['weight_decay']))
     info = {'train_transitions': len(train_rows), 'val_transitions': len(val_rows), 'test_transitions': len(test_rows),
