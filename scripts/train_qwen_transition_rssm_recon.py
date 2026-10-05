@@ -22,6 +22,7 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import train_rssm_qwen_soft_tokens as data
+from rssm_env_validation import run_env_validation
 
 
 DECODER_INSTRUCTION = "Reconstruct the current environment observation exactly.\n"
@@ -33,6 +34,8 @@ def parse_args():
     parser.add_argument('--run-name', required=True)
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--smoke-steps', type=int, default=0)
+    parser.add_argument('--env-eval-smoke', action='store_true',
+                        help='Run one episode of each causal environment validation mode and exit.')
     parser.add_argument('--source-commit', default=None)
     return parser.parse_args()
 
@@ -269,8 +272,9 @@ def validate(qwen, tokenizer, model, chunks, device, cfg):
     return metrics, examples, {'posterior_std_mean': float(posterior_std.mean()), 'prior_std_mean': float(prior_std.mean())}
 
 
-def should_validate(step):
-    return step in (100, 500, 1000) or (step > 1000 and step % 1000 == 0)
+def should_validate(step, cfg):
+    every = int(cfg.get('env_eval_every_steps', 1000))
+    return step in (500, 1000) or (step > 1000 and step % every == 0)
 
 
 def main():
@@ -304,14 +308,23 @@ def main():
     comet.set_name(args.run_name); comet.add_tags(['rssm', 'reconstruction', 'frozen_qwen', 'no_auxiliary_loss'])
     comet.log_parameters({**cfg, **info, 'trainable_parameters': trainable})
 
-    def log_validation(step):
+    def log_validation(step, env_episodes=None):
         metrics, examples, diagnostic = validate(qwen, tokenizer, model, val_chunks, device, cfg)
         metrics.update({f'val/{key}': value for key, value in diagnostic.items()})
+        # This is evaluation only: no replay writes, no optimizer step and no actor/RL loss.
+        metrics.update(run_env_validation(qwen, tokenizer, model, device, cfg, transition, episodes=env_episodes))
         (root / f'validation_step_{step}.json').write_text(json.dumps(metrics, indent=2))
         (root / f'generation_step_{step}.json').write_text(json.dumps(examples, indent=2, ensure_ascii=False))
         torch.save({'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, root / f'checkpoint_step_{step}.pt')
         print(json.dumps({'step': step, **metrics}), flush=True); comet.log_metrics(metrics, step=step)
 
+    if args.env_eval_smoke:
+        env_metrics = run_env_validation(qwen, tokenizer, model, device, cfg, transition, episodes=1)
+        (root / 'env_eval_smoke.json').write_text(json.dumps(env_metrics, indent=2))
+        print(json.dumps({'env_eval_smoke': env_metrics}), flush=True)
+        comet.log_metrics(env_metrics, step=0)
+        comet.end()
+        return
     log_validation(0)
     step = 0
     limit = args.smoke_steps or int(cfg['max_optimizer_steps'])
@@ -333,14 +346,20 @@ def main():
                 if int(cfg['truncate_bptt_steps']) == 1: h, z = h.detach(), z.detach()
             raw_values, dyn_values, rep_values = torch.stack(raw_values), torch.stack(dyn_values), torch.stack(rep_values)
             raw, dyn, rep = raw_values.mean(), dyn_values.mean(), rep_values.mean()
-            dyn_used = torch.clamp(dyn_values, min=float(cfg['free_nats'])).mean()
-            rep_used = torch.clamp(rep_values, min=float(cfg['free_nats'])).mean()
-            used = torch.clamp(raw_values, min=float(cfg['free_nats'])).mean()
+            free_nats = float(cfg['free_nats'])
+            # ``free_nats: 0`` means the exact balanced KL: no lower clamp and
+            # therefore prior_head retains its gradient even when KL is below 1.
+            dyn_used = dyn_values.mean() if free_nats <= 0.0 else torch.clamp(dyn_values, min=free_nats).mean()
+            rep_used = rep_values.mean() if free_nats <= 0.0 else torch.clamp(rep_values, min=free_nats).mean()
+            used = raw_values.mean() if free_nats <= 0.0 else torch.clamp(raw_values, min=free_nats).mean()
             kl_loss = float(cfg['kl_balance']) * dyn_used + (1.0 - float(cfg['kl_balance'])) * rep_used
             recon_ce, correct, token_count = reconstruction(qwen, tokenizer, model, targets, torch.stack(posterior_latents), device, int(cfg['max_sequence_length']))
             total = float(cfg['lambda_recon']) * recon_ce + float(cfg['beta_kl']) * kl_loss
             total.backward()
             components = {name: grad_norm(getattr(model, name)) for name in ('transition_h_projector', 'transition_z_projector', 'transition_h_head', 'prior_head', 'posterior_h_projector', 'posterior_head', 'decoder_z_projector')}
+            prior_grad_when_kl_below_one = float(components['prior_head'] > 0.0)
+            if free_nats == 0.0 and float(raw.detach()) < 1.0 and not prior_grad_when_kl_below_one:
+                raise RuntimeError('prior_head received zero gradient despite unclamped KL < 1')
             qwen_has_grad = any(parameter.grad is not None for parameter in qwen.parameters())
             if step == 0:
                 sanity = {**transition_layout(tokenizer, model, rows[0], device, cfg), 'gradients': components, 'frozen_qwen_has_grad': qwen_has_grad, 'decoder_input': 'z_post_only',
@@ -354,14 +373,15 @@ def main():
             metrics = {'train/recon_ce': float(recon_ce.detach()), 'train/token_accuracy': float(correct.float() / token_count.clamp_min(1)),
                        'train/total_loss': float(total.detach()), 'train/kl_raw': float(raw), 'train/kl_used': float(used),
                        'train/kl_dyn': float(dyn), 'train/kl_rep': float(rep), 'train/kl_loss': float(kl_loss),
+                       'train/prior_head_grad_nonzero_when_kl_below_one': prior_grad_when_kl_below_one if float(raw.detach()) < 1.0 else 1.0,
                        'train/grad_norm_preclip': grad, 'train/grad_clip_max': float(cfg['max_grad_norm']),
                        **{f'train/grad_preclip/{name}': value for name, value in components.items()}}
             if step == 1 or step % int(cfg['log_every_steps']) == 0:
                 print(json.dumps({'step': step, **metrics}), flush=True); comet.log_metrics(metrics, step=step)
-            if should_validate(step): log_validation(step)
+            if should_validate(step, cfg): log_validation(step)
             if step >= limit: break
         if step >= limit: break
-    if not should_validate(step): log_validation(step)
+    if not should_validate(step, cfg): log_validation(step)
     torch.save({'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, root / 'final.pt')
     comet.end()
 
