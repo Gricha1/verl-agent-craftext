@@ -1,5 +1,5 @@
 base_model: /home/gorbov_gv/models/qwen2.5-1.5b-instruct
-dataset_dir: /mnt/aicenter1-datasets/gorbov_gv/latent_wm/debug_square_16x16_uniform500_clean_20261001
+dataset_dir: /home/gorbov_gv/latent_wm/dataset
 output_root: /home/gorbov_gv/latent_wm/runs
 seed: 20261002
 split_seed: 20261001
