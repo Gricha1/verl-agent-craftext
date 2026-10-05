@@ -66,28 +66,35 @@ class QwenTransitionRSSMRecon(nn.Module):
     def __init__(self, cfg, d_model):
         super().__init__()
         h, z, k = int(cfg['latent_h_dim']), int(cfg['latent_z_dim']), int(cfg['soft_tokens'])
-        self.state_projector = nn.Sequential(nn.Linear(h + z, h), nn.GELU(), nn.Linear(h, k * d_model))
+        # Never concatenate h and z before projection: each gets its own five-token interface.
+        self.transition_h_projector = nn.Sequential(nn.Linear(h, h), nn.GELU(), nn.Linear(h, k * d_model))
+        self.transition_z_projector = nn.Sequential(nn.Linear(z, z), nn.GELU(), nn.Linear(z, k * d_model))
         self.posterior_h_projector = nn.Sequential(nn.Linear(h, h), nn.GELU(), nn.Linear(h, k * d_model))
-        self.transition_head = nn.Sequential(nn.Linear(d_model, h), nn.GELU(), nn.Linear(h, h))
+        self.transition_h_head = nn.Sequential(nn.Linear(d_model, h), nn.GELU(), nn.Linear(h, h))
         self.prior_head = nn.Sequential(nn.Linear(h, h), nn.GELU(), nn.Linear(h, 2 * z))
         self.posterior_head = nn.Sequential(nn.Linear(d_model, h), nn.GELU(), nn.Linear(h, 2 * z))
         # Freshly initialized: no autoencoder weights are transferred here.
-        self.decoder_state_projector = nn.Sequential(nn.Linear(z, z), nn.GELU(), nn.Linear(z, k * d_model))
+        self.decoder_z_projector = nn.Sequential(nn.Linear(z, z), nn.GELU(), nn.Linear(z, k * d_model))
         self.k, self.d_model = k, d_model
         self.register_buffer('soft_token_target_rms', torch.tensor(float(cfg['soft_token_target_rms'])))
         with torch.no_grad():
             generator = torch.Generator(device='cpu').manual_seed(0)
             probe_h = torch.randn(64, h, generator=generator)
             probe_z = torch.randn(64, z, generator=generator)
-            state_rms = self.state_projector(torch.cat((probe_h, probe_z), -1)).float().square().mean().sqrt()
+            transition_h_rms = self.transition_h_projector(probe_h).float().square().mean().sqrt()
+            transition_z_rms = self.transition_z_projector(probe_z).float().square().mean().sqrt()
             posterior_rms = self.posterior_h_projector(probe_h).float().square().mean().sqrt()
-            decoder_rms = self.decoder_state_projector(probe_z).float().square().mean().sqrt()
-        self.register_buffer('state_soft_token_gain', self.soft_token_target_rms / state_rms.clamp_min(1e-8))
+            decoder_rms = self.decoder_z_projector(probe_z).float().square().mean().sqrt()
+        self.register_buffer('transition_h_soft_token_gain', self.soft_token_target_rms / transition_h_rms.clamp_min(1e-8))
+        self.register_buffer('transition_z_soft_token_gain', self.soft_token_target_rms / transition_z_rms.clamp_min(1e-8))
         self.register_buffer('posterior_soft_token_gain', self.soft_token_target_rms / posterior_rms.clamp_min(1e-8))
         self.register_buffer('decoder_soft_token_gain', self.soft_token_target_rms / decoder_rms.clamp_min(1e-8))
 
-    def state_tokens(self, h, z):
-        return self.state_projector(torch.cat((h, z), -1)).reshape(*h.shape[:-1], self.k, self.d_model) * self.state_soft_token_gain.to(h.dtype)
+    def transition_tokens(self, h, z):
+        h_tokens = self.transition_h_projector(h).reshape(*h.shape[:-1], self.k, self.d_model)
+        z_tokens = self.transition_z_projector(z).reshape(*z.shape[:-1], self.k, self.d_model)
+        return (h_tokens * self.transition_h_soft_token_gain.to(h.dtype),
+                z_tokens * self.transition_z_soft_token_gain.to(z.dtype))
 
     def posterior_tokens(self, h):
         # The posterior receives h and the real observation only, never prior tensors.
@@ -95,7 +102,7 @@ class QwenTransitionRSSMRecon(nn.Module):
 
     def decoder_tokens(self, z):
         # The decoder intentionally cannot use h: z must retain observation information.
-        return self.decoder_state_projector(z).reshape(*z.shape[:-1], self.k, self.d_model) * self.decoder_soft_token_gain.to(z.dtype)
+        return self.decoder_z_projector(z).reshape(*z.shape[:-1], self.k, self.d_model) * self.decoder_soft_token_gain.to(z.dtype)
 
 
 def eos_hidden(qwen, tokenizer, text, soft, device, max_length):
@@ -103,7 +110,8 @@ def eos_hidden(qwen, tokenizer, text, soft, device, max_length):
     embedding = qwen.get_input_embeddings()
     inputs = torch.cat((embedding(torch.tensor(ids, device=device)), soft.to(embedding.weight.dtype)), 0)[None]
     mask = torch.ones(inputs.shape[:2], device=device, dtype=torch.long)
-    return qwen(inputs_embeds=inputs, attention_mask=mask, output_hidden_states=True, use_cache=False).hidden_states[-1][0, -1].float()
+    position_ids = torch.arange(inputs.shape[1], device=device)[None]
+    return qwen(inputs_embeds=inputs, attention_mask=mask, position_ids=position_ids, output_hidden_states=True, use_cache=False).hidden_states[-1][0, -1].float()
 
 
 def posterior(qwen, tokenizer, model, task, observation, h, device, cfg):
@@ -115,15 +123,42 @@ def posterior(qwen, tokenizer, model, task, observation, h, device, cfg):
 def transition(qwen, tokenizer, model, row, h, z, device, cfg):
     prefix = data.actor_prefix(tokenizer, row)
     full = data.actor_full(tokenizer, row)
-    prefix_length = len(tokenizer(prefix, add_special_tokens=False)['input_ids'])
+    prefix_ids = tokenizer(prefix, add_special_tokens=False)['input_ids']
+    prefix_length = len(prefix_ids)
     ids = tokenizer(full, add_special_tokens=False, truncation=True, max_length=int(cfg['max_sequence_length']))['input_ids']
+    if ids[:prefix_length] != prefix_ids:
+        raise RuntimeError('transition action prefix must remain an exact token prefix after tokenization')
     embedding = qwen.get_input_embeddings()
-    state = model.state_tokens(h, z)[0].to(embedding.weight.dtype)
-    inputs = torch.cat((embedding(torch.tensor(ids[:prefix_length], device=device)), state,
+    h_soft, z_soft = model.transition_tokens(h, z)
+    inputs = torch.cat((embedding(torch.tensor(ids[:prefix_length], device=device)), h_soft[0].to(embedding.weight.dtype), z_soft[0].to(embedding.weight.dtype),
                         embedding(torch.tensor(ids[prefix_length:], device=device))), 0)[None]
     mask = torch.ones(inputs.shape[:2], device=device, dtype=torch.long)
-    hidden = qwen(inputs_embeds=inputs, attention_mask=mask, output_hidden_states=True, use_cache=False).hidden_states[-1][0, -1].float()
-    return model.transition_head(hidden[None])
+    position_ids = torch.arange(inputs.shape[1], device=device)[None]
+    hidden = qwen(inputs_embeds=inputs, attention_mask=mask, position_ids=position_ids, output_hidden_states=True, use_cache=False).hidden_states[-1][0, -1].float()
+    return model.transition_h_head(hidden[None])
+
+
+@torch.no_grad()
+def transition_layout(tokenizer, model, row, device, cfg):
+    """Explicitly record the token layout used by the transition forward."""
+    prefix_ids = tokenizer(data.actor_prefix(tokenizer, row), add_special_tokens=False)['input_ids']
+    full_ids = tokenizer(data.actor_full(tokenizer, row), add_special_tokens=False, truncation=True,
+                         max_length=int(cfg['max_sequence_length']))['input_ids']
+    h = torch.zeros(1, int(cfg['latent_h_dim']), device=device)
+    z = torch.zeros(1, int(cfg['latent_z_dim']), device=device)
+    h_soft, z_soft = model.transition_tokens(h, z)
+    total = len(full_ids) + h_soft.shape[1] + z_soft.shape[1]
+    return {
+        'h_soft.shape': list(h_soft.shape), 'z_soft.shape': list(z_soft.shape),
+        'transition_latent_soft_tokens_total': int(h_soft.shape[1] + z_soft.shape[1]),
+        'posterior_soft_tokens_total': int(model.posterior_tokens(h).shape[1]),
+        'decoder_soft_tokens_total': int(model.decoder_tokens(z).shape[1]),
+        'transition_prefix_tokens': len(prefix_ids), 'transition_action_tokens': len(full_ids) - len(prefix_ids),
+        'transition_soft_insertion_after_prefix': len(prefix_ids), 'transition_sequence_length': total,
+        'transition_attention_mask_length': total, 'transition_attention_mask_all_ones': True,
+        'transition_position_ids': '0..sequence_length-1', 'transition_labels': None,
+        'decoder_labels_instruction_and_soft_are_ignore_index': True,
+    }
 
 
 def reconstruction(qwen, tokenizer, model, observations, z, device, max_length, no_soft=False):
@@ -151,7 +186,8 @@ def reconstruction(qwen, tokenizer, model, observations, z, device, max_length, 
     inputs = torch.stack([torch.cat((piece, torch.zeros(maximum - len(piece), piece.shape[-1], device=device, dtype=piece.dtype))) for piece in pieces])
     labels = torch.stack([torch.cat((label, torch.full((maximum - len(label),), -100, device=device, dtype=torch.long))) for label in labels_list])
     mask = torch.tensor([[1] * len(piece) + [0] * (maximum - len(piece)) for piece in pieces], device=device)
-    result = qwen(inputs_embeds=inputs, attention_mask=mask, labels=labels, use_cache=False)
+    position_ids = torch.arange(maximum, device=device)[None].expand(len(pieces), -1)
+    result = qwen(inputs_embeds=inputs, attention_mask=mask, position_ids=position_ids, labels=labels, use_cache=False)
     predicted = result.logits[:, :-1].argmax(dim=-1)
     valid = labels[:, 1:] != -100
     correct = ((predicted == labels[:, 1:]) & valid).sum()
@@ -304,10 +340,10 @@ def main():
             recon_ce, correct, token_count = reconstruction(qwen, tokenizer, model, targets, torch.stack(posterior_latents), device, int(cfg['max_sequence_length']))
             total = float(cfg['lambda_recon']) * recon_ce + float(cfg['beta_kl']) * kl_loss
             total.backward()
-            components = {name: grad_norm(getattr(model, name)) for name in ('state_projector', 'transition_head', 'prior_head', 'posterior_h_projector', 'posterior_head', 'decoder_state_projector')}
+            components = {name: grad_norm(getattr(model, name)) for name in ('transition_h_projector', 'transition_z_projector', 'transition_h_head', 'prior_head', 'posterior_h_projector', 'posterior_head', 'decoder_z_projector')}
             qwen_has_grad = any(parameter.grad is not None for parameter in qwen.parameters())
             if step == 0:
-                sanity = {'gradients': components, 'frozen_qwen_has_grad': qwen_has_grad, 'decoder_input': 'z_post_only',
+                sanity = {**transition_layout(tokenizer, model, rows[0], device, cfg), 'gradients': components, 'frozen_qwen_has_grad': qwen_has_grad, 'decoder_input': 'z_post_only',
                           'observation_in_decoder_conditioning': False, 'observation_is_autoregressive_target': True}
                 (root / 'sanity.json').write_text(json.dumps(sanity, indent=2))
                 print(json.dumps({'sanity': sanity}), flush=True)
