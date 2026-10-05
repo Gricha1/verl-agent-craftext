@@ -321,16 +321,27 @@ def main():
         comet = Experiment(workspace=cfg['comet_workspace'], project_name=cfg['comet_project'], auto_output_logging='simple')
     comet.set_name(args.run_name); comet.add_tags(['rssm', 'reconstruction', 'frozen_qwen', 'no_auxiliary_loss'])
     comet.log_parameters({**cfg, **info, 'trainable_parameters': trainable})
+    # Make startup observable independently of the considerably more expensive
+    # environment validation below.
+    comet.log_metric('run/started', 1.0, step=0)
 
     def log_validation(step, env_episodes=None):
         metrics, examples, diagnostic = validate(qwen, tokenizer, model, val_chunks, device, cfg)
         metrics.update({f'val/{key}': value for key, value in diagnostic.items()})
-        # This is evaluation only: no replay writes, no optimizer step and no actor/RL loss.
-        metrics.update(run_env_validation(qwen, tokenizer, model, device, cfg, transition, episodes=env_episodes))
-        (root / f'validation_step_{step}.json').write_text(json.dumps(metrics, indent=2))
+        # Publish the regular offline validation before running the three
+        # generative environment modes.  The latter can take substantially
+        # longer, especially for plan6, and must not hide model health.
+        (root / f'validation_step_{step}_offline.json').write_text(json.dumps(metrics, indent=2))
         (root / f'generation_step_{step}.json').write_text(json.dumps(examples, indent=2, ensure_ascii=False))
         torch.save({'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, root / f'checkpoint_step_{step}.pt')
-        print(json.dumps({'step': step, **metrics}), flush=True); comet.log_metrics(metrics, step=step)
+        print(json.dumps({'step': step, **metrics}), flush=True)
+        comet.log_metrics(metrics, step=step)
+        # This is evaluation only: no replay writes, no optimizer step and no actor/RL loss.
+        env_metrics = run_env_validation(qwen, tokenizer, model, device, cfg, transition, episodes=env_episodes)
+        metrics.update(env_metrics)
+        (root / f'validation_step_{step}.json').write_text(json.dumps(metrics, indent=2))
+        print(json.dumps({'step': step, **env_metrics}), flush=True)
+        comet.log_metrics(env_metrics, step=step)
 
     if args.env_eval_smoke:
         smoke_cfg = dict(cfg)
