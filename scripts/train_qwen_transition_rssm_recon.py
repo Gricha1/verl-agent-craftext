@@ -333,7 +333,10 @@ def main():
         print(json.dumps({'step': step, **metrics}), flush=True); comet.log_metrics(metrics, step=step)
 
     if args.env_eval_smoke:
-        env_metrics = run_env_validation(qwen, tokenizer, model, device, cfg, transition, episodes=1)
+        smoke_cfg = dict(cfg)
+        # Exercise every interface without turning a smoke test into a 50-step MPC rollout.
+        smoke_cfg['env_eval_max_steps'] = min(2, int(smoke_cfg.get('env_eval_max_steps', 2)))
+        env_metrics = run_env_validation(qwen, tokenizer, model, device, smoke_cfg, transition, episodes=1)
         (root / 'env_eval_smoke.json').write_text(json.dumps(env_metrics, indent=2))
         print(json.dumps({'env_eval_smoke': env_metrics}), flush=True)
         comet.log_metrics(env_metrics, step=0)
