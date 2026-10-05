@@ -91,7 +91,7 @@ def _generate(qwen, tokenizer, prompt: str, soft: torch.Tensor | None, max_new_t
     ids = _chat_input(tokenizer, prompt)
     if soft is None:
         generated = qwen.generate(input_ids=ids[None], do_sample=False, max_new_tokens=max_new_tokens,
-                                  temperature=1.0, top_p=1.0, top_k=0,
+                                  temperature=1.0, top_p=1.0, top_k=None,
                                   pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
         new_ids = generated[0, len(ids):]
     else:
@@ -99,7 +99,7 @@ def _generate(qwen, tokenizer, prompt: str, soft: torch.Tensor | None, max_new_t
         inputs = torch.cat((embed(ids), soft.to(embed.weight.dtype)), 0)[None]
         generated = qwen.generate(inputs_embeds=inputs, attention_mask=torch.ones(inputs.shape[:2], device=inputs.device, dtype=torch.long),
                                   do_sample=False, max_new_tokens=max_new_tokens,
-                                  temperature=1.0, top_p=1.0, top_k=0,
+                                  temperature=1.0, top_p=1.0, top_k=None,
                                   pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
         # HF returns only generated ids when generation starts from inputs_embeds.
         new_ids = generated[0]
@@ -150,7 +150,7 @@ def _decode_observation(qwen, tokenizer, model, z: torch.Tensor, device, cfg: di
     initial = torch.cat((instruction, model.decoder_tokens(z[None])[0].to(instruction.dtype)), 0)[None]
     out = qwen.generate(inputs_embeds=initial, attention_mask=torch.ones(initial.shape[:2], device=device, dtype=torch.long),
                         do_sample=False, eos_token_id=tokenizer.eos_token_id, pad_token_id=tokenizer.pad_token_id,
-                        temperature=1.0, top_p=1.0, top_k=0,
+                        temperature=1.0, top_p=1.0, top_k=None,
                         max_new_tokens=int(cfg.get("env_eval_decoder_max_new_tokens", 256)))
     return tokenizer.decode(out[0], skip_special_tokens=True)
 
@@ -171,6 +171,8 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
     try:
         observations, _ = env.reset({})
         active = np.ones(episodes, dtype=bool)
+        episode_steps = np.zeros(episodes, dtype=np.int64)
+        max_steps = int(cfg.get("env_eval_max_steps", 50))
         h = torch.zeros(episodes, int(cfg["latent_h_dim"]), device=device)
         z = torch.zeros(episodes, int(cfg["latent_z_dim"]), device=device)
         previous_actions: list[str | None] = [None] * episodes
@@ -230,6 +232,7 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                 valid = bool(info.get("is_action_valid", False))
                 action_name = str(info.get("action_name", "")) if valid else None
                 values["steps"] += 1
+                episode_steps[i] += 1
                 values["reward"] += float(rewards[i])
                 values["valid"] += float(valid)
                 values["parse_error"] += float(not valid or executed_candidates[i] is None)
@@ -244,7 +247,7 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                 h[i] = hi[0]
                 z[i] = model.prior_head(hi).chunk(2, dim=-1)[0][0]
                 previous_actions[i] = actual
-                if bool(dones[i]):
+                if bool(dones[i]) or int(episode_steps[i]) >= max_steps:
                     values["success"] += float(bool(info.get("won", False) or info.get("instruction_done", False)))
                     active[i] = False
             observations = next_obs
