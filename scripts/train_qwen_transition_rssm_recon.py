@@ -28,6 +28,15 @@ from rssm_env_validation import run_env_validation
 DECODER_INSTRUCTION = "Reconstruct the current environment observation exactly.\n"
 
 
+class NullComet:
+    """Minimal logger used only by an explicit local/remote smoke test."""
+    def set_name(self, *_args, **_kwargs): pass
+    def add_tags(self, *_args, **_kwargs): pass
+    def log_parameters(self, *_args, **_kwargs): pass
+    def log_metrics(self, *_args, **_kwargs): pass
+    def end(self): pass
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', required=True)
@@ -36,6 +45,8 @@ def parse_args():
     parser.add_argument('--smoke-steps', type=int, default=0)
     parser.add_argument('--env-eval-smoke', action='store_true',
                         help='Run one episode of each causal environment validation mode and exit.')
+    parser.add_argument('--disable-comet', action='store_true',
+                        help='Use only for smoke tests when an online Comet credential is unavailable.')
     parser.add_argument('--source-commit', default=None)
     return parser.parse_args()
 
@@ -303,8 +314,11 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(cfg['learning_rate']), weight_decay=float(cfg['weight_decay']))
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     print(json.dumps({'trainable_parameters': trainable, 'posterior_uses_prior': False, 'decoder_uses_h': False, **info}), flush=True)
-    from comet_ml import Experiment
-    comet = Experiment(workspace=cfg['comet_workspace'], project_name=cfg['comet_project'], auto_output_logging='simple')
+    if args.disable_comet:
+        comet = NullComet()
+    else:
+        from comet_ml import Experiment
+        comet = Experiment(workspace=cfg['comet_workspace'], project_name=cfg['comet_project'], auto_output_logging='simple')
     comet.set_name(args.run_name); comet.add_tags(['rssm', 'reconstruction', 'frozen_qwen', 'no_auxiliary_loss'])
     comet.log_parameters({**cfg, **info, 'trainable_parameters': trainable})
 
