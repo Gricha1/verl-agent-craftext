@@ -33,8 +33,8 @@ env_eval_num_episodes: 16
 env_eval_plan_horizon: 6
 env_eval_seed: 20261005
 env_eval_max_steps: 50
-env_eval_actor_max_new_tokens: 320
-env_eval_decoder_max_new_tokens: 256
+env_eval_actor_max_new_tokens: 64
+env_eval_decoder_max_new_tokens: 128
 env_eval_craftext_settings: debug_square_16x16
 comet_workspace: gregory-gorbov
 comet_project: verl-agent-caged-craftext

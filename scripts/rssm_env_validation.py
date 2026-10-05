@@ -91,6 +91,7 @@ def _generate(qwen, tokenizer, prompt: str, soft: torch.Tensor | None, max_new_t
     ids = _chat_input(tokenizer, prompt)
     if soft is None:
         generated = qwen.generate(input_ids=ids[None], do_sample=False, max_new_tokens=max_new_tokens,
+                                  temperature=1.0, top_p=1.0, top_k=0,
                                   pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
         new_ids = generated[0, len(ids):]
     else:
@@ -98,6 +99,7 @@ def _generate(qwen, tokenizer, prompt: str, soft: torch.Tensor | None, max_new_t
         inputs = torch.cat((embed(ids), soft.to(embed.weight.dtype)), 0)[None]
         generated = qwen.generate(inputs_embeds=inputs, attention_mask=torch.ones(inputs.shape[:2], device=inputs.device, dtype=torch.long),
                                   do_sample=False, max_new_tokens=max_new_tokens,
+                                  temperature=1.0, top_p=1.0, top_k=0,
                                   pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
         # HF returns only generated ids when generation starts from inputs_embeds.
         new_ids = generated[0]
@@ -148,6 +150,7 @@ def _decode_observation(qwen, tokenizer, model, z: torch.Tensor, device, cfg: di
     initial = torch.cat((instruction, model.decoder_tokens(z[None])[0].to(instruction.dtype)), 0)[None]
     out = qwen.generate(inputs_embeds=initial, attention_mask=torch.ones(initial.shape[:2], device=device, dtype=torch.long),
                         do_sample=False, eos_token_id=tokenizer.eos_token_id, pad_token_id=tokenizer.pad_token_id,
+                        temperature=1.0, top_p=1.0, top_k=0,
                         max_new_tokens=int(cfg.get("env_eval_decoder_max_new_tokens", 256)))
     return tokenizer.decode(out[0], skip_special_tokens=True)
 
