@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import train_rssm_qwen_soft_tokens as data
-from rssm_env_validation import run_env_validation
+from rssm_env_validation import assert_interface_sanity, run_env_validation, run_interface_sanity
 
 
 DECODER_INSTRUCTION = "Reconstruct the current environment observation exactly.\n"
@@ -45,6 +45,8 @@ def parse_args():
     parser.add_argument('--smoke-steps', type=int, default=0)
     parser.add_argument('--env-eval-smoke', action='store_true',
                         help='Run one episode of each causal environment validation mode and exit.')
+    parser.add_argument('--interface-sanity-smoke', action='store_true',
+                        help='Run the mandatory 32-prompt actor/plan format checks and exit.')
     parser.add_argument('--disable-comet', action='store_true',
                         help='Use only for smoke tests when an online Comet credential is unavailable.')
     parser.add_argument('--source-commit', default=None)
@@ -325,29 +327,51 @@ def main():
     # environment validation below.
     comet.log_metric('run/started', 1.0, step=0)
 
-    def log_validation(step, env_episodes=None):
+    def log_validation(step, env_episodes=None, label=''):
+        suffix = f'_{label}' if label else ''
         metrics, examples, diagnostic = validate(qwen, tokenizer, model, val_chunks, device, cfg)
         metrics.update({f'val/{key}': value for key, value in diagnostic.items()})
         # Publish the regular offline validation before running the three
         # generative environment modes.  The latter can take substantially
         # longer, especially for plan6, and must not hide model health.
-        (root / f'validation_step_{step}_offline.json').write_text(json.dumps(metrics, indent=2))
-        (root / f'generation_step_{step}.json').write_text(json.dumps(examples, indent=2, ensure_ascii=False))
+        (root / f'validation_step_{step}{suffix}_offline.json').write_text(json.dumps(metrics, indent=2))
+        (root / f'generation_step_{step}{suffix}.json').write_text(json.dumps(examples, indent=2, ensure_ascii=False))
         torch.save({'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, root / f'checkpoint_step_{step}.pt')
         print(json.dumps({'step': step, **metrics}), flush=True)
         comet.log_metrics(metrics, step=step)
         # This is evaluation only: no replay writes, no optimizer step and no actor/RL loss.
-        env_metrics = run_env_validation(qwen, tokenizer, model, device, cfg, transition, episodes=env_episodes)
+        env_metrics = run_env_validation(
+            qwen, tokenizer, model, device, cfg, transition, episodes=env_episodes,
+            debug_path=root / f'env_parse_failures_step_{step}{suffix}.jsonl',
+        )
         metrics.update(env_metrics)
-        (root / f'validation_step_{step}.json').write_text(json.dumps(metrics, indent=2))
+        (root / f'validation_step_{step}{suffix}.json').write_text(json.dumps(metrics, indent=2))
         print(json.dumps({'step': step, **env_metrics}), flush=True)
         comet.log_metrics(env_metrics, step=step)
 
+    if args.interface_sanity_smoke:
+        # Dataset actor_prompt_t is the exact production prompt serialized by
+        # the collector. Keep a deterministic, de-duplicated fixed set.
+        prompts = []
+        seen = set()
+        for row in train_rows + val_rows + test_rows:
+            prompt = str(row['actor_prompt_t'])
+            if prompt not in seen:
+                prompts.append(prompt); seen.add(prompt)
+        metrics, raw = run_interface_sanity(qwen, tokenizer, model, device, cfg, prompts)
+        (root / 'env_interface_smoke.json').write_text(json.dumps(metrics, indent=2))
+        (root / 'env_interface_smoke_raw.json').write_text(json.dumps(raw, indent=2, ensure_ascii=False))
+        print(json.dumps({'env_interface_smoke': metrics}), flush=True)
+        comet.log_metrics(metrics, step=0)
+        assert_interface_sanity(metrics)
+        comet.end()
+        return
     if args.env_eval_smoke:
         smoke_cfg = dict(cfg)
         # Exercise every interface without turning a smoke test into a 50-step MPC rollout.
-        smoke_cfg['env_eval_max_steps'] = min(2, int(smoke_cfg.get('env_eval_max_steps', 2)))
-        env_metrics = run_env_validation(qwen, tokenizer, model, device, smoke_cfg, transition, episodes=1)
+        smoke_cfg['env_episode_max_steps'] = min(2, int(smoke_cfg.get('env_episode_max_steps', 2)))
+        env_metrics = run_env_validation(qwen, tokenizer, model, device, smoke_cfg, transition, episodes=1,
+                                         debug_path=root / 'env_parse_failures_smoke.jsonl')
         (root / 'env_eval_smoke.json').write_text(json.dumps(env_metrics, indent=2))
         print(json.dumps({'env_eval_smoke': env_metrics}), flush=True)
         comet.log_metrics(env_metrics, step=0)
@@ -453,6 +477,9 @@ def main():
             if step >= limit: break
         if step >= limit: break
     if not should_validate(step, cfg): log_validation(step)
+    # The training schedule uses eight fixed episodes; the final checkpoint is
+    # measured once more on the requested 32 fixed episodes.
+    log_validation(step, env_episodes=int(cfg.get('env_eval_num_episodes_final', cfg['env_eval_num_episodes'])), label='final')
     torch.save({'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, root / 'final.pt')
     comet.end()
 
