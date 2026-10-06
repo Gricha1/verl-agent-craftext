@@ -274,6 +274,12 @@ def _generation_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
             "top_k": int(cfg.get("env_eval_top_k", 0))}
 
 
+def _is_success(info: dict[str, Any], cfg: dict[str, Any]) -> bool:
+    """Use the historical success definition unless an experiment opts in."""
+    return bool(info.get("won", False) or
+                (bool(cfg.get("env_eval_count_instruction_done_as_success", False)) and info.get("instruction_done", False)))
+
+
 @torch.no_grad()
 def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], transition_fn: Callable) -> tuple[dict[str, float], list[dict[str, Any]]]:
     episodes, horizon = int(cfg["env_eval_num_episodes"]), int(cfg["plan_horizon"])
@@ -352,7 +358,7 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                          "repeated_action": bool(action is not None and action == previous[i]),
                          "next_observation": str(next_obs["text"][i]), "reward": float(rewards[i]),
                          "terminated": bool(dones[i]), "truncated": bool(lengths[i] >= int(cfg["env_episode_max_steps"]) and not dones[i]),
-                         "success": bool(info.get("won", False) or info.get("instruction_done", False)), "info": _json_safe(info),
+                         "success": _is_success(info, cfg), "info": _json_safe(info),
                          "generation": _json_safe(raw[i])}
                 action_prompt = raw[i].get("action_prompt") or raw[i].get("revised_prompt") or raw[i].get("initial_plan_prompt")
                 if action_prompt is not None:
@@ -360,7 +366,7 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                 traces[i]["steps"].append(trace)
                 actual = action or "NOOP"; next_h = transition_fn(qwen, tokenizer, model, _transition_row(previous_observations[i], actual), h[i:i + 1], z[i:i + 1], device, cfg); h[i] = next_h[0]; z[i] = model.prior_head(next_h).chunk(2, dim=-1)[0][0]; previous[i] = actual
                 if bool(dones[i]) or lengths[i] >= int(cfg["env_episode_max_steps"]):
-                    success = bool(info.get("won", False) or info.get("instruction_done", False)); values["success"] += float(success); active[i] = False
+                    success = _is_success(info, cfg); values["success"] += float(success); active[i] = False
                     traces[i].update({"final_reward": float(sum(step["reward"] for step in traces[i]["steps"])),
                                       "final_length": int(lengths[i]), "success": success,
                                       "termination_info": _json_safe(info)})

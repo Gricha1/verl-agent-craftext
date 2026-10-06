@@ -51,6 +51,7 @@ def main() -> None:
         "env_eval_history_length": 50,
         "env_eval_reasoning_history_length": 3,
         "env_eval_store_raw_reasoning_on_missing_action_tag": False,
+        "env_eval_count_instruction_done_as_success": False,
         "env_eval_actor_max_new_tokens": args.max_new_tokens,
         "env_eval_do_sample": args.do_sample,
         "env_eval_temperature": args.temperature,
