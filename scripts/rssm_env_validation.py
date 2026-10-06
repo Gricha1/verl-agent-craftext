@@ -80,34 +80,32 @@ def _actor_z_soft(qwen, model, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor
     soft = model.transition_tokens(torch.zeros_like(h), z)[1][0]
     if soft.shape[0] != model.k:
         raise RuntimeError("actor z interface must contain exactly soft_tokens")
-    # ``z=0`` is the neutral interface control, not the projector's learned
-    # bias vector.  It still occupies the same five positions.
-    if not bool(torch.count_nonzero(z)):
-        soft = torch.zeros_like(soft)
     return _normalise_actor_soft(qwen, soft)
 
 
 @torch.no_grad()
-def _generate(qwen, tokenizer, prompt: str, soft: torch.Tensor | None, max_new_tokens: int) -> str:
+def _generate(qwen, tokenizer, prompt: str, soft: torch.Tensor | None, max_new_tokens: int,
+              assistant_prefix: str = "") -> str:
     """Soft conditioning is inserted before, never after, the assistant boundary."""
     before_ids, assistant_ids = _chat_parts(tokenizer, prompt)
     device = next(qwen.parameters()).device
+    prefix_ids = tokenizer(assistant_prefix, add_special_tokens=False)["input_ids"]
     if soft is None:
-        ids = torch.tensor(before_ids + assistant_ids, device=device)[None]
+        ids = torch.tensor(before_ids + assistant_ids + prefix_ids, device=device)[None]
         result = qwen.generate(input_ids=ids, do_sample=False, max_new_tokens=max_new_tokens,
                                pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
         new_ids = result[0, ids.shape[1]:]
     else:
         embedding = qwen.get_input_embeddings()
         prefix = embedding(torch.tensor(before_ids, device=device))
-        boundary = embedding(torch.tensor(assistant_ids, device=device))
+        boundary = embedding(torch.tensor(assistant_ids + prefix_ids, device=device))
         inputs = torch.cat((prefix, soft.to(embedding.weight.dtype), boundary), 0)[None]
         result = qwen.generate(inputs_embeds=inputs, attention_mask=torch.ones(inputs.shape[:2], device=device, dtype=torch.long),
                                do_sample=False, max_new_tokens=max_new_tokens, pad_token_id=tokenizer.pad_token_id,
                                eos_token_id=tokenizer.eos_token_id)
         # HF versions differ on whether they prepend an inputs_embeds prefix.
         new_ids = result[0, inputs.shape[1]:] if result.shape[1] > inputs.shape[1] else result[0]
-    return tokenizer.decode(new_ids, skip_special_tokens=True)
+    return assistant_prefix + tokenizer.decode(new_ids, skip_special_tokens=True)
 
 
 def _action_name(response: str) -> str | None:
@@ -195,12 +193,13 @@ def run_interface_sanity(qwen, tokenizer, model, device, cfg: dict[str, Any], pr
         raw["zero_z"].append(_generate(qwen, tokenizer, prompt, zero_soft, max_new))
         raw["predicted_z"].append(_generate(qwen, tokenizer, prompt, predicted_soft, max_new))
         initial_prompt = _plan_prompt(prompt, horizon)
-        initial, zero_initial = _generate(qwen, tokenizer, initial_prompt, None, max_new), _generate(qwen, tokenizer, initial_prompt, zero_soft, max_new)
+        initial, zero_initial = (_generate(qwen, tokenizer, initial_prompt, None, max_new, "<plan>"),
+                                 _generate(qwen, tokenizer, initial_prompt, zero_soft, max_new, "<plan>"))
         raw["initial_plan"].append(initial); raw["zero_z_initial_plan"].append(zero_initial)
         plan = _plan_actions(initial, horizon) or ["UP"] * horizon
         zero_plan = _plan_actions(zero_initial, horizon) or ["UP"] * horizon
-        raw["revised_plan"].append(_generate(qwen, tokenizer, _revised_prompt(prompt, plan, horizon), None, max_new))
-        raw["zero_z_revised_plan"].append(_generate(qwen, tokenizer, _revised_prompt(prompt, zero_plan, horizon), zero_soft, max_new))
+        raw["revised_plan"].append(_generate(qwen, tokenizer, _revised_prompt(prompt, plan, horizon), None, max_new, "<plan>"))
+        raw["zero_z_revised_plan"].append(_generate(qwen, tokenizer, _revised_prompt(prompt, zero_plan, horizon), zero_soft, max_new, "<plan>"))
     action_rate = lambda values: sum(_action_name(value) is not None for value in values) / len(values)
     plan_rate = lambda values: sum(_plan_actions(value, horizon) is not None for value in values) / len(values)
     revised_rate = lambda values: sum(_plan_actions(value, horizon) is not None and _action_name(value) is not None for value in values) / len(values)
@@ -260,7 +259,7 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                     soft = None if previous[i] is None else _actor_z_soft(qwen, model, h[i:i + 1], z[i:i + 1])
                     response = _generate(qwen, tokenizer, prompt, soft, int(cfg["env_eval_actor_max_new_tokens"])); raw[i] = {"action": response}
                 else:
-                    initial = _generate(qwen, tokenizer, _plan_prompt(prompt, horizon), None, int(cfg["env_eval_actor_max_new_tokens"]))
+                    initial = _generate(qwen, tokenizer, _plan_prompt(prompt, horizon), None, int(cfg["env_eval_actor_max_new_tokens"]), "<plan>")
                     plan = _plan_actions(initial, horizon); initial_ok[i] = plan is not None; plan = plan or ["UP"] * horizon
                     ih, iz, imagined = h[i:i + 1], z[i:i + 1], []; imagined_obs = str(observations["anchor"][i])
                     for j, action in enumerate(plan):
@@ -269,7 +268,7 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                         if j + 1 < horizon: imagined_obs = _decode_observation(qwen, tokenizer, model, iz[0], device, cfg)
                     soft = torch.cat([_actor_z_soft(qwen, model, torch.zeros_like(state)[None], state[None]) for state in imagined], 0)
                     if soft.shape[0] != horizon * int(cfg["soft_tokens"]): raise RuntimeError("plan latent count mismatch")
-                    response = _generate(qwen, tokenizer, _revised_prompt(prompt, plan, horizon), soft, int(cfg["env_eval_actor_max_new_tokens"]))
+                    response = _generate(qwen, tokenizer, _revised_prompt(prompt, plan, horizon), soft, int(cfg["env_eval_actor_max_new_tokens"]), "<plan>")
                     revised_ok[i] = _plan_actions(response, horizon) is not None; candidate = _action_name(response); changed[i] = candidate is not None and candidate != plan[0]; raw[i] = {"initial_plan": initial, "revised": response}
                 candidate = _action_name(response); parsed[i] = candidate is not None
                 if parsed[i]: responses[i] = response
