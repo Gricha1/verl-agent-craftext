@@ -363,13 +363,17 @@ def main():
             h = torch.zeros(1, int(cfg['latent_h_dim']), device=device)
             qm, qs, _ql, _ = posterior(qwen, tokenizer, model, task, str(rows[0]['observation_t']), h[0], device, cfg)
             z = qm + qs * torch.randn_like(qs)
-            raw_values, dyn_values, rep_values, posterior_latents, targets = [], [], [], [], []
+            raw_values, dyn_values, rep_values, reconstruction_inputs, targets = [], [], [], [], []
             for row in rows:
+                # With TBPTT=1 these detached recurrent values are the exact
+                # numerical inputs for this transition, independent of earlier
+                # transition graphs.
+                reconstruction_inputs.append((row, h.detach(), z.detach()))
                 h = transition(qwen, tokenizer, model, row, h, z, device, cfg)
                 pm, ps, pl = gaussian(model.prior_head(h))
                 qm, qs, ql, _ = posterior(qwen, tokenizer, model, task, str(row['observation_t_plus_1']), h[0], device, cfg)
                 raw_values.append(kl(qm, qs, pm, ps)); dyn_values.append(kl(qm.detach(), qs.detach(), pm, ps)); rep_values.append(kl(qm, qs, pm.detach(), ps.detach()))
-                posterior_latents.append(qm[0]); targets.append(str(row['observation_t_plus_1']))
+                targets.append(str(row['observation_t_plus_1']))
                 z = qm + qs * torch.randn_like(qs)
                 if int(cfg['truncate_bptt_steps']) == 1: h, z = h.detach(), z.detach()
             raw_values, dyn_values, rep_values = torch.stack(raw_values), torch.stack(dyn_values), torch.stack(rep_values)
@@ -381,11 +385,13 @@ def main():
             rep_used = rep_values.mean() if free_nats <= 0.0 else torch.clamp(rep_values, min=free_nats).mean()
             used = raw_values.mean() if free_nats <= 0.0 else torch.clamp(raw_values, min=free_nats).mean()
             kl_loss = float(cfg['kl_balance']) * dyn_used + (1.0 - float(cfg['kl_balance'])) * rep_used
-            # A chunk contains up to 16 long text targets.  Keeping the Qwen
-            # logits/activations for the entire chunk until one joint backward
-            # pass can exceed an 80-GB GPU on a long observation.  Accumulate
-            # the identical mean reconstruction gradient one target at a time
-            # so each Qwen graph is released before the next target.
+            # KL and reconstruction both differentiate through posterior. Do
+            # KL first, then rebuild independent local graphs for each text.
+            (float(cfg['beta_kl']) * kl_loss).backward()
+
+            # A chunk contains up to 16 long text targets. Keeping Qwen
+            # logits/activations for all targets until one joint backward pass
+            # can exceed an 80-GB GPU, so release every item's graph promptly.
             decoder_instruction_tokens = len(tokenizer(DECODER_INSTRUCTION, add_special_tokens=False)['input_ids'])
             max_target_tokens = int(cfg['max_sequence_length']) - decoder_instruction_tokens - model.k - 1
             target_token_counts = [
@@ -396,9 +402,19 @@ def main():
             recon_total = 0.0
             correct = torch.zeros((), device=device, dtype=torch.long)
             token_count = torch.zeros((), device=device, dtype=torch.long)
-            for target, posterior_latent, target_tokens in zip(targets, posterior_latents, target_token_counts):
+            for target, (reconstruction_row, reconstruction_h, reconstruction_z), target_tokens in zip(
+                targets, reconstruction_inputs, target_token_counts,
+            ):
+                reconstruction_h = transition(
+                    qwen, tokenizer, model, reconstruction_row,
+                    reconstruction_h, reconstruction_z, device, cfg,
+                )
+                reconstruction_mu, _reconstruction_std, _reconstruction_logstd, _ = posterior(
+                    qwen, tokenizer, model, task,
+                    str(reconstruction_row['observation_t_plus_1']), reconstruction_h[0], device, cfg,
+                )
                 recon_item, correct_item, token_count_item = reconstruction(
-                    qwen, tokenizer, model, [target], posterior_latent[None], device,
+                    qwen, tokenizer, model, [target], reconstruction_mu, device,
                     int(cfg['max_sequence_length']),
                 )
                 # reconstruction() reports the mean CE over valid target
@@ -410,7 +426,6 @@ def main():
                 correct += correct_item
                 token_count += token_count_item
             recon_ce = recon_total
-            (float(cfg['beta_kl']) * kl_loss).backward()
             total = float(cfg['lambda_recon']) * recon_ce + float(cfg['beta_kl']) * float(kl_loss.detach())
             components = {name: grad_norm(getattr(model, name)) for name in ('transition_h_projector', 'transition_z_projector', 'transition_h_head', 'prior_head', 'posterior_h_projector', 'posterior_head', 'decoder_z_projector')}
             prior_grad_when_kl_below_one = float(components['prior_head'] > 0.0)
