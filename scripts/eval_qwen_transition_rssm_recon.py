@@ -57,6 +57,9 @@ def main() -> None:
         "env_eval_temperature": args.temperature,
         "env_eval_top_p": 1.0,
         "env_eval_top_k": 0,
+        # Avoid retaining variable-shape generation-cache blocks while a
+        # trainer occupies the other half of this A100.
+        "env_eval_empty_cache_every_steps": 1,
     })
     torch.manual_seed(args.torch_seed)
     tokenizer = AutoTokenizer.from_pretrained(cfg["base_model"], trust_remote_code=True)

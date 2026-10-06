@@ -371,6 +371,13 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                                       "final_length": int(lengths[i]), "success": success,
                                       "termination_info": _json_safe(info)})
             observations = next_obs
+            # Variable-length prompts and generation caches otherwise remain
+            # reserved by the CUDA allocator across a long read-only rollout.
+            # This is deliberately enabled by the checkpoint evaluator so it
+            # can coexist safely with a live training job on the same GPU.
+            if int(cfg.get("env_eval_empty_cache_every_steps", 0)) > 0 and torch.cuda.is_available():
+                if int(values["steps"]) % int(cfg["env_eval_empty_cache_every_steps"]) == 0:
+                    torch.cuda.empty_cache()
     finally:
         env.close()
     prefix = {"base": "env/base", "z_actor": "env/z_actor", "plan_only": "env/plan_only", "plan6": "env/plan6"}[mode]; metrics = _summary(prefix, values, episodes)
@@ -390,7 +397,14 @@ def run_env_validation(qwen, tokenizer, model, device, cfg: dict[str, Any], tran
     try:
         output, traces = {}, []
         for mode in modes:
-            metrics, mode_traces = _run_mode(mode, qwen, tokenizer, model, device, cfg, transition_fn); output.update(metrics); traces += mode_traces
+            metrics, mode_traces = _run_mode(mode, qwen, tokenizer, model, device, cfg, transition_fn)
+            output.update(metrics); traces += mode_traces
+            # Persist completed modes independently: an expensive later Plan6
+            # pass must not hide already-audited Base/Z/PlanOnly evidence.
+            if debug_path is not None:
+                mode_path = debug_path.with_name(f"{debug_path.stem}_{mode}{debug_path.suffix}")
+                mode_path.write_text(json.dumps({"metrics": metrics, "config": _json_safe(cfg), "episodes": mode_traces},
+                                                ensure_ascii=False, indent=2), encoding="utf-8")
         if debug_path is not None:
             debug_path.write_text(json.dumps({"metrics": output, "config": _json_safe(cfg), "episodes": traces}, ensure_ascii=False, indent=2), encoding="utf-8")
         return output
