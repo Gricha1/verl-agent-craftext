@@ -80,6 +80,10 @@ def _actor_z_soft(qwen, model, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor
     soft = model.transition_tokens(torch.zeros_like(h), z)[1][0]
     if soft.shape[0] != model.k:
         raise RuntimeError("actor z interface must contain exactly soft_tokens")
+    # ``z=0`` is the neutral interface control, not the projector's learned
+    # bias vector.  It still occupies the same five positions.
+    if not bool(torch.count_nonzero(z)):
+        soft = torch.zeros_like(soft)
     return _normalise_actor_soft(qwen, soft)
 
 
@@ -122,16 +126,29 @@ def _fallback_response() -> str: return "<action>NOOP</action>"
 def _transition_row(prompt: str, action: str) -> dict[str, str]: return {"actor_prompt_t": str(prompt), "action_t": str(action)}
 
 
+def _planning_context(prompt: str) -> str:
+    """Keep the production state/task text but replace its actor-only suffix."""
+    for marker in ("\nFirst, think about what to do next.", "\nChoose one of the available actions"):
+        position = prompt.find(marker)
+        if position >= 0:
+            return prompt[:position]
+    return prompt
+
+
 def _plan_prompt(prompt: str, horizon: int) -> str:
-    return (f"{prompt}\n\nReturn exactly <plan>UP,LEFT,LEFT,DOWN,RIGHT,UP</plan>. "
-            f"The tag must contain exactly {horizon} comma-separated actions from UP, DOWN, LEFT, RIGHT. No explanation.")
+    return (_planning_context(prompt) + "\n\nYou are planning, not choosing a single action. "
+            "Output only one tag, exactly in this format: <plan>UP,LEFT,LEFT,DOWN,RIGHT,UP</plan>. "
+            f"It must contain exactly {horizon} comma-separated actions from UP, DOWN, LEFT, RIGHT. "
+            "Do not use an <action> tag and do not add an explanation.")
 
 
 def _revised_prompt(prompt: str, plan: list[str], horizon: int) -> str:
     candidate = ",".join(plan)
-    return (f"{prompt}\n\nCandidate plan: <plan>{candidate}</plan>. Based on imagined future states, "
-            f"return exactly <plan>{candidate}</plan><action>UP</action>. The plan has exactly {horizon} "
-            "comma-separated actions from UP, DOWN, LEFT, RIGHT. No explanation.")
+    return (_planning_context(prompt) + f"\n\nCandidate plan: <plan>{candidate}</plan>. "
+            "Based on the imagined future states, output only these two tags on separate lines:\n"
+            f"<plan>{candidate}</plan>\n<action>UP</action>\n"
+            f"The plan must contain exactly {horizon} comma-separated actions from UP, DOWN, LEFT, RIGHT. "
+            "The action must be one valid action. Do not add an explanation.")
 
 
 def _imagined_prompt(task: str, observation: str, history: list[str]) -> str:
