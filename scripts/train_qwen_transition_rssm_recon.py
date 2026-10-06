@@ -33,6 +33,7 @@ class NullComet:
     def set_name(self, *_args, **_kwargs): pass
     def add_tags(self, *_args, **_kwargs): pass
     def log_parameters(self, *_args, **_kwargs): pass
+    def log_metric(self, *_args, **_kwargs): pass
     def log_metrics(self, *_args, **_kwargs): pass
     def end(self): pass
 
