@@ -381,9 +381,37 @@ def main():
             rep_used = rep_values.mean() if free_nats <= 0.0 else torch.clamp(rep_values, min=free_nats).mean()
             used = raw_values.mean() if free_nats <= 0.0 else torch.clamp(raw_values, min=free_nats).mean()
             kl_loss = float(cfg['kl_balance']) * dyn_used + (1.0 - float(cfg['kl_balance'])) * rep_used
-            recon_ce, correct, token_count = reconstruction(qwen, tokenizer, model, targets, torch.stack(posterior_latents), device, int(cfg['max_sequence_length']))
-            total = float(cfg['lambda_recon']) * recon_ce + float(cfg['beta_kl']) * kl_loss
-            total.backward()
+            # A chunk contains up to 16 long text targets.  Keeping the Qwen
+            # logits/activations for the entire chunk until one joint backward
+            # pass can exceed an 80-GB GPU on a long observation.  Accumulate
+            # the identical mean reconstruction gradient one target at a time
+            # so each Qwen graph is released before the next target.
+            decoder_instruction_tokens = len(tokenizer(DECODER_INSTRUCTION, add_special_tokens=False)['input_ids'])
+            max_target_tokens = int(cfg['max_sequence_length']) - decoder_instruction_tokens - model.k - 1
+            target_token_counts = [
+                len(tokenizer(str(target), add_special_tokens=False, truncation=True, max_length=max_target_tokens)['input_ids']) + 1
+                for target in targets
+            ]
+            total_target_tokens = sum(target_token_counts)
+            recon_total = 0.0
+            correct = torch.zeros((), device=device, dtype=torch.long)
+            token_count = torch.zeros((), device=device, dtype=torch.long)
+            for target, posterior_latent, target_tokens in zip(targets, posterior_latents, target_token_counts):
+                recon_item, correct_item, token_count_item = reconstruction(
+                    qwen, tokenizer, model, [target], posterior_latent[None], device,
+                    int(cfg['max_sequence_length']),
+                )
+                # reconstruction() reports the mean CE over valid target
+                # tokens.  Weight each item by its token count to preserve the
+                # original whole-chunk CE exactly.
+                item_weight = target_tokens / total_target_tokens
+                (float(cfg['lambda_recon']) * item_weight * recon_item).backward()
+                recon_total += item_weight * float(recon_item.detach())
+                correct += correct_item
+                token_count += token_count_item
+            recon_ce = recon_total
+            (float(cfg['beta_kl']) * kl_loss).backward()
+            total = float(cfg['lambda_recon']) * recon_ce + float(cfg['beta_kl']) * float(kl_loss.detach())
             components = {name: grad_norm(getattr(model, name)) for name in ('transition_h_projector', 'transition_z_projector', 'transition_h_head', 'prior_head', 'posterior_h_projector', 'posterior_head', 'decoder_z_projector')}
             prior_grad_when_kl_below_one = float(components['prior_head'] > 0.0)
             if free_nats == 0.0 and float(raw.detach()) < 1.0 and not prior_grad_when_kl_below_one:
@@ -398,8 +426,8 @@ def main():
                     raise RuntimeError(f'gradient sanity check failed: {sanity}')
             grad = float(torch.nn.utils.clip_grad_norm_(model.parameters(), float(cfg['max_grad_norm'])))
             optimizer.step(); step += 1
-            metrics = {'train/recon_ce': float(recon_ce.detach()), 'train/token_accuracy': float(correct.float() / token_count.clamp_min(1)),
-                       'train/total_loss': float(total.detach()), 'train/kl_raw': float(raw), 'train/kl_used': float(used),
+            metrics = {'train/recon_ce': recon_ce, 'train/token_accuracy': float(correct.float() / token_count.clamp_min(1)),
+                       'train/total_loss': total, 'train/kl_raw': float(raw), 'train/kl_used': float(used),
                        'train/kl_dyn': float(dyn), 'train/kl_rep': float(rep), 'train/kl_loss': float(kl_loss),
                        'train/prior_head_grad_nonzero_when_kl_below_one': prior_grad_when_kl_below_one if float(raw.detach()) < 1.0 else 1.0,
                        'train/grad_norm_preclip': grad, 'train/grad_clip_max': float(cfg['max_grad_norm']),
