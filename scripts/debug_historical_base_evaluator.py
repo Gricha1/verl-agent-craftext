@@ -33,10 +33,10 @@ from agent_system.environments.env_package.caged_craftext.projection import ACTI
 HISTORICAL_SEEDS = list(range(20261001, 20261033))
 
 
-class HistoricalLocalVector:
-    """Exact reset policy of the historical Base evaluator: one RNG per seed."""
+class DebugLocalVector:
+    """Evaluator vector with either historical or r6 scenario sampling."""
 
-    def __init__(self, cfg: Any, seeds: list[int]):
+    def __init__(self, cfg: Any, seeds: list[int], per_seed_reset_rng: bool):
         kwargs = {
             "config_name": str(cfg.env.craftext_settings),
             "use_debug_square_map": True,
@@ -45,10 +45,16 @@ class HistoricalLocalVector:
         }
         self.workers = [CagedCraftextWorker(seed=int(seed), env_kwargs=kwargs) for seed in seeds]
         self.rngs = [np.random.RandomState(int(seed)) for seed in seeds]
+        self.global_rng = np.random.RandomState(int(cfg.env.seed))
+        self.per_seed_reset_rng = per_seed_reset_rng
 
     def reset(self):
-        pairs = [worker.reset(scenario_idx=int(rng.choice(np.arange(3))), return_render=False)
-                 for worker, rng in zip(self.workers, self.rngs)]
+        if self.per_seed_reset_rng:
+            choices = [int(rng.choice(np.arange(3))) for rng in self.rngs]
+        else:
+            choices = self.global_rng.choice(np.arange(3), size=len(self.workers), replace=True).tolist()
+        pairs = [worker.reset(scenario_idx=choice, return_render=False)
+                 for worker, choice in zip(self.workers, choices)]
         return [pair[0] for pair in pairs], [pair[1] for pair in pairs]
 
     def step(self, actions):
@@ -63,7 +69,7 @@ class HistoricalLocalVector:
                 close()
 
 
-def environment_config(seed: int, max_steps: int, settings: str) -> Any:
+def environment_config(seed: int, max_steps: int, settings: str, store_raw_reasoning: bool) -> Any:
     return OmegaConf.create({"env": {
         "env_name": "caged_craftext/CagedCraftextEnv",
         "craftext_settings": settings,
@@ -73,7 +79,7 @@ def environment_config(seed: int, max_steps: int, settings: str) -> Any:
         "reasoning_history_length": 3,
         "enable_reasoning": True,
         "prompt_template_type": "single_token_action_reasoning",
-        "store_raw_reasoning_on_missing_action_tag": False,
+        "store_raw_reasoning_on_missing_action_tag": store_raw_reasoning,
         "observation_type": "ascii",
         "auto_reset": False,
         "use_jax_gpu": False,
@@ -101,10 +107,11 @@ def jsonable(value: Any) -> Any:
 
 @torch.no_grad()
 def evaluate(model, tokenizer, device: torch.device, seeds: list[int], max_steps: int,
-             max_new_tokens: int, temperature: float, settings: str) -> dict[str, Any]:
+             max_new_tokens: int, temperature: float, settings: str, do_sample: bool,
+             per_seed_reset_rng: bool, store_raw_reasoning: bool) -> dict[str, Any]:
     """Historical batched sampled rollout with a complete trace for every action."""
-    cfg = environment_config(seeds[0], max_steps, settings)
-    vector = HistoricalLocalVector(cfg, seeds)
+    cfg = environment_config(seeds[0], max_steps, settings, store_raw_reasoning)
+    vector = DebugLocalVector(cfg, seeds, per_seed_reset_rng)
     env = CagedCraftextEnvironmentManager(vector, craftext_projection, cfg)
     model.eval()
     records = [{"seed": int(seed), "steps": [], "cumulative_reward": 0.0} for seed in seeds]
@@ -125,11 +132,11 @@ def evaluate(model, tokenizer, device: torch.device, seeds: list[int], max_steps
                         for prompt in user_prompts]
             batch = tokenizer(rendered, return_tensors="pt", padding=True,
                               add_special_tokens=False).to(device)
-            # This matches the exact historical generator setup, including one
-            # batch-wide RNG stream per environment step.
+            # The historical evaluator used one batch-wide RNG stream per
+            # step.  Keeping it for greedy runs too makes the trace comparable.
             torch.manual_seed(int(seeds[0]) * 1000 + step)
             generated = model.generate(
-                **batch, do_sample=True, temperature=temperature, top_p=1.0, top_k=0,
+                **batch, do_sample=do_sample, temperature=temperature, top_p=1.0, top_k=0,
                 max_new_tokens=max_new_tokens, pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
             )
@@ -184,10 +191,11 @@ def evaluate(model, tokenizer, device: torch.device, seeds: list[int], max_steps
         })
     total_steps = max(sum(record["length"] for record in records), 1)
     return {
-        "profile": "historical_base_b6304ff",
+        "profile": "historical_base_b6304ff" if per_seed_reset_rng and do_sample else "r6_base_compat",
         "environment": {"settings": settings, "max_steps": max_steps, "seeds": seeds,
-                        "per_seed_scenario_rng": True},
-        "generation": {"do_sample": True, "temperature": temperature, "top_p": 1.0,
+                        "per_seed_scenario_rng": per_seed_reset_rng,
+                        "store_raw_reasoning_on_missing_action_tag": store_raw_reasoning},
+        "generation": {"do_sample": do_sample, "temperature": temperature, "top_p": 1.0,
                        "top_k": 0, "max_new_tokens": max_new_tokens, "assistant_prefix": ""},
         "metrics": {
             "success_rate": float(np.mean([record["success"] for record in records])),
@@ -208,12 +216,16 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--episodes", type=int, default=32)
+    parser.add_argument("--seed-start", type=int, default=20261001)
     parser.add_argument("--max-steps", type=int, default=50)
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--settings", default="debug_square_8x8")
+    parser.add_argument("--greedy", action="store_true", help="Match r6's do_sample=False generation.")
+    parser.add_argument("--global-reset-rng", action="store_true", help="Match r6's single reset RNG.")
+    parser.add_argument("--store-raw-reasoning", action="store_true", help="Match r6 missing-action history behaviour.")
     args = parser.parse_args()
-    seeds = HISTORICAL_SEEDS[:args.episodes]
+    seeds = list(range(args.seed_start, args.seed_start + args.episodes))
     tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True)
     tokenizer.padding_side = "left"
     tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
@@ -221,7 +233,8 @@ def main() -> None:
     model = AutoModelForCausalLM.from_pretrained(args.base_model, torch_dtype=torch.bfloat16,
                                                   trust_remote_code=True).to(device).eval()
     result = evaluate(model, tokenizer, device, seeds, args.max_steps, args.max_new_tokens,
-                      args.temperature, args.settings)
+                      args.temperature, args.settings, not args.greedy,
+                      not args.global_reset_rng, args.store_raw_reasoning)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(result["metrics"], sort_keys=True), flush=True)
