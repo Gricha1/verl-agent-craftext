@@ -29,10 +29,14 @@ class _LocalCagedVector:
     def __init__(self, config: Any, seeds: list[int]):
         kwargs = {"config_name": str(config.env.craftext_settings), "use_debug_square_map": True,
                   "observation_type": str(config.env.observation_type), "encode_form": "embedding"}
-        self.workers = [CagedCraftextWorker(seed=int(seed), env_kwargs=kwargs) for seed in seeds]
-        self.rng = np.random.RandomState(int(config.env.seed))
+        self.seeds = [int(seed) for seed in seeds]
+        self.workers = [CagedCraftextWorker(seed=seed, env_kwargs=kwargs) for seed in self.seeds]
+        # Match the historical actor evaluator: each environment's scenario
+        # sampling is driven by its own fixed evaluation seed.  A single global
+        # RNG makes a 32-seed evaluation depend on batch size/order.
+        self.rngs = [np.random.RandomState(seed) for seed in self.seeds]
     def reset(self):
-        choices = self.rng.choice(np.arange(3), size=len(self.workers), replace=True)
+        choices = [rng.randint(3) for rng in self.rngs]
         pairs = [worker.reset(scenario_idx=int(choice), return_render=False) for worker, choice in zip(self.workers, choices)]
         observations, infos = zip(*pairs)
         return list(observations), list(infos)
@@ -53,7 +57,7 @@ def _env_config(cfg: dict[str, Any]) -> Any:
         "history_length": int(cfg.get("env_eval_history_length", 50)),
         "reasoning_history_length": int(cfg.get("env_eval_reasoning_history_length", 3)),
         "enable_reasoning": True, "prompt_template_type": "single_token_action_reasoning",
-        "store_raw_reasoning_on_missing_action_tag": True, "observation_type": "ascii",
+        "store_raw_reasoning_on_missing_action_tag": bool(cfg.get("env_eval_store_raw_reasoning_on_missing_action_tag", False)), "observation_type": "ascii",
         "auto_reset": False, "use_jax_gpu": False, "use_ray_text_render_workers": False},
         "data": {"train_batch_size": 1, "val_batch_size": 1}})
 
@@ -67,6 +71,13 @@ def _chat_parts(tokenizer, prompt: str) -> tuple[list[int], list[int]]:
     if full_ids[:len(before_ids)] != before_ids:
         raise RuntimeError("chat generation boundary is not an exact token suffix")
     return before_ids, full_ids[len(before_ids):]
+
+
+def _render_chat_prompt(tokenizer, prompt: str, assistant_prefix: str = "") -> str:
+    """The exact textual chat prompt sent to Qwen, for trajectory auditing."""
+    base = tokenizer.apply_chat_template([{"role": "user", "content": str(prompt)}], tokenize=False,
+                                         add_generation_prompt=True)
+    return base + assistant_prefix
 
 
 def _normalise_actor_soft(qwen, soft: torch.Tensor) -> torch.Tensor:
@@ -85,24 +96,30 @@ def _actor_z_soft(qwen, model, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor
 
 @torch.no_grad()
 def _generate(qwen, tokenizer, prompt: str, soft: torch.Tensor | None, max_new_tokens: int,
-              assistant_prefix: str = "") -> str:
+              assistant_prefix: str = "", generation: dict[str, Any] | None = None) -> str:
     """Soft conditioning is inserted before, never after, the assistant boundary."""
     before_ids, assistant_ids = _chat_parts(tokenizer, prompt)
     device = next(qwen.parameters()).device
     prefix_ids = tokenizer(assistant_prefix, add_special_tokens=False)["input_ids"]
+    generation = generation or {}
+    do_sample = bool(generation.get("do_sample", False))
+    kwargs: dict[str, Any] = {"do_sample": do_sample, "max_new_tokens": max_new_tokens,
+                              "pad_token_id": tokenizer.pad_token_id, "eos_token_id": tokenizer.eos_token_id}
+    if do_sample:
+        kwargs.update({"temperature": float(generation.get("temperature", .7)),
+                       "top_p": float(generation.get("top_p", 1.0)),
+                       "top_k": int(generation.get("top_k", 0))})
     if soft is None:
         ids = torch.tensor(before_ids + assistant_ids + prefix_ids, device=device)[None]
-        result = qwen.generate(input_ids=ids, do_sample=False, max_new_tokens=max_new_tokens,
-                               pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
+        result = qwen.generate(input_ids=ids, **kwargs)
         new_ids = result[0, ids.shape[1]:]
     else:
         embedding = qwen.get_input_embeddings()
         prefix = embedding(torch.tensor(before_ids, device=device))
         boundary = embedding(torch.tensor(assistant_ids + prefix_ids, device=device))
         inputs = torch.cat((prefix, soft.to(embedding.weight.dtype), boundary), 0)[None]
-        result = qwen.generate(inputs_embeds=inputs, attention_mask=torch.ones(inputs.shape[:2], device=device, dtype=torch.long),
-                               do_sample=False, max_new_tokens=max_new_tokens, pad_token_id=tokenizer.pad_token_id,
-                               eos_token_id=tokenizer.eos_token_id)
+        result = qwen.generate(inputs_embeds=inputs,
+                               attention_mask=torch.ones(inputs.shape[:2], device=device, dtype=torch.long), **kwargs)
         # HF versions differ on whether they prepend an inputs_embeds prefix.
         new_ids = result[0, inputs.shape[1]:] if result.shape[1] > inputs.shape[1] else result[0]
     return assistant_prefix + tokenizer.decode(new_ids, skip_special_tokens=True)
@@ -239,67 +256,135 @@ def _summary(prefix: str, values: dict[str, float], episodes: int) -> dict[str, 
             f"{prefix}/repeated_action_rate": values["repeated"] / steps}
 
 
+def _json_safe(value: Any) -> Any:
+    """JSON conversion for worker info, which can contain NumPy scalar/arrays."""
+    if isinstance(value, np.ndarray): return [_json_safe(item) for item in value.tolist()]
+    if isinstance(value, np.generic): return value.item()
+    if isinstance(value, dict): return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)): return [_json_safe(item) for item in value]
+    return value
+
+
+def _generation_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    return {"do_sample": bool(cfg.get("env_eval_do_sample", False)),
+            "temperature": float(cfg.get("env_eval_temperature", .7)),
+            "top_p": float(cfg.get("env_eval_top_p", 1.0)),
+            "top_k": int(cfg.get("env_eval_top_k", 0))}
+
+
 @torch.no_grad()
 def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], transition_fn: Callable) -> tuple[dict[str, float], list[dict[str, Any]]]:
     episodes, horizon = int(cfg["env_eval_num_episodes"]), int(cfg["plan_horizon"])
     seeds = [int(cfg["env_eval_seed"]) + index for index in range(episodes)]
     env_cfg = _env_config(cfg); env = CagedCraftextEnvironmentManager(_LocalCagedVector(env_cfg, seeds), craftext_projection, env_cfg)
-    values: dict[str, float] = defaultdict(float); debug: list[dict[str, Any]] = []
+    values: dict[str, float] = defaultdict(float)
+    traces: list[dict[str, Any]] = [{"mode": mode, "episode": index, "seed": seed, "steps": []}
+                                    for index, seed in enumerate(seeds)]
+    generation = _generation_cfg(cfg)
     try:
         observations, _ = env.reset({}); active = np.ones(episodes, dtype=bool); lengths = np.zeros(episodes, dtype=np.int64)
         h = torch.zeros(episodes, int(cfg["latent_h_dim"]), device=device); z = torch.zeros(episodes, int(cfg["latent_z_dim"]), device=device)
         previous: list[str | None] = [None] * episodes
         while active.any():
-            responses = [_fallback_response()] * episodes; parsed = [False] * episodes; initial_ok = [False] * episodes; revised_ok = [False] * episodes; changed = [False] * episodes; raw = {}
+            responses = [_fallback_response()] * episodes; parsed = [False] * episodes; candidates: list[str | None] = [None] * episodes
+            initial_ok = [False] * episodes; revised_ok = [False] * episodes; changed = [False] * episodes
+            raw: dict[int, dict[str, Any]] = {}
             for i in np.flatnonzero(active):
                 prompt = str(observations["text"][i])
                 if mode == "base":
-                    response = _generate(qwen, tokenizer, prompt, None, int(cfg["env_eval_actor_max_new_tokens"])); raw[i] = {"action": response}
+                    response = _generate(qwen, tokenizer, prompt, None, int(cfg["env_eval_actor_max_new_tokens"]), generation=generation)
+                    raw[i] = {"action": response, "action_prompt": prompt, "assistant_prefix": "", "soft_conditioned": False}
                 elif mode == "z_actor":
                     soft = None if previous[i] is None else _actor_z_soft(qwen, model, h[i:i + 1], z[i:i + 1])
-                    response = _generate(qwen, tokenizer, prompt, soft, int(cfg["env_eval_actor_max_new_tokens"])); raw[i] = {"action": response}
+                    response = _generate(qwen, tokenizer, prompt, soft, int(cfg["env_eval_actor_max_new_tokens"]), generation=generation)
+                    raw[i] = {"action": response, "action_prompt": prompt, "assistant_prefix": "", "soft_conditioned": soft is not None,
+                              "latent_h_l2": float(h[i].float().norm()), "latent_z_l2": float(z[i].float().norm())}
+                elif mode == "plan_only":
+                    plan_prompt = _plan_prompt(prompt, horizon)
+                    initial = _generate(qwen, tokenizer, plan_prompt, None, int(cfg["env_eval_actor_max_new_tokens"]), "<plan>", generation)
+                    plan = _plan_actions(initial, horizon); initial_ok[i] = plan is not None; plan = plan or ["UP"] * horizon
+                    response = f"<action>{plan[0]}</action>"
+                    parsed[i] = initial_ok[i]
+                    raw[i] = {"initial_plan": initial, "initial_plan_prompt": plan_prompt, "plan": plan,
+                              "plan_fallback": not initial_ok[i], "action": response, "action_prompt": None,
+                              "assistant_prefix": "<plan>", "soft_conditioned": False,
+                              "policy_action_source": "initial_plan[0]"}
                 else:
-                    initial = _generate(qwen, tokenizer, _plan_prompt(prompt, horizon), None, int(cfg["env_eval_actor_max_new_tokens"]), "<plan>")
+                    plan_prompt = _plan_prompt(prompt, horizon)
+                    initial = _generate(qwen, tokenizer, plan_prompt, None, int(cfg["env_eval_actor_max_new_tokens"]), "<plan>", generation)
                     plan = _plan_actions(initial, horizon); initial_ok[i] = plan is not None; plan = plan or ["UP"] * horizon
                     ih, iz, imagined = h[i:i + 1], z[i:i + 1], []; imagined_obs = str(observations["anchor"][i])
+                    imagined_steps: list[dict[str, Any]] = []
                     for j, action in enumerate(plan):
                         row = _transition_row(prompt if j == 0 else _imagined_prompt(str(env.tasks[i]), imagined_obs, plan[:j]), action)
                         ih = transition_fn(qwen, tokenizer, model, row, ih, iz, device, cfg); iz = model.prior_head(ih).chunk(2, dim=-1)[0]; imagined.append(iz[0])
-                        if j + 1 < horizon: imagined_obs = _decode_observation(qwen, tokenizer, model, iz[0], device, cfg)
+                        decoded = None
+                        if j + 1 < horizon:
+                            decoded = _decode_observation(qwen, tokenizer, model, iz[0], device, cfg); imagined_obs = decoded
+                        imagined_steps.append({"index": j, "action": action, "transition_row": row, "decoded_observation": decoded,
+                                               "h_l2": float(ih[0].float().norm()), "z_l2": float(iz[0].float().norm())})
                     soft = torch.cat([_actor_z_soft(qwen, model, torch.zeros_like(state)[None], state[None]) for state in imagined], 0)
                     if soft.shape[0] != horizon * int(cfg["soft_tokens"]): raise RuntimeError("plan latent count mismatch")
-                    response = _generate(qwen, tokenizer, _revised_prompt(prompt, plan, horizon), soft, int(cfg["env_eval_actor_max_new_tokens"]), "<plan>")
+                    revised_prompt = _revised_prompt(prompt, plan, horizon)
+                    response = _generate(qwen, tokenizer, revised_prompt, soft, int(cfg["env_eval_actor_max_new_tokens"]), "<plan>", generation)
                     revised_ok[i] = _plan_actions(response, horizon) is not None; candidate = _action_name(response); changed[i] = candidate is not None and candidate != plan[0]; raw[i] = {"initial_plan": initial, "revised": response}
-                candidate = _action_name(response); parsed[i] = candidate is not None
+                    raw[i].update({"initial_plan_prompt": plan_prompt, "revised_prompt": revised_prompt, "plan": plan,
+                                   "initial_plan_fallback": not initial_ok[i], "imagined_steps": imagined_steps,
+                                   "soft_token_count": int(soft.shape[0]), "soft_conditioned": True,
+                                   "assistant_prefix": "<plan>"})
+                candidate = _action_name(response); candidates[i] = candidate
+                if mode != "plan_only": parsed[i] = candidate is not None
                 if parsed[i]: responses[i] = response
             previous_observations = list(observations["text"]); next_obs, rewards, dones, infos = env.step(responses)
             for i in np.flatnonzero(active):
                 info = infos[i]; valid = bool(info.get("is_action_valid", False)); action = str(info.get("action_name", "")) if valid else None
                 values["steps"] += 1; lengths[i] += 1; values["reward"] += float(rewards[i]); values["raw_parsed"] += float(parsed[i]); values["fallback"] += float(not parsed[i]); values["executed_valid"] += float(valid); values["repeated"] += float(action is not None and action == previous[i])
-                if mode == "plan6": values["initial_plan_ok"] += float(initial_ok[i]); values["revised_plan_ok"] += float(revised_ok[i]); values["action_changed"] += float(changed[i])
-                if not parsed[i]: debug.append({"mode": mode, "episode": int(i), "step": int(lengths[i] - 1), **raw[i]})
+                if mode in ("plan_only", "plan6"): values["initial_plan_ok"] += float(initial_ok[i])
+                if mode == "plan6": values["revised_plan_ok"] += float(revised_ok[i]); values["action_changed"] += float(changed[i])
+                trace = {"step": int(lengths[i] - 1), "observation": previous_observations[i],
+                         "messages": [{"role": "user", "content": previous_observations[i]}],
+                         "raw_model_output": raw[i].get("action", raw[i].get("revised", "")),
+                         "parsed_action": candidates[i] if parsed[i] else None, "parser_valid": bool(parsed[i]),
+                         "fallback_used": bool(not parsed[i]), "environment_response": responses[i],
+                         "executed_action": action, "previous_executed_action": previous[i],
+                         "repeated_action": bool(action is not None and action == previous[i]),
+                         "next_observation": str(next_obs["text"][i]), "reward": float(rewards[i]),
+                         "terminated": bool(dones[i]), "truncated": bool(lengths[i] >= int(cfg["env_episode_max_steps"]) and not dones[i]),
+                         "success": bool(info.get("won", False) or info.get("instruction_done", False)), "info": _json_safe(info),
+                         "generation": _json_safe(raw[i])}
+                action_prompt = raw[i].get("action_prompt") or raw[i].get("revised_prompt") or raw[i].get("initial_plan_prompt")
+                if action_prompt is not None:
+                    trace["rendered_chat_prompt"] = _render_chat_prompt(tokenizer, action_prompt, raw[i].get("assistant_prefix", ""))
+                traces[i]["steps"].append(trace)
                 actual = action or "NOOP"; next_h = transition_fn(qwen, tokenizer, model, _transition_row(previous_observations[i], actual), h[i:i + 1], z[i:i + 1], device, cfg); h[i] = next_h[0]; z[i] = model.prior_head(next_h).chunk(2, dim=-1)[0][0]; previous[i] = actual
-                if bool(dones[i]) or lengths[i] >= int(cfg["env_episode_max_steps"]): values["success"] += float(bool(info.get("won", False) or info.get("instruction_done", False))); active[i] = False
+                if bool(dones[i]) or lengths[i] >= int(cfg["env_episode_max_steps"]):
+                    success = bool(info.get("won", False) or info.get("instruction_done", False)); values["success"] += float(success); active[i] = False
+                    traces[i].update({"final_reward": float(sum(step["reward"] for step in traces[i]["steps"])),
+                                      "final_length": int(lengths[i]), "success": success,
+                                      "termination_info": _json_safe(info)})
             observations = next_obs
     finally:
         env.close()
-    prefix = {"base": "env/base", "z_actor": "env/z_actor", "plan6": "env/plan6"}[mode]; metrics = _summary(prefix, values, episodes)
+    prefix = {"base": "env/base", "z_actor": "env/z_actor", "plan_only": "env/plan_only", "plan6": "env/plan6"}[mode]; metrics = _summary(prefix, values, episodes)
+    if mode in ("plan_only", "plan6"):
+        metrics[f"{prefix}/initial_plan_parse_rate"] = values["initial_plan_ok"] / max(values["steps"], 1.)
     if mode == "plan6":
         denom = max(values["steps"], 1.); metrics.update({f"{prefix}/initial_plan_parse_rate": values["initial_plan_ok"] / denom, f"{prefix}/revised_plan_parse_rate": values["revised_plan_ok"] / denom, f"{prefix}/revised_action_parse_rate": values["raw_parsed"] / denom, f"{prefix}/action_changed_rate": values["action_changed"] / denom})
-    return metrics, debug
+    return metrics, traces
 
 
 @torch.no_grad()
-def run_env_validation(qwen, tokenizer, model, device, cfg: dict[str, Any], transition_fn: Callable, episodes: int | None = None, debug_path: Path | None = None) -> dict[str, float]:
+def run_env_validation(qwen, tokenizer, model, device, cfg: dict[str, Any], transition_fn: Callable, episodes: int | None = None, debug_path: Path | None = None, modes: tuple[str, ...] = ("base", "z_actor", "plan6")) -> dict[str, float]:
     if not bool(cfg.get("env_eval_enabled", False)): return {}
     cfg = dict(cfg)
     if episodes is not None: cfg["env_eval_num_episodes"] = int(episodes)
     was_training = model.training; model.eval()
     try:
-        output, debug = {}, []
-        for mode in ("base", "z_actor", "plan6"):
-            metrics, failures = _run_mode(mode, qwen, tokenizer, model, device, cfg, transition_fn); output.update(metrics); debug += failures
-        if debug_path is not None: debug_path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in debug) + ("\n" if debug else ""), encoding="utf-8")
+        output, traces = {}, []
+        for mode in modes:
+            metrics, mode_traces = _run_mode(mode, qwen, tokenizer, model, device, cfg, transition_fn); output.update(metrics); traces += mode_traces
+        if debug_path is not None:
+            debug_path.write_text(json.dumps({"metrics": output, "config": _json_safe(cfg), "episodes": traces}, ensure_ascii=False, indent=2), encoding="utf-8")
         return output
     finally:
         if was_training: model.train()
