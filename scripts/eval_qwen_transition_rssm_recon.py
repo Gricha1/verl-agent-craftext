@@ -60,6 +60,7 @@ def main() -> None:
         # Avoid retaining variable-shape generation-cache blocks while a
         # trainer occupies the other half of this A100.
         "env_eval_empty_cache_every_steps": 1,
+        "env_eval_full_latent_trace_episodes": 3,
     })
     torch.manual_seed(args.torch_seed)
     tokenizer = AutoTokenizer.from_pretrained(cfg["base_model"], trust_remote_code=True)

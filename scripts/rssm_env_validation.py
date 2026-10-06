@@ -306,7 +306,8 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                     soft = None if previous[i] is None else _actor_z_soft(qwen, model, h[i:i + 1], z[i:i + 1])
                     response = _generate(qwen, tokenizer, prompt, soft, int(cfg["env_eval_actor_max_new_tokens"]), generation=generation)
                     raw[i] = {"action": response, "action_prompt": prompt, "assistant_prefix": "", "soft_conditioned": soft is not None,
-                              "latent_h_l2": float(h[i].float().norm()), "latent_z_l2": float(z[i].float().norm())}
+                              "latent_h_l2": float(h[i].float().norm()), "latent_z_l2": float(z[i].float().norm()),
+                              "soft_token_norms": [] if soft is None else [float(value) for value in soft.float().norm(dim=-1)]}
                 elif mode == "plan_only":
                     plan_prompt = _plan_prompt(prompt, horizon)
                     initial = _generate(qwen, tokenizer, plan_prompt, None, int(cfg["env_eval_actor_max_new_tokens"]), "<plan>", generation)
@@ -329,8 +330,14 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                         decoded = None
                         if j + 1 < horizon:
                             decoded = _decode_observation(qwen, tokenizer, model, iz[0], device, cfg); imagined_obs = decoded
-                        imagined_steps.append({"index": j, "action": action, "transition_row": row, "decoded_observation": decoded,
-                                               "h_l2": float(ih[0].float().norm()), "z_l2": float(iz[0].float().norm())})
+                        imagined_row = {"index": j, "action": action, "transition_row": row, "decoded_observation": decoded,
+                                        "h_l2": float(ih[0].float().norm()), "z_l2": float(iz[0].float().norm()),
+                                        "z_mean": float(iz[0].float().mean()), "z_std": float(iz[0].float().std(unbiased=False))}
+                        # Full predicted latents are needed only for the small
+                        # fixed audit sample, not every 32x50x6 MPC step.
+                        if i < int(cfg.get("env_eval_full_latent_trace_episodes", 0)):
+                            imagined_row["predicted_z"] = [float(value) for value in iz[0].float().cpu()]
+                        imagined_steps.append(imagined_row)
                     soft = torch.cat([_actor_z_soft(qwen, model, torch.zeros_like(state)[None], state[None]) for state in imagined], 0)
                     if soft.shape[0] != horizon * int(cfg["soft_tokens"]): raise RuntimeError("plan latent count mismatch")
                     revised_prompt = _revised_prompt(prompt, plan, horizon)
@@ -339,6 +346,8 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                     raw[i].update({"initial_plan_prompt": plan_prompt, "revised_prompt": revised_prompt, "plan": plan,
                                    "initial_plan_fallback": not initial_ok[i], "imagined_steps": imagined_steps,
                                    "soft_token_count": int(soft.shape[0]), "soft_conditioned": True,
+                                   "soft_token_norms": [float(value) for value in soft.float().norm(dim=-1)],
+                                   "revised_plan": _plan_actions(response, horizon), "revised_action": _action_name(response),
                                    "assistant_prefix": "<plan>"})
                 candidate = _action_name(response); candidates[i] = candidate
                 if mode != "plan_only": parsed[i] = candidate is not None
