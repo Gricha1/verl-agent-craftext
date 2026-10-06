@@ -23,8 +23,10 @@ beta_kl: 0.1
 lambda_recon: 1.0
 validation_examples: 32
 validation_shuffle_seed: 20261005
-generation_examples: 32
-generation_max_new_tokens: 512
+# Reconstruction generations are diagnostic only; keep startup validation
+# bounded so the scheduled CrafText eval is not delayed by 32x512 decoding.
+generation_examples: 4
+generation_max_new_tokens: 128
 generation_stop_margin: 8
 log_every_steps: 5
 env_eval_enabled: true
