@@ -138,7 +138,6 @@ def _plan_actions(response: str, horizon: int) -> list[str] | None:
 
 
 def _fallback_response() -> str: return "<action>NOOP</action>"
-def _transition_row(prompt: str, action: str) -> dict[str, str]: return {"actor_prompt_t": str(prompt), "action_t": str(action)}
 
 
 def _planning_context(prompt: str) -> str:
@@ -160,29 +159,10 @@ def _plan_prompt(prompt: str, horizon: int) -> str:
 def _revised_prompt(prompt: str, plan: list[str], horizon: int) -> str:
     candidate = ",".join(plan)
     return (_planning_context(prompt) + f"\n\nCandidate plan: <plan>{candidate}</plan>. "
-            "Based on the imagined future states, output only these two tags on separate lines:\n"
+            "Based on the supplied latent imagined rollout, output only these two tags on separate lines:\n"
             f"<plan>{candidate}</plan>\n<action>UP</action>\n"
             f"The plan must contain exactly {horizon} comma-separated actions from UP, DOWN, LEFT, RIGHT. "
             "The action must be one valid action. Do not add an explanation.")
-
-
-def _imagined_prompt(task: str, observation: str, history: list[str]) -> str:
-    previous = ", ".join(history) if history else "(none)"
-    return (f"Your goal is to complete the following task:\n**TASK:** {task}\n\nImagined prior actions: {previous}\n\n"
-            f"This is what you currently see:\n{observation}\n\nChoose one action in <action> tags.")
-
-
-@torch.no_grad()
-def _decode_observation(qwen, tokenizer, model, z: torch.Tensor, device, cfg: dict[str, Any]) -> str:
-    from train_qwen_transition_rssm_recon import DECODER_INSTRUCTION
-    ids = tokenizer(DECODER_INSTRUCTION, add_special_tokens=False)["input_ids"]
-    instruction = qwen.get_input_embeddings()(torch.tensor(ids, device=device))
-    inputs = torch.cat((instruction, model.decoder_tokens(z[None])[0].to(instruction.dtype)), 0)[None]
-    result = qwen.generate(inputs_embeds=inputs, attention_mask=torch.ones(inputs.shape[:2], device=device, dtype=torch.long),
-                           do_sample=False, max_new_tokens=int(cfg["env_eval_decoder_max_new_tokens"]),
-                           eos_token_id=tokenizer.eos_token_id, pad_token_id=tokenizer.pad_token_id)
-    new_ids = result[0, inputs.shape[1]:] if result.shape[1] > inputs.shape[1] else result[0]
-    return tokenizer.decode(new_ids, skip_special_tokens=True)
 
 
 def _norm_metrics(qwen, softs: list[torch.Tensor]) -> dict[str, float]:
@@ -322,15 +302,14 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                     plan_prompt = _plan_prompt(prompt, horizon)
                     initial = _generate(qwen, tokenizer, plan_prompt, None, int(cfg["env_eval_actor_max_new_tokens"]), "<plan>", generation)
                     plan = _plan_actions(initial, horizon); initial_ok[i] = plan is not None; plan = plan or ["UP"] * horizon
-                    ih, iz, imagined = h[i:i + 1], z[i:i + 1], []; imagined_obs = str(observations["anchor"][i])
+                    # The imagined world model is intentionally latent-only:
+                    # (h,z,a) -> (h_next,z_next).  Decoding observations here
+                    # would create an observation feedback path into dynamics.
+                    ih, iz, imagined = h[i:i + 1], z[i:i + 1], []
                     imagined_steps: list[dict[str, Any]] = []
                     for j, action in enumerate(plan):
-                        row = _transition_row(prompt if j == 0 else _imagined_prompt(str(env.tasks[i]), imagined_obs, plan[:j]), action)
-                        ih = transition_fn(qwen, tokenizer, model, row, ih, iz, device, cfg); iz = model.prior_head(ih).chunk(2, dim=-1)[0]; imagined.append(iz[0])
-                        decoded = None
-                        if j + 1 < horizon:
-                            decoded = _decode_observation(qwen, tokenizer, model, iz[0], device, cfg); imagined_obs = decoded
-                        imagined_row = {"index": j, "action": action, "transition_row": row, "decoded_observation": decoded,
+                        ih = transition_fn(qwen, tokenizer, model, action, ih, iz, device, cfg); iz = model.prior_head(ih).chunk(2, dim=-1)[0]; imagined.append(iz[0])
+                        imagined_row = {"index": j, "action": action, "transition_input": "soft(h),soft(z),action",
                                         "h_l2": float(ih[0].float().norm()), "z_l2": float(iz[0].float().norm()),
                                         "z_mean": float(iz[0].float().mean()), "z_std": float(iz[0].float().std(unbiased=False))}
                         # Full predicted latents are needed only for the small
@@ -373,7 +352,7 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                 if action_prompt is not None:
                     trace["rendered_chat_prompt"] = _render_chat_prompt(tokenizer, action_prompt, raw[i].get("assistant_prefix", ""))
                 traces[i]["steps"].append(trace)
-                actual = action or "NOOP"; next_h = transition_fn(qwen, tokenizer, model, _transition_row(previous_observations[i], actual), h[i:i + 1], z[i:i + 1], device, cfg); h[i] = next_h[0]; z[i] = model.prior_head(next_h).chunk(2, dim=-1)[0][0]; previous[i] = actual
+                actual = action or "NOOP"; next_h = transition_fn(qwen, tokenizer, model, actual, h[i:i + 1], z[i:i + 1], device, cfg); h[i] = next_h[0]; z[i] = model.prior_head(next_h).chunk(2, dim=-1)[0][0]; previous[i] = actual
                 if bool(dones[i]) or lengths[i] >= int(cfg["env_episode_max_steps"]):
                     success = _is_success(info, cfg); values["success"] += float(success); active[i] = False
                     traces[i].update({"final_reward": float(sum(step["reward"] for step in traces[i]["steps"])),

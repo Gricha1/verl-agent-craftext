@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import hashlib
+import inspect
 import json
 import math
 import random
@@ -137,18 +138,21 @@ def posterior(qwen, tokenizer, model, task, observation, h, device, cfg):
     return gaussian(model.posterior_head(hidden[None])) + (hidden,)
 
 
-def transition(qwen, tokenizer, model, row, h, z, device, cfg):
-    prefix = data.actor_prefix(tokenizer, row)
-    full = data.actor_full(tokenizer, row)
-    prefix_ids = tokenizer(prefix, add_special_tokens=False)['input_ids']
-    prefix_length = len(prefix_ids)
-    ids = tokenizer(full, add_special_tokens=False, truncation=True, max_length=int(cfg['max_sequence_length']))['input_ids']
-    if ids[:prefix_length] != prefix_ids:
-        raise RuntimeError('transition action prefix must remain an exact token prefix after tokenization')
+def transition_action_ids(tokenizer, action: str) -> list[int]:
+    """The transition's only discrete input is the action plus its EOS readout."""
+    if tokenizer.eos_token_id is None:
+        raise RuntimeError('tokenizer must define eos_token_id for transition readout')
+    ids = tokenizer(f'<action>{str(action).strip().upper()}</action>', add_special_tokens=False)['input_ids']
+    return ids + [int(tokenizer.eos_token_id)]
+
+
+def transition(qwen, tokenizer, model, action: str, h, z, device, cfg):
+    """h[t+1] = F_h(Qwen(soft(h[t]), soft(z[t]), action)[EOS])."""
+    ids = transition_action_ids(tokenizer, action)
     embedding = qwen.get_input_embeddings()
     h_soft, z_soft = model.transition_tokens(h, z)
-    inputs = torch.cat((embedding(torch.tensor(ids[:prefix_length], device=device)), h_soft[0].to(embedding.weight.dtype), z_soft[0].to(embedding.weight.dtype),
-                        embedding(torch.tensor(ids[prefix_length:], device=device))), 0)[None]
+    inputs = torch.cat((h_soft[0].to(embedding.weight.dtype), z_soft[0].to(embedding.weight.dtype),
+                        embedding(torch.tensor(ids, device=device))), 0)[None]
     mask = torch.ones(inputs.shape[:2], device=device, dtype=torch.long)
     position_ids = torch.arange(inputs.shape[1], device=device)[None]
     hidden = qwen(inputs_embeds=inputs, attention_mask=mask, position_ids=position_ids, output_hidden_states=True, use_cache=False).hidden_states[-1][0, -1].float()
@@ -156,26 +160,34 @@ def transition(qwen, tokenizer, model, row, h, z, device, cfg):
 
 
 @torch.no_grad()
-def transition_layout(tokenizer, model, row, device, cfg):
+def transition_layout(tokenizer, model, action, device, cfg):
     """Explicitly record the token layout used by the transition forward."""
-    prefix_ids = tokenizer(data.actor_prefix(tokenizer, row), add_special_tokens=False)['input_ids']
-    full_ids = tokenizer(data.actor_full(tokenizer, row), add_special_tokens=False, truncation=True,
-                         max_length=int(cfg['max_sequence_length']))['input_ids']
+    action_ids = transition_action_ids(tokenizer, action)
     h = torch.zeros(1, int(cfg['latent_h_dim']), device=device)
     z = torch.zeros(1, int(cfg['latent_z_dim']), device=device)
     h_soft, z_soft = model.transition_tokens(h, z)
-    total = len(full_ids) + h_soft.shape[1] + z_soft.shape[1]
+    total = len(action_ids) + h_soft.shape[1] + z_soft.shape[1]
     return {
         'h_soft.shape': list(h_soft.shape), 'z_soft.shape': list(z_soft.shape),
         'transition_latent_soft_tokens_total': int(h_soft.shape[1] + z_soft.shape[1]),
         'posterior_soft_tokens_total': int(model.posterior_tokens(h).shape[1]),
         'decoder_soft_tokens_total': int(model.decoder_tokens(z).shape[1]),
-        'transition_prefix_tokens': len(prefix_ids), 'transition_action_tokens': len(full_ids) - len(prefix_ids),
-        'transition_soft_insertion_after_prefix': len(prefix_ids), 'transition_sequence_length': total,
+        'transition_input': 'soft(h_t) x5 + soft(z_t) x5 + action(a_t) + EOS',
+        'transition_observation_tokens': 0, 'transition_action_tokens': len(action_ids) - 1,
+        'transition_eos_tokens': 1, 'transition_sequence_length': total,
         'transition_attention_mask_length': total, 'transition_attention_mask_all_ones': True,
         'transition_position_ids': '0..sequence_length-1', 'transition_labels': None,
         'decoder_labels_instruction_and_soft_are_ignore_index': True,
     }
+
+
+def assert_action_only_transition() -> None:
+    """Fail closed if a future edit reintroduces serialized actor observations."""
+    source = inspect.getsource(transition)
+    forbidden = ('actor_prompt_t', 'observation_t', 'actor_prefix', 'actor_full')
+    present = [name for name in forbidden if name in source]
+    if present:
+        raise RuntimeError(f'action-only transition invariant violated: {present}')
 
 
 def reconstruction(qwen, tokenizer, model, observations, z, device, max_length, no_soft=False):
@@ -244,7 +256,7 @@ def validation_states(qwen, tokenizer, model, chunks, device, cfg):
         qm, _, _, _ = posterior(qwen, tokenizer, model, task, str(rows[0]['observation_t']), h[0], device, cfg)
         z = qm
         for row in rows:
-            h = transition(qwen, tokenizer, model, row, h, z, device, cfg)
+            h = transition(qwen, tokenizer, model, str(row['action_t']), h, z, device, cfg)
             pm, ps, _ = gaussian(model.prior_head(h))
             qm, qs, _ql, _ = posterior(qwen, tokenizer, model, task, str(row['observation_t_plus_1']), h[0], device, cfg)
             states.append({'task': task, 'observation': str(row['observation_t_plus_1']), 'h': h[0], 'prior_mu': pm[0], 'prior_std': ps[0], 'posterior_mu': qm[0], 'posterior_std': qs[0]})
@@ -287,8 +299,11 @@ def validate(qwen, tokenizer, model, chunks, device, cfg):
 
 
 def should_validate(step, cfg):
+    explicit_steps = cfg.get('env_eval_steps')
+    if explicit_steps is not None:
+        return int(step) in {int(value) for value in explicit_steps}
     every = int(cfg.get('env_eval_every_steps', 1000))
-    return step in (500, 1000) or (step > 1000 and step % every == 0)
+    return step == 0 or (step > 0 and step % every == 0)
 
 
 def main():
@@ -311,7 +326,9 @@ def main():
     root.mkdir(parents=True, exist_ok=False)
     commit = args.source_commit or subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
     info = {'git_commit': commit, 'train_transitions': len(train_rows), 'val_transitions': len(val_rows), 'test_transitions': len(test_rows),
-            'train_chunks': len(train_chunks), 'val_chunks': len(val_chunks), 'effective_optimizer_batch': int(cfg['train_batch_size'])}
+            'train_chunks': len(train_chunks), 'val_chunks': len(val_chunks), 'effective_optimizer_batch': int(cfg['train_batch_size']),
+            'transition_observation_tokens': 0, 'transition_interface': 'soft_h_x5_soft_z_x5_action_eos'}
+    assert_action_only_transition()
     (root / 'resolved_config.yaml').write_text(yaml.safe_dump({**cfg, **info, 'run_name': args.run_name}, sort_keys=True))
     (root / 'splits.json').write_text(json.dumps(info, indent=2))
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(cfg['learning_rate']), weight_decay=float(cfg['weight_decay']))
@@ -322,13 +339,13 @@ def main():
     else:
         from comet_ml import Experiment
         comet = Experiment(workspace=cfg['comet_workspace'], project_name=cfg['comet_project'], auto_output_logging='simple')
-    comet.set_name(args.run_name); comet.add_tags(['rssm', 'reconstruction', 'frozen_qwen', 'no_auxiliary_loss'])
+    comet.set_name(args.run_name); comet.add_tags(['rssm', 'reconstruction', 'frozen_qwen', 'no_auxiliary_loss', 'action_only_transition'])
     comet.log_parameters({**cfg, **info, 'trainable_parameters': trainable})
     # Make startup observable independently of the considerably more expensive
     # environment validation below.
     comet.log_metric('run/started', 1.0, step=0)
 
-    def log_validation(step, env_episodes=None, label=''):
+    def log_validation(step, env_episodes=None, label='', modes=('z_actor', 'plan6'), cached_env_metrics=None):
         suffix = f'_{label}' if label else ''
         metrics, examples, diagnostic = validate(qwen, tokenizer, model, val_chunks, device, cfg)
         metrics.update({f'val/{key}': value for key, value in diagnostic.items()})
@@ -341,14 +358,28 @@ def main():
         print(json.dumps({'step': step, **metrics}), flush=True)
         comet.log_metrics(metrics, step=step)
         # This is evaluation only: no replay writes, no optimizer step and no actor/RL loss.
-        env_metrics = run_env_validation(
-            qwen, tokenizer, model, device, cfg, transition, episodes=env_episodes,
-            debug_path=root / f'env_parse_failures_step_{step}{suffix}.jsonl',
-        )
+        env_metrics = dict(cached_env_metrics or {})
+        if modes:
+            env_metrics.update(run_env_validation(
+                qwen, tokenizer, model, device, cfg, transition, episodes=env_episodes,
+                debug_path=root / f'env_parse_failures_step_{step}{suffix}.jsonl', modes=tuple(modes),
+            ))
         metrics.update(env_metrics)
         (root / f'validation_step_{step}{suffix}.json').write_text(json.dumps(metrics, indent=2))
         print(json.dumps({'step': step, **env_metrics}), flush=True)
         comet.log_metrics(env_metrics, step=step)
+        return metrics
+
+    def cached_final_base() -> dict[str, float]:
+        """Base does not use a checkpoint; run its 32 fixed seeds exactly once."""
+        path = root / 'env_base_final_32_cached.json'
+        if path.exists():
+            return json.loads(path.read_text())
+        episodes = int(cfg.get('env_eval_num_episodes_final', cfg['env_eval_num_episodes']))
+        metrics = run_env_validation(qwen, tokenizer, model, device, cfg, transition, episodes=episodes,
+                                     debug_path=root / 'env_base_final_32.jsonl', modes=('base',))
+        path.write_text(json.dumps(metrics, indent=2))
+        return metrics
 
     if args.interface_sanity_smoke:
         # Dataset actor_prompt_t is the exact production prompt serialized by
@@ -378,7 +409,7 @@ def main():
         comet.log_metrics(env_metrics, step=0)
         comet.end()
         return
-    log_validation(0)
+    log_validation(0, modes=('z_actor', 'plan6'))
     step = 0
     limit = args.smoke_steps or int(cfg['max_optimizer_steps'])
     for _epoch in range(int(cfg['epochs'])):
@@ -394,7 +425,7 @@ def main():
                 # numerical inputs for this transition, independent of earlier
                 # transition graphs.
                 reconstruction_inputs.append((row, h.detach(), z.detach()))
-                h = transition(qwen, tokenizer, model, row, h, z, device, cfg)
+                h = transition(qwen, tokenizer, model, str(row['action_t']), h, z, device, cfg)
                 pm, ps, pl = gaussian(model.prior_head(h))
                 qm, qs, ql, _ = posterior(qwen, tokenizer, model, task, str(row['observation_t_plus_1']), h[0], device, cfg)
                 raw_values.append(kl(qm, qs, pm, ps)); dyn_values.append(kl(qm.detach(), qs.detach(), pm, ps)); rep_values.append(kl(qm, qs, pm.detach(), ps.detach()))
@@ -431,7 +462,7 @@ def main():
                 targets, reconstruction_inputs, target_token_counts,
             ):
                 reconstruction_h = transition(
-                    qwen, tokenizer, model, reconstruction_row,
+                    qwen, tokenizer, model, str(reconstruction_row['action_t']),
                     reconstruction_h, reconstruction_z, device, cfg,
                 )
                 reconstruction_mu, _reconstruction_std, _reconstruction_logstd, _ = posterior(
@@ -458,7 +489,7 @@ def main():
                 raise RuntimeError('prior_head received zero gradient despite unclamped KL < 1')
             qwen_has_grad = any(parameter.grad is not None for parameter in qwen.parameters())
             if step == 0:
-                sanity = {**transition_layout(tokenizer, model, rows[0], device, cfg), 'gradients': components, 'frozen_qwen_has_grad': qwen_has_grad, 'decoder_input': 'z_post_only',
+                sanity = {**transition_layout(tokenizer, model, str(rows[0]['action_t']), device, cfg), 'gradients': components, 'frozen_qwen_has_grad': qwen_has_grad, 'decoder_input': 'z_post_only',
                           'observation_in_decoder_conditioning': False, 'observation_is_autoregressive_target': True}
                 (root / 'sanity.json').write_text(json.dumps(sanity, indent=2))
                 print(json.dumps({'sanity': sanity}), flush=True)
@@ -474,13 +505,14 @@ def main():
                        **{f'train/grad_preclip/{name}': value for name, value in components.items()}}
             if step == 1 or step % int(cfg['log_every_steps']) == 0:
                 print(json.dumps({'step': step, **metrics}), flush=True); comet.log_metrics(metrics, step=step)
-            if should_validate(step, cfg): log_validation(step)
+            if should_validate(step, cfg): log_validation(step, modes=('z_actor', 'plan6'))
             if step >= limit: break
         if step >= limit: break
-    if not should_validate(step, cfg): log_validation(step)
-    # The training schedule uses eight fixed episodes; the final checkpoint is
-    # measured once more on the requested 32 fixed episodes.
-    log_validation(step, env_episodes=int(cfg.get('env_eval_num_episodes_final', cfg['env_eval_num_episodes'])), label='final')
+    # Base is invariant to the checkpoint, so cache it once.  The selected
+    # final checkpoint is then compared fairly on the same 32 fixed seeds.
+    base_metrics = cached_final_base()
+    log_validation(step, env_episodes=int(cfg.get('env_eval_num_episodes_final', cfg['env_eval_num_episodes'])),
+                   label='final', modes=('z_actor', 'plan6'), cached_env_metrics=base_metrics)
     torch.save({'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, root / 'final.pt')
     comet.end()
 
