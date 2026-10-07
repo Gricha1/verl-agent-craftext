@@ -5,9 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from collections import defaultdict
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+os.environ.setdefault('CAGED_CRAFTEXT_PATH', str(REPO_ROOT / 'caged_craftext'))
 os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 from agent_system.environments.env_package.caged_craftext.envs import CagedCraftextWorker
 from agent_system.environments.env_package.caged_craftext.projection import ACTION_TO_TEXT
