@@ -1,5 +1,5 @@
 base_model: /home/gorbov_gv/models/qwen2.5-1.5b-instruct
-dataset_dir: /home/gorbov_gv/latent_wm/dataset_reward_restored_20261007
+dataset_dir: /home/gorbov_gv/latent_wm/dataset_reward_collected_20261007
 output_root: /home/gorbov_gv/latent_wm/runs
 seed: 20261002
 split_seed: 20261001

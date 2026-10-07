@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Collect reward-free CrafText transitions from the untrained Qwen actor.
+"""Collect CrafText transitions with reward labels for a world model.
 
 The collector deliberately uses ``make_envs`` and therefore the production
 ``CagedCraftextEnvironmentManager`` for prompt construction, action parsing,
 reasoning memory, and invalid-action behaviour.  It only persists the actor
-trajectory; environment rewards are neither written nor consulted.
+trajectory; it records the environment reward and continuation at interaction
+time, avoiding any need to replay a historical environment later.
 """
 from __future__ import annotations
 
@@ -268,7 +269,7 @@ def main() -> None:
                         index: [str(record.get("action", "")) for record in envs.memory[index][-50:]]
                         for index in active_indices
                     }
-                    next_observations, _rewards, dones, step_infos = envs.step(responses)
+                    next_observations, rewards, dones, step_infos = envs.step(responses)
                     dones = np.asarray(dones, dtype=bool)
                     for index in active_indices:
                         info = step_infos[index]
@@ -291,6 +292,8 @@ def main() -> None:
                             "action_t": parsed_action if action_id >= 0 else "INVALID_ACTION",
                             "action_parse_error": bool(not info.get("is_action_valid", False)),
                             "observation_t_plus_1": str(next_observations["anchor"][index]),
+                            "reward": float(rewards[index]),
+                            "continuation": float(not bool(dones[index])),
                             "env_done": bool(dones[index]),
                             "terminated": bool(dones[index] and (local_steps[index] + 1) < int(args.max_steps)),
                             "truncated": bool((local_steps[index] + 1) >= int(args.max_steps)),
