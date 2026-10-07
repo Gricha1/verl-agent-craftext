@@ -94,6 +94,14 @@ def _actor_z_soft(qwen, model, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor
     return _normalise_actor_soft(qwen, soft)
 
 
+def _actor_hz_soft(qwen, model, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+    """The HZ policy interface: five state tokens followed by five z tokens."""
+    h_soft, z_soft = model.transition_tokens(h, z)
+    if h_soft.shape[1] != model.k or z_soft.shape[1] != model.k:
+        raise RuntimeError("HZ actor interface must contain five h and five z soft tokens")
+    return torch.cat((_normalise_actor_soft(qwen, h_soft[0]), _normalise_actor_soft(qwen, z_soft[0])), 0)
+
+
 @torch.no_grad()
 def _generate(qwen, tokenizer, prompt: str, soft: torch.Tensor | None, max_new_tokens: int,
               assistant_prefix: str = "", generation: dict[str, Any] | None = None) -> str:
@@ -156,6 +164,20 @@ def _plan_prompt(prompt: str, horizon: int) -> str:
             "Do not use an <action> tag and do not add an explanation.")
 
 
+def _task_actor_prompt(task: str) -> str:
+    """Policy text deliberately contains task only: no real or decoded observation."""
+    return (f"Your goal is to complete the following task:\n**TASK:** {task}\n\n"
+            "The current world state is supplied only as latent soft tokens. "
+            "Choose one available action and output exactly <action>ACTION</action>.")
+
+
+def _task_plan_prompt(task: str, horizon: int) -> str:
+    return (_task_actor_prompt(task) + "\nPlan from the supplied latent state, not from an observation. "
+            "Output only one tag exactly in this format: "
+            "<plan>UP,LEFT,LEFT,DOWN,RIGHT,UP</plan>. "
+            f"It must contain exactly {horizon} comma-separated actions from UP, DOWN, LEFT, RIGHT.")
+
+
 def _revised_prompt(prompt: str, plan: list[str], horizon: int) -> str:
     candidate = ",".join(plan)
     return (_planning_context(prompt) + f"\n\nCandidate plan: <plan>{candidate}</plan>. "
@@ -163,6 +185,14 @@ def _revised_prompt(prompt: str, plan: list[str], horizon: int) -> str:
             f"<plan>{candidate}</plan>\n<action>UP</action>\n"
             f"The plan must contain exactly {horizon} comma-separated actions from UP, DOWN, LEFT, RIGHT. "
             "The action must be one valid action. Do not add an explanation.")
+
+
+def _task_revised_prompt(task: str, plan: list[str], horizon: int) -> str:
+    candidate = ",".join(plan)
+    return (_task_actor_prompt(task) + f"\nCandidate plan: <plan>{candidate}</plan>. "
+            "Using only the supplied sequence of latent imagined states, output these two tags:\n"
+            f"<plan>{candidate}</plan>\n<action>UP</action>\n"
+            f"The plan must have exactly {horizon} actions from UP, DOWN, LEFT, RIGHT.")
 
 
 def _norm_metrics(qwen, softs: list[torch.Tensor]) -> dict[str, float]:
@@ -261,7 +291,8 @@ def _is_success(info: dict[str, Any], cfg: dict[str, Any]) -> bool:
 
 
 @torch.no_grad()
-def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], transition_fn: Callable) -> tuple[dict[str, float], list[dict[str, Any]]]:
+def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], transition_fn: Callable,
+              posterior_fn: Callable | None = None) -> tuple[dict[str, float], list[dict[str, Any]]]:
     episodes, horizon = int(cfg["env_eval_num_episodes"]), int(cfg["plan_horizon"])
     seeds = [int(cfg["env_eval_seed"]) + index for index in range(episodes)]
     env_cfg = _env_config(cfg); env = CagedCraftextEnvironmentManager(_LocalCagedVector(env_cfg, seeds), craftext_projection, env_cfg)
@@ -272,6 +303,12 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
     try:
         observations, _ = env.reset({}); active = np.ones(episodes, dtype=bool); lengths = np.zeros(episodes, dtype=np.int64)
         h = torch.zeros(episodes, int(cfg["latent_h_dim"]), device=device); z = torch.zeros(episodes, int(cfg["latent_z_dim"]), device=device)
+        if mode in ("hz_actor", "plan6_hz"):
+            if posterior_fn is None:
+                raise RuntimeError("HZ evaluation requires posterior_fn for z_t | h_t,o_t")
+            for i in range(episodes):
+                qm, _qs, _ql, _hidden = posterior_fn(qwen, tokenizer, model, str(env.tasks[i]), str(observations["anchor"][i]), h[i], device, cfg)
+                z[i] = qm[0]
         previous: list[str | None] = [None] * episodes
         while active.any():
             responses = [_fallback_response()] * episodes; parsed = [False] * episodes; candidates: list[str | None] = [None] * episodes
@@ -288,6 +325,13 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                     raw[i] = {"action": response, "action_prompt": prompt, "assistant_prefix": "", "soft_conditioned": soft is not None,
                               "latent_h_l2": float(h[i].float().norm()), "latent_z_l2": float(z[i].float().norm()),
                               "soft_token_norms": [] if soft is None else [float(value) for value in soft.float().norm(dim=-1)]}
+                elif mode == "hz_actor":
+                    task = str(env.tasks[i]); soft = _actor_hz_soft(qwen, model, h[i:i + 1], z[i:i + 1])
+                    actor_prompt = _task_actor_prompt(task)
+                    response = _generate(qwen, tokenizer, actor_prompt, soft, int(cfg["env_eval_actor_max_new_tokens"]), generation=generation)
+                    raw[i] = {"task": task, "action": response, "action_prompt": actor_prompt, "assistant_prefix": "", "soft_conditioned": True,
+                              "actor_observation_tokens": 0, "latent_h_l2": float(h[i].float().norm()), "latent_z_l2": float(z[i].float().norm()),
+                              "soft_token_norms": [float(value) for value in soft.float().norm(dim=-1)]}
                 elif mode == "plan_only":
                     plan_prompt = _plan_prompt(prompt, horizon)
                     initial = _generate(qwen, tokenizer, plan_prompt, None, int(cfg["env_eval_actor_max_new_tokens"]), "<plan>", generation)
@@ -298,9 +342,11 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                               "plan_fallback": not initial_ok[i], "action": response, "action_prompt": None,
                               "assistant_prefix": "<plan>", "soft_conditioned": False,
                               "policy_action_source": "initial_plan[0]"}
-                else:
-                    plan_prompt = _plan_prompt(prompt, horizon)
-                    initial = _generate(qwen, tokenizer, plan_prompt, None, int(cfg["env_eval_actor_max_new_tokens"]), "<plan>", generation)
+                elif mode in ("plan6", "plan6_hz"):
+                    task = str(env.tasks[i]); hz = mode == "plan6_hz"
+                    plan_prompt = _task_plan_prompt(task, horizon) if hz else _plan_prompt(prompt, horizon)
+                    initial_soft = _actor_hz_soft(qwen, model, h[i:i + 1], z[i:i + 1]) if hz else None
+                    initial = _generate(qwen, tokenizer, plan_prompt, initial_soft, int(cfg["env_eval_actor_max_new_tokens"]), "<plan>", generation)
                     plan = _plan_actions(initial, horizon); initial_ok[i] = plan is not None; plan = plan or ["UP"] * horizon
                     # The imagined world model is intentionally latent-only:
                     # (h,z,a) -> (h_next,z_next).  Decoding observations here
@@ -315,11 +361,25 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                         # Full predicted latents are needed only for the small
                         # fixed audit sample, not every 32x50x6 MPC step.
                         if i < int(cfg.get("env_eval_full_latent_trace_episodes", 0)):
+                            imagined_row["predicted_h"] = [float(value) for value in ih[0].float().cpu()]
                             imagined_row["predicted_z"] = [float(value) for value in iz[0].float().cpu()]
                         imagined_steps.append(imagined_row)
-                    soft = torch.cat([_actor_z_soft(qwen, model, torch.zeros_like(state)[None], state[None]) for state in imagined], 0)
-                    if soft.shape[0] != horizon * int(cfg["soft_tokens"]): raise RuntimeError("plan latent count mismatch")
-                    revised_prompt = _revised_prompt(prompt, plan, horizon)
+                    if hz:
+                        # Preserve every pair (h_0,z_0) ... (h_6,z_6), not decoded text.
+                        pairs = [(h[i:i + 1], z[i:i + 1])]
+                        ih2, iz2 = h[i:i + 1], z[i:i + 1]
+                        for action in plan:
+                            ih2 = transition_fn(qwen, tokenizer, model, action, ih2, iz2, device, cfg)
+                            iz2 = model.prior_head(ih2).chunk(2, dim=-1)[0]
+                            pairs.append((ih2, iz2))
+                        soft = torch.cat([_actor_hz_soft(qwen, model, state_h, state_z) for state_h, state_z in pairs], 0)
+                        expected = (horizon + 1) * 2 * int(cfg["soft_tokens"])
+                        if soft.shape[0] != expected: raise RuntimeError("HZ plan latent count mismatch")
+                        revised_prompt = _task_revised_prompt(task, plan, horizon)
+                    else:
+                        soft = torch.cat([_actor_z_soft(qwen, model, torch.zeros_like(state)[None], state[None]) for state in imagined], 0)
+                        if soft.shape[0] != horizon * int(cfg["soft_tokens"]): raise RuntimeError("plan latent count mismatch")
+                        revised_prompt = _revised_prompt(prompt, plan, horizon)
                     response = _generate(qwen, tokenizer, revised_prompt, soft, int(cfg["env_eval_actor_max_new_tokens"]), "<plan>", generation)
                     revised_ok[i] = _plan_actions(response, horizon) is not None; candidate = _action_name(response); changed[i] = candidate is not None and candidate != plan[0]; raw[i] = {"initial_plan": initial, "revised": response}
                     raw[i].update({"initial_plan_prompt": plan_prompt, "revised_prompt": revised_prompt, "plan": plan,
@@ -327,7 +387,12 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                                    "soft_token_count": int(soft.shape[0]), "soft_conditioned": True,
                                    "soft_token_norms": [float(value) for value in soft.float().norm(dim=-1)],
                                    "revised_plan": _plan_actions(response, horizon), "revised_action": _action_name(response),
-                                   "assistant_prefix": "<plan>"})
+                                   "assistant_prefix": "<plan>", "task": task, "actor_observation_tokens": 0 if hz else None})
+                    if hz and i < int(cfg.get("env_eval_full_latent_trace_episodes", 0)):
+                        raw[i]["current_h"] = [float(value) for value in h[i].float().cpu()]
+                        raw[i]["current_z"] = [float(value) for value in z[i].float().cpu()]
+                else:
+                    raise RuntimeError(f"unknown validation mode: {mode}")
                 candidate = _action_name(response); candidates[i] = candidate
                 if mode != "plan_only": parsed[i] = candidate is not None
                 if parsed[i]: responses[i] = response
@@ -335,8 +400,8 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
             for i in np.flatnonzero(active):
                 info = infos[i]; valid = bool(info.get("is_action_valid", False)); action = str(info.get("action_name", "")) if valid else None
                 values["steps"] += 1; lengths[i] += 1; values["reward"] += float(rewards[i]); values["raw_parsed"] += float(parsed[i]); values["fallback"] += float(not parsed[i]); values["executed_valid"] += float(valid); values["repeated"] += float(action is not None and action == previous[i])
-                if mode in ("plan_only", "plan6"): values["initial_plan_ok"] += float(initial_ok[i])
-                if mode == "plan6": values["revised_plan_ok"] += float(revised_ok[i]); values["action_changed"] += float(changed[i])
+                if mode in ("plan_only", "plan6", "plan6_hz"): values["initial_plan_ok"] += float(initial_ok[i])
+                if mode in ("plan6", "plan6_hz"): values["revised_plan_ok"] += float(revised_ok[i]); values["action_changed"] += float(changed[i])
                 trace = {"step": int(lengths[i] - 1), "observation": previous_observations[i],
                          "messages": [{"role": "user", "content": previous_observations[i]}],
                          "raw_model_output": raw[i].get("action", raw[i].get("revised", "")),
@@ -352,7 +417,13 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                 if action_prompt is not None:
                     trace["rendered_chat_prompt"] = _render_chat_prompt(tokenizer, action_prompt, raw[i].get("assistant_prefix", ""))
                 traces[i]["steps"].append(trace)
-                actual = action or "NOOP"; next_h = transition_fn(qwen, tokenizer, model, actual, h[i:i + 1], z[i:i + 1], device, cfg); h[i] = next_h[0]; z[i] = model.prior_head(next_h).chunk(2, dim=-1)[0][0]; previous[i] = actual
+                actual = action or "NOOP"; next_h = transition_fn(qwen, tokenizer, model, actual, h[i:i + 1], z[i:i + 1], device, cfg); h[i] = next_h[0]
+                if mode in ("hz_actor", "plan6_hz"):
+                    qm, _qs, _ql, _hidden = posterior_fn(qwen, tokenizer, model, str(env.tasks[i]), str(next_obs["anchor"][i]), next_h[0], device, cfg)
+                    z[i] = qm[0]
+                else:
+                    z[i] = model.prior_head(next_h).chunk(2, dim=-1)[0][0]
+                previous[i] = actual
                 if bool(dones[i]) or lengths[i] >= int(cfg["env_episode_max_steps"]):
                     success = _is_success(info, cfg); values["success"] += float(success); active[i] = False
                     traces[i].update({"final_reward": float(sum(step["reward"] for step in traces[i]["steps"])),
@@ -368,16 +439,19 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                     torch.cuda.empty_cache()
     finally:
         env.close()
-    prefix = {"base": "env/base", "z_actor": "env/z_actor", "plan_only": "env/plan_only", "plan6": "env/plan6"}[mode]; metrics = _summary(prefix, values, episodes)
-    if mode in ("plan_only", "plan6"):
+    prefix = {"base": "env/base", "z_actor": "env/z_actor", "hz_actor": "env/hz_actor", "plan_only": "env/plan_only", "plan6": "env/plan6", "plan6_hz": "env/plan6_hz"}[mode]; metrics = _summary(prefix, values, episodes)
+    if mode in ("plan_only", "plan6", "plan6_hz"):
         metrics[f"{prefix}/initial_plan_parse_rate"] = values["initial_plan_ok"] / max(values["steps"], 1.)
-    if mode == "plan6":
+    if mode in ("plan6", "plan6_hz"):
         denom = max(values["steps"], 1.); metrics.update({f"{prefix}/initial_plan_parse_rate": values["initial_plan_ok"] / denom, f"{prefix}/revised_plan_parse_rate": values["revised_plan_ok"] / denom, f"{prefix}/revised_action_parse_rate": values["raw_parsed"] / denom, f"{prefix}/action_changed_rate": values["action_changed"] / denom})
     return metrics, traces
 
 
 @torch.no_grad()
-def run_env_validation(qwen, tokenizer, model, device, cfg: dict[str, Any], transition_fn: Callable, episodes: int | None = None, debug_path: Path | None = None, modes: tuple[str, ...] = ("base", "z_actor", "plan6")) -> dict[str, float]:
+def run_env_validation(qwen, tokenizer, model, device, cfg: dict[str, Any], transition_fn: Callable,
+                       episodes: int | None = None, debug_path: Path | None = None,
+                       modes: tuple[str, ...] = ("base", "z_actor", "plan6"),
+                       posterior_fn: Callable | None = None) -> dict[str, float]:
     if not bool(cfg.get("env_eval_enabled", False)): return {}
     cfg = dict(cfg)
     if episodes is not None: cfg["env_eval_num_episodes"] = int(episodes)
@@ -385,7 +459,7 @@ def run_env_validation(qwen, tokenizer, model, device, cfg: dict[str, Any], tran
     try:
         output, traces = {}, []
         for mode in modes:
-            metrics, mode_traces = _run_mode(mode, qwen, tokenizer, model, device, cfg, transition_fn)
+            metrics, mode_traces = _run_mode(mode, qwen, tokenizer, model, device, cfg, transition_fn, posterior_fn)
             output.update(metrics); traces += mode_traces
             # Persist completed modes independently: an expensive later Plan6
             # pass must not hide already-audited Base/Z/PlanOnly evidence.
