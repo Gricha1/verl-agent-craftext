@@ -19,11 +19,12 @@ def main() -> None:
     parser.add_argument('--run-dir', required=True)
     parser.add_argument('--checkpoint', required=True)
     parser.add_argument('--episodes', type=int, default=8)
+    parser.add_argument('--seed', type=int, default=20261001)
     parser.add_argument('--device', default='cuda:0')
     args = parser.parse_args()
     root = Path(args.run_dir)
     cfg = yaml.safe_load((root / 'resolved_config.yaml').read_text())
-    cfg.update({'env_eval_enabled': True, 'env_eval_num_episodes': int(args.episodes),
+    cfg.update({'env_eval_enabled': True, 'env_eval_num_episodes': int(args.episodes), 'env_eval_seed': int(args.seed),
                 'env_eval_full_latent_trace_episodes': min(3, int(args.episodes))})
     device = torch.device(args.device)
     tokenizer = AutoTokenizer.from_pretrained(cfg['base_model'], trust_remote_code=True)
