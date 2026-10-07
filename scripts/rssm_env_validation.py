@@ -166,9 +166,12 @@ def _plan_prompt(prompt: str, horizon: int) -> str:
 
 def _task_actor_prompt(task: str) -> str:
     """Policy text deliberately contains task only: no real or decoded observation."""
+    action_names = ", ".join(str(name) for name in ACTION_TO_TEXT)
     return (f"Your goal is to complete the following task:\n**TASK:** {task}\n\n"
             "The current world state is supplied only as latent soft tokens. "
-            "Choose one available action and output exactly <action>ACTION</action>.")
+            f"Choose exactly one of these available actions: {action_names}. "
+            "Output exactly one tag in this form: <action>ACTION</action>. "
+            "Do not add an explanation.")
 
 
 def _task_plan_prompt(task: str, horizon: int) -> str:

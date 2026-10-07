@@ -34,7 +34,9 @@ def main() -> None:
     by_episode: dict[int, list[dict]] = defaultdict(list)
     for row in rows: by_episode[int(row['episode_id'])].append(row)
     for episode in by_episode.values(): episode.sort(key=lambda row: int(row['step']))
-    inverse_actions = {str(name): int(action_id) for action_id, name in ACTION_TO_TEXT.items()}
+    # The CrafText projection is an ordered tuple (not an id->name mapping).
+    # Keep the numeric ids exactly aligned with the collector/evaluator.
+    inverse_actions = {str(name): action_id for action_id, name in enumerate(ACTION_TO_TEXT)}
     workers: dict[int, CagedCraftextWorker] = {}
     env_kwargs = {'config_name': args.settings, 'use_debug_square_map': True,
                   'observation_type': 'ascii', 'encode_form': 'embedding'}
