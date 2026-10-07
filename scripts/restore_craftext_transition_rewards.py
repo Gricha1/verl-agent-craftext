@@ -48,15 +48,18 @@ def main() -> None:
                 episode = by_episode[episode_id]
                 seed = int(episode[0]['environment_worker_seed'])
                 worker = workers.setdefault(seed, CagedCraftextWorker(seed=seed, env_kwargs=env_kwargs))
-                initial = str(episode[0]['observation_t'])
-                matches = []
-                for scenario in range(3):
-                    observation, info = worker.reset(scenario_idx=scenario, return_render=False)
-                    if observation_from_reset(observation, info) == initial:
-                        matches.append(scenario)
+                # reset() advances a per-worker counter which is part of the
+                # world seed.  Never probe candidate scenarios by resetting:
+                # that would make the replay diverge.  The saved task is the
+                # collector's exact instruction and uniquely identifies the
+                # scenario without advancing that counter.
+                task = str(episode[0]['task'])
+                instructions = worker.wrapper.scenario_handler.scenario_data.instructions_list
+                matches = [scenario for scenario, instruction in enumerate(instructions)
+                           if str(instruction) == task]
                 if len(matches) != 1:
-                    raise RuntimeError(f'episode {episode_id}: expected exactly one matching scenario, found {matches}')
-                # Reset once more into the verified scenario before replaying its actions.
+                    raise RuntimeError(f'episode {episode_id}: task does not uniquely identify scenario: {matches}')
+                # One reset per saved episode, in original worker order.
                 observation, info = worker.reset(scenario_idx=matches[0], return_render=False)
                 current = observation_from_reset(observation, info)
                 for row in episode:
