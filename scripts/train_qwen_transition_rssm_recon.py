@@ -18,6 +18,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import yaml
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -80,7 +81,7 @@ class Chunks(Dataset):
 
 
 class QwenTransitionRSSMRecon(nn.Module):
-    """Qwen is the transition model; the reconstruction decoder sees only z."""
+    """Qwen RSSM with an action-only transition and optional reward heads."""
     def __init__(self, cfg, d_model):
         super().__init__()
         h, z, k = int(cfg['latent_h_dim']), int(cfg['latent_z_dim']), int(cfg['soft_tokens'])
@@ -93,6 +94,13 @@ class QwenTransitionRSSMRecon(nn.Module):
         self.posterior_head = nn.Sequential(nn.Linear(d_model, h), nn.GELU(), nn.Linear(h, 2 * z))
         # Freshly initialized: no autoencoder weights are transferred here.
         self.decoder_z_projector = nn.Sequential(nn.Linear(z, z), nn.GELU(), nn.Linear(z, k * d_model))
+        self.decoder_uses_h = bool(cfg.get('decoder_uses_h', False))
+        self.reward_continuation_heads = bool(cfg.get('reward_continuation_heads', False))
+        if self.decoder_uses_h:
+            self.decoder_h_projector = nn.Sequential(nn.Linear(h, h), nn.GELU(), nn.Linear(h, k * d_model))
+        if self.reward_continuation_heads:
+            self.reward_head = nn.Sequential(nn.Linear(h + z, h), nn.GELU(), nn.Linear(h, 1))
+            self.continuation_head = nn.Sequential(nn.Linear(h + z, h), nn.GELU(), nn.Linear(h, 1))
         self.k, self.d_model = k, d_model
         self.register_buffer('soft_token_target_rms', torch.tensor(float(cfg['soft_token_target_rms'])))
         with torch.no_grad():
@@ -103,10 +111,13 @@ class QwenTransitionRSSMRecon(nn.Module):
             transition_z_rms = self.transition_z_projector(probe_z).float().square().mean().sqrt()
             posterior_rms = self.posterior_h_projector(probe_h).float().square().mean().sqrt()
             decoder_rms = self.decoder_z_projector(probe_z).float().square().mean().sqrt()
+            decoder_h_rms = self.decoder_h_projector(probe_h).float().square().mean().sqrt() if self.decoder_uses_h else None
         self.register_buffer('transition_h_soft_token_gain', self.soft_token_target_rms / transition_h_rms.clamp_min(1e-8))
         self.register_buffer('transition_z_soft_token_gain', self.soft_token_target_rms / transition_z_rms.clamp_min(1e-8))
         self.register_buffer('posterior_soft_token_gain', self.soft_token_target_rms / posterior_rms.clamp_min(1e-8))
         self.register_buffer('decoder_soft_token_gain', self.soft_token_target_rms / decoder_rms.clamp_min(1e-8))
+        if self.decoder_uses_h:
+            self.register_buffer('decoder_h_soft_token_gain', self.soft_token_target_rms / decoder_h_rms.clamp_min(1e-8))
 
     def transition_tokens(self, h, z):
         h_tokens = self.transition_h_projector(h).reshape(*h.shape[:-1], self.k, self.d_model)
@@ -118,9 +129,21 @@ class QwenTransitionRSSMRecon(nn.Module):
         # The posterior receives h and the real observation only, never prior tensors.
         return self.posterior_h_projector(h).reshape(*h.shape[:-1], self.k, self.d_model) * self.posterior_soft_token_gain.to(h.dtype)
 
-    def decoder_tokens(self, z):
-        # The decoder intentionally cannot use h: z must retain observation information.
-        return self.decoder_z_projector(z).reshape(*z.shape[:-1], self.k, self.d_model) * self.decoder_soft_token_gain.to(z.dtype)
+    def decoder_tokens(self, z, h=None):
+        z_tokens = self.decoder_z_projector(z).reshape(*z.shape[:-1], self.k, self.d_model)
+        z_tokens = z_tokens * self.decoder_soft_token_gain.to(z.dtype)
+        if not self.decoder_uses_h:
+            return z_tokens
+        if h is None:
+            raise RuntimeError('decoder_uses_h requires the matching RSSM h state')
+        h_tokens = self.decoder_h_projector(h).reshape(*h.shape[:-1], self.k, self.d_model)
+        return z_tokens + h_tokens * self.decoder_h_soft_token_gain.to(h.dtype)
+
+    def reward_and_continuation(self, h, z):
+        if not self.reward_continuation_heads:
+            raise RuntimeError('reward/continuation heads are disabled for this checkpoint')
+        state = torch.cat((h, z), dim=-1)
+        return self.reward_head(state).squeeze(-1), self.continuation_head(state).squeeze(-1)
 
 
 def eos_hidden(qwen, tokenizer, text, soft, device, max_length):
@@ -171,7 +194,7 @@ def transition_layout(tokenizer, model, action, device, cfg):
         'h_soft.shape': list(h_soft.shape), 'z_soft.shape': list(z_soft.shape),
         'transition_latent_soft_tokens_total': int(h_soft.shape[1] + z_soft.shape[1]),
         'posterior_soft_tokens_total': int(model.posterior_tokens(h).shape[1]),
-        'decoder_soft_tokens_total': int(model.decoder_tokens(z).shape[1]),
+        'decoder_soft_tokens_total': int(model.decoder_tokens(z, h).shape[1]),
         'transition_input': 'soft(h_t) x5 + soft(z_t) x5 + action(a_t) + EOS',
         'transition_observation_tokens': 0, 'transition_action_tokens': len(action_ids) - 1,
         'transition_eos_tokens': 1, 'transition_sequence_length': total,
@@ -190,7 +213,7 @@ def assert_action_only_transition() -> None:
         raise RuntimeError(f'action-only transition invariant violated: {present}')
 
 
-def reconstruction(qwen, tokenizer, model, observations, z, device, max_length, no_soft=False):
+def reconstruction(qwen, tokenizer, model, observations, z, device, max_length, h=None, no_soft=False):
     """Teacher-forced CE over observation tokens plus an explicit EOS target."""
     embedding = qwen.get_input_embeddings()
     instruction_ids = tokenizer(DECODER_INSTRUCTION, add_special_tokens=False)['input_ids']
@@ -198,7 +221,8 @@ def reconstruction(qwen, tokenizer, model, observations, z, device, max_length, 
         raise RuntimeError('tokenizer must define eos_token_id for reconstruction')
     pieces, labels_list = [], []
     soft_count = 0 if no_soft else model.k
-    for observation, latent in zip(observations, z):
+    h_values = [None] * len(observations) if h is None else h
+    for observation, latent, h_state in zip(observations, z, h_values):
         target_ids = tokenizer(str(observation), add_special_tokens=False, truncation=True,
                                max_length=max_length - len(instruction_ids) - soft_count - 1)['input_ids']
         target_ids.append(tokenizer.eos_token_id)
@@ -207,7 +231,8 @@ def reconstruction(qwen, tokenizer, model, observations, z, device, max_length, 
         if no_soft:
             piece = torch.cat((prefix, target), 0)
         else:
-            soft = model.decoder_tokens(latent[None])[0].to(embedding.weight.dtype)
+            soft_h = None if h_state is None else h_state[None]
+            soft = model.decoder_tokens(latent[None], soft_h)[0].to(embedding.weight.dtype)
             piece = torch.cat((prefix, soft, target), 0)
         pieces.append(piece)
         labels_list.append(torch.tensor([-100] * (len(instruction_ids) + soft_count) + target_ids, device=device))
@@ -224,12 +249,14 @@ def reconstruction(qwen, tokenizer, model, observations, z, device, max_length, 
 
 
 @torch.no_grad()
-def generate_metrics(qwen, tokenizer, model, observations, z, device, cfg, no_soft=False):
+def generate_metrics(qwen, tokenizer, model, observations, z, device, cfg, h=None, no_soft=False):
     embedding = qwen.get_input_embeddings()
     instruction = embedding(torch.tensor(tokenizer(DECODER_INSTRUCTION, add_special_tokens=False)['input_ids'], device=device))
     exact, token_match, edit_similarity, examples = [], [], [], []
-    for target, latent in zip(observations, z):
-        initial = instruction if no_soft else torch.cat((instruction, model.decoder_tokens(latent[None])[0].to(embedding.weight.dtype)), 0)
+    h_values = [None] * len(observations) if h is None else h
+    for target, latent, h_state in zip(observations, z, h_values):
+        soft_h = None if h_state is None else h_state[None]
+        initial = instruction if no_soft else torch.cat((instruction, model.decoder_tokens(latent[None], soft_h)[0].to(embedding.weight.dtype)), 0)
         generated_ids = qwen.generate(inputs_embeds=initial[None], attention_mask=torch.ones((1, len(initial)), device=device, dtype=torch.long),
                                       do_sample=False, eos_token_id=tokenizer.eos_token_id, pad_token_id=tokenizer.eos_token_id,
                                       max_new_tokens=min(int(cfg['generation_max_new_tokens']), len(tokenizer(str(target), add_special_tokens=False)['input_ids']) + int(cfg['generation_stop_margin'])))
@@ -271,6 +298,7 @@ def validate(qwen, tokenizer, model, chunks, device, cfg):
     model.eval()
     states = validation_states(qwen, tokenizer, model, chunks, device, cfg)
     observations = [state['observation'] for state in states]
+    h_states = torch.stack([state['h'] for state in states])
     post = torch.stack([state['posterior_mu'] for state in states])
     prior = torch.stack([state['prior_mu'] for state in states])
     posterior_std = torch.stack([state['posterior_std'] for state in states])
@@ -279,7 +307,7 @@ def validate(qwen, tokenizer, model, chunks, device, cfg):
     shuffled, zero = post[permutation], torch.zeros_like(post)
     metrics = {}
     for name, latent in [('posterior', post), ('posterior_shuffled', shuffled), ('posterior_zero', zero), ('prior', prior)]:
-        loss, correct, tokens = reconstruction(qwen, tokenizer, model, observations, latent, device, int(cfg['max_sequence_length']))
+        loss, correct, tokens = reconstruction(qwen, tokenizer, model, observations, latent, device, int(cfg['max_sequence_length']), h=h_states)
         metrics[f'val/recon_ce_{name}'] = float(loss)
         metrics[f'val/recon_token_accuracy_{name}'] = float(correct.float() / tokens.clamp_min(1))
     no_soft_loss, no_soft_correct, no_soft_tokens = reconstruction(qwen, tokenizer, model, observations, post, device, int(cfg['max_sequence_length']), no_soft=True)
@@ -291,7 +319,7 @@ def validate(qwen, tokenizer, model, chunks, device, cfg):
     metrics['val/posterior_real_vs_shuffled_kl'] = float(kl(post, posterior_std, shuffled, posterior_std[permutation]).mean())
     generation_examples = min(int(cfg['generation_examples']), len(states))
     for name, latent in [('posterior', post), ('posterior_shuffled', shuffled), ('posterior_zero', zero), ('prior', prior)]:
-        generated, _ = generate_metrics(qwen, tokenizer, model, observations[:generation_examples], latent[:generation_examples], device, cfg)
+        generated, _ = generate_metrics(qwen, tokenizer, model, observations[:generation_examples], latent[:generation_examples], device, cfg, h=h_states[:generation_examples])
         for metric, value in generated.items(): metrics[f'val/gen_{metric}_{name}'] = value
     generated, examples = generate_metrics(qwen, tokenizer, model, observations[:generation_examples], post[:generation_examples], device, cfg, no_soft=True)
     for metric, value in generated.items(): metrics[f'val/gen_{metric}_no_soft'] = value
@@ -333,19 +361,25 @@ def main():
     (root / 'splits.json').write_text(json.dumps(info, indent=2))
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(cfg['learning_rate']), weight_decay=float(cfg['weight_decay']))
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
-    print(json.dumps({'trainable_parameters': trainable, 'posterior_uses_prior': False, 'decoder_uses_h': False, **info}), flush=True)
+    print(json.dumps({'trainable_parameters': trainable, 'posterior_uses_prior': False,
+                      'decoder_uses_h': model.decoder_uses_h,
+                      'reward_continuation_heads': model.reward_continuation_heads, **info}), flush=True)
     if args.disable_comet:
         comet = NullComet()
     else:
         from comet_ml import Experiment
         comet = Experiment(workspace=cfg['comet_workspace'], project_name=cfg['comet_project'], auto_output_logging='simple')
-    comet.set_name(args.run_name); comet.add_tags(['rssm', 'reconstruction', 'frozen_qwen', 'no_auxiliary_loss', 'action_only_transition'])
+    comet.set_name(args.run_name)
+    comet.add_tags(['rssm', 'reconstruction', 'frozen_qwen', 'action_only_transition'] +
+                   (['reward_continuation'] if model.reward_continuation_heads else ['no_auxiliary_loss']))
     comet.log_parameters({**cfg, **info, 'trainable_parameters': trainable})
     # Make startup observable independently of the considerably more expensive
     # environment validation below.
     comet.log_metric('run/started', 1.0, step=0)
 
-    def log_validation(step, env_episodes=None, label='', modes=('z_actor', 'plan6'), cached_env_metrics=None):
+    env_eval_modes = tuple(cfg.get('env_eval_modes', ('z_actor', 'plan6')))
+
+    def log_validation(step, env_episodes=None, label='', modes=None, cached_env_metrics=None):
         suffix = f'_{label}' if label else ''
         metrics, examples, diagnostic = validate(qwen, tokenizer, model, val_chunks, device, cfg)
         metrics.update({f'val/{key}': value for key, value in diagnostic.items()})
@@ -359,10 +393,12 @@ def main():
         comet.log_metrics(metrics, step=step)
         # This is evaluation only: no replay writes, no optimizer step and no actor/RL loss.
         env_metrics = dict(cached_env_metrics or {})
-        if modes:
+        selected_modes = env_eval_modes if modes is None else tuple(modes)
+        if selected_modes:
             env_metrics.update(run_env_validation(
                 qwen, tokenizer, model, device, cfg, transition, episodes=env_episodes,
-                debug_path=root / f'env_parse_failures_step_{step}{suffix}.jsonl', modes=tuple(modes),
+                debug_path=root / f'env_parse_failures_step_{step}{suffix}.jsonl', modes=selected_modes,
+                posterior_fn=posterior,
             ))
         metrics.update(env_metrics)
         (root / f'validation_step_{step}{suffix}.json').write_text(json.dumps(metrics, indent=2))
@@ -409,7 +445,7 @@ def main():
         comet.log_metrics(env_metrics, step=0)
         comet.end()
         return
-    log_validation(0, modes=('z_actor', 'plan6'))
+    log_validation(0)
     step = 0
     limit = args.smoke_steps or int(cfg['max_optimizer_steps'])
     for _epoch in range(int(cfg['epochs'])):
@@ -456,6 +492,8 @@ def main():
             ]
             total_target_tokens = sum(target_token_counts)
             recon_total = 0.0
+            reward_total = 0.0
+            continuation_total = 0.0
             correct = torch.zeros((), device=device, dtype=torch.long)
             token_count = torch.zeros((), device=device, dtype=torch.long)
             for target, (reconstruction_row, reconstruction_h, reconstruction_z), target_tokens in zip(
@@ -471,25 +509,42 @@ def main():
                 )
                 recon_item, correct_item, token_count_item = reconstruction(
                     qwen, tokenizer, model, [target], reconstruction_mu, device,
-                    int(cfg['max_sequence_length']),
+                    int(cfg['max_sequence_length']), h=reconstruction_h,
                 )
                 # reconstruction() reports the mean CE over valid target
                 # tokens.  Weight each item by its token count to preserve the
                 # original whole-chunk CE exactly.
                 item_weight = target_tokens / total_target_tokens
-                (float(cfg['lambda_recon']) * item_weight * recon_item).backward()
+                aux_item = torch.zeros((), device=device)
+                if model.reward_continuation_heads:
+                    reward_prediction, continuation_logit = model.reward_and_continuation(reconstruction_h, reconstruction_mu)
+                    reward_target = torch.tensor([float(reconstruction_row['reward'])], device=device)
+                    continuation_target = torch.tensor([float(reconstruction_row.get('continuation', 1.0 - float(bool(reconstruction_row['env_done']))))], device=device)
+                    reward_item = F.mse_loss(reward_prediction, reward_target)
+                    continuation_item = F.binary_cross_entropy_with_logits(continuation_logit, continuation_target)
+                    aux_item = (float(cfg.get('lambda_reward', 1.0)) * reward_item +
+                                float(cfg.get('lambda_continuation', 1.0)) * continuation_item)
+                    reward_total += item_weight * float(reward_item.detach())
+                    continuation_total += item_weight * float(continuation_item.detach())
+                (item_weight * (float(cfg['lambda_recon']) * recon_item + aux_item)).backward()
                 recon_total += item_weight * float(recon_item.detach())
                 correct += correct_item
                 token_count += token_count_item
             recon_ce = recon_total
-            total = float(cfg['lambda_recon']) * recon_ce + float(cfg['beta_kl']) * float(kl_loss.detach())
-            components = {name: grad_norm(getattr(model, name)) for name in ('transition_h_projector', 'transition_z_projector', 'transition_h_head', 'prior_head', 'posterior_h_projector', 'posterior_head', 'decoder_z_projector')}
+            total = (float(cfg['lambda_recon']) * recon_ce + float(cfg['beta_kl']) * float(kl_loss.detach()) +
+                     float(cfg.get('lambda_reward', 1.0)) * reward_total +
+                     float(cfg.get('lambda_continuation', 1.0)) * continuation_total)
+            component_names = ['transition_h_projector', 'transition_z_projector', 'transition_h_head', 'prior_head', 'posterior_h_projector', 'posterior_head', 'decoder_z_projector']
+            if model.decoder_uses_h: component_names.append('decoder_h_projector')
+            if model.reward_continuation_heads: component_names.extend(('reward_head', 'continuation_head'))
+            components = {name: grad_norm(getattr(model, name)) for name in component_names}
             prior_grad_when_kl_below_one = float(components['prior_head'] > 0.0)
             if free_nats == 0.0 and float(raw.detach()) < 1.0 and not prior_grad_when_kl_below_one:
                 raise RuntimeError('prior_head received zero gradient despite unclamped KL < 1')
             qwen_has_grad = any(parameter.grad is not None for parameter in qwen.parameters())
             if step == 0:
-                sanity = {**transition_layout(tokenizer, model, str(rows[0]['action_t']), device, cfg), 'gradients': components, 'frozen_qwen_has_grad': qwen_has_grad, 'decoder_input': 'z_post_only',
+                sanity = {**transition_layout(tokenizer, model, str(rows[0]['action_t']), device, cfg), 'gradients': components, 'frozen_qwen_has_grad': qwen_has_grad,
+                          'decoder_input': 'h_post_and_z_post' if model.decoder_uses_h else 'z_post_only',
                           'observation_in_decoder_conditioning': False, 'observation_is_autoregressive_target': True}
                 (root / 'sanity.json').write_text(json.dumps(sanity, indent=2))
                 print(json.dumps({'sanity': sanity}), flush=True)
@@ -497,7 +552,8 @@ def main():
                     raise RuntimeError(f'gradient sanity check failed: {sanity}')
             grad = float(torch.nn.utils.clip_grad_norm_(model.parameters(), float(cfg['max_grad_norm'])))
             optimizer.step(); step += 1
-            metrics = {'train/recon_ce': recon_ce, 'train/token_accuracy': float(correct.float() / token_count.clamp_min(1)),
+            metrics = {'train/recon_ce': recon_ce, 'train/reward_mse': reward_total, 'train/continuation_bce': continuation_total,
+                       'train/token_accuracy': float(correct.float() / token_count.clamp_min(1)),
                        'train/total_loss': total, 'train/kl_raw': float(raw), 'train/kl_used': float(used),
                        'train/kl_dyn': float(dyn), 'train/kl_rep': float(rep), 'train/kl_loss': float(kl_loss),
                        'train/prior_head_grad_nonzero_when_kl_below_one': prior_grad_when_kl_below_one if float(raw.detach()) < 1.0 else 1.0,
@@ -505,14 +561,14 @@ def main():
                        **{f'train/grad_preclip/{name}': value for name, value in components.items()}}
             if step == 1 or step % int(cfg['log_every_steps']) == 0:
                 print(json.dumps({'step': step, **metrics}), flush=True); comet.log_metrics(metrics, step=step)
-            if should_validate(step, cfg): log_validation(step, modes=('z_actor', 'plan6'))
+            if should_validate(step, cfg): log_validation(step)
             if step >= limit: break
         if step >= limit: break
     # Base is invariant to the checkpoint, so cache it once.  The selected
     # final checkpoint is then compared fairly on the same 32 fixed seeds.
     base_metrics = cached_final_base()
     log_validation(step, env_episodes=int(cfg.get('env_eval_num_episodes_final', cfg['env_eval_num_episodes'])),
-                   label='final', modes=('z_actor', 'plan6'), cached_env_metrics=base_metrics)
+                   label='final', cached_env_metrics=base_metrics)
     torch.save({'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'step': step}, root / 'final.pt')
     comet.end()
 
