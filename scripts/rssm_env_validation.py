@@ -89,16 +89,16 @@ def _normalise_actor_soft(qwen, soft: torch.Tensor) -> torch.Tensor:
 def _actor_z_soft(qwen, model, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
     # Exactly the transition z branch's five tokens. h is deliberately zeroed.
     soft = model.transition_tokens(torch.zeros_like(h), z)[1][0]
-    if soft.shape[0] != model.k:
-        raise RuntimeError("actor z interface must contain exactly soft_tokens")
+    if soft.shape[0] != model.z_k:
+        raise RuntimeError("actor z interface must contain exactly z_soft_tokens")
     return _normalise_actor_soft(qwen, soft)
 
 
 def _actor_hz_soft(qwen, model, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
-    """The HZ policy interface: five state tokens followed by five z tokens."""
+    """The HZ policy interface: h soft tokens followed by z soft tokens."""
     h_soft, z_soft = model.transition_tokens(h, z)
-    if h_soft.shape[1] != model.k or z_soft.shape[1] != model.k:
-        raise RuntimeError("HZ actor interface must contain five h and five z soft tokens")
+    if h_soft.shape[1] != model.h_k or z_soft.shape[1] != model.z_k:
+        raise RuntimeError("HZ actor interface token-count invariant violated")
     return torch.cat((_normalise_actor_soft(qwen, h_soft[0]), _normalise_actor_soft(qwen, z_soft[0])), 0)
 
 
@@ -376,12 +376,12 @@ def _run_mode(mode: str, qwen, tokenizer, model, device, cfg: dict[str, Any], tr
                             iz2 = model.prior_head(ih2).chunk(2, dim=-1)[0]
                             pairs.append((ih2, iz2))
                         soft = torch.cat([_actor_hz_soft(qwen, model, state_h, state_z) for state_h, state_z in pairs], 0)
-                        expected = (horizon + 1) * 2 * int(cfg["soft_tokens"])
+                        expected = (horizon + 1) * (model.h_k + model.z_k)
                         if soft.shape[0] != expected: raise RuntimeError("HZ plan latent count mismatch")
                         revised_prompt = _task_revised_prompt(task, plan, horizon)
                     else:
                         soft = torch.cat([_actor_z_soft(qwen, model, torch.zeros_like(state)[None], state[None]) for state in imagined], 0)
-                        if soft.shape[0] != horizon * int(cfg["soft_tokens"]): raise RuntimeError("plan latent count mismatch")
+                        if soft.shape[0] != horizon * model.z_k: raise RuntimeError("plan latent count mismatch")
                         revised_prompt = _revised_prompt(prompt, plan, horizon)
                     response = _generate(qwen, tokenizer, revised_prompt, soft, int(cfg["env_eval_actor_max_new_tokens"]), "<plan>", generation)
                     revised_ok[i] = _plan_actions(response, horizon) is not None; candidate = _action_name(response); changed[i] = candidate is not None and candidate != plan[0]; raw[i] = {"initial_plan": initial, "revised": response}

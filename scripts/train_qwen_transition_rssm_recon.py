@@ -84,24 +84,31 @@ class QwenTransitionRSSMRecon(nn.Module):
     """Qwen RSSM with an action-only transition and optional reward heads."""
     def __init__(self, cfg, d_model):
         super().__init__()
-        h, z, k = int(cfg['latent_h_dim']), int(cfg['latent_z_dim']), int(cfg['soft_tokens'])
-        # Never concatenate h and z before projection: each gets its own five-token interface.
-        self.transition_h_projector = nn.Sequential(nn.Linear(h, h), nn.GELU(), nn.Linear(h, k * d_model))
-        self.transition_z_projector = nn.Sequential(nn.Linear(z, z), nn.GELU(), nn.Linear(z, k * d_model))
-        self.posterior_h_projector = nn.Sequential(nn.Linear(h, h), nn.GELU(), nn.Linear(h, k * d_model))
+        h, z = int(cfg['latent_h_dim']), int(cfg['latent_z_dim'])
+        # ``soft_tokens`` remains the backwards-compatible default.  h and z
+        # may deliberately use different capacities in a new experiment.
+        h_k = int(cfg.get('h_soft_tokens', cfg['soft_tokens']))
+        z_k = int(cfg.get('z_soft_tokens', cfg['soft_tokens']))
+        # Never concatenate h and z before projection: each has an explicit
+        # independent interface into Qwen.
+        self.transition_h_projector = nn.Sequential(nn.Linear(h, h), nn.GELU(), nn.Linear(h, h_k * d_model))
+        self.transition_z_projector = nn.Sequential(nn.Linear(z, z), nn.GELU(), nn.Linear(z, z_k * d_model))
+        self.posterior_h_projector = nn.Sequential(nn.Linear(h, h), nn.GELU(), nn.Linear(h, h_k * d_model))
         self.transition_h_head = nn.Sequential(nn.Linear(d_model, h), nn.GELU(), nn.Linear(h, h))
         self.prior_head = nn.Sequential(nn.Linear(h, h), nn.GELU(), nn.Linear(h, 2 * z))
         self.posterior_head = nn.Sequential(nn.Linear(d_model, h), nn.GELU(), nn.Linear(h, 2 * z))
         # Freshly initialized: no autoencoder weights are transferred here.
-        self.decoder_z_projector = nn.Sequential(nn.Linear(z, z), nn.GELU(), nn.Linear(z, k * d_model))
+        self.decoder_z_projector = nn.Sequential(nn.Linear(z, z), nn.GELU(), nn.Linear(z, z_k * d_model))
         self.decoder_uses_h = bool(cfg.get('decoder_uses_h', False))
         self.reward_continuation_heads = bool(cfg.get('reward_continuation_heads', False))
         if self.decoder_uses_h:
-            self.decoder_h_projector = nn.Sequential(nn.Linear(h, h), nn.GELU(), nn.Linear(h, k * d_model))
+            self.decoder_h_projector = nn.Sequential(nn.Linear(h, h), nn.GELU(), nn.Linear(h, h_k * d_model))
         if self.reward_continuation_heads:
             self.reward_head = nn.Sequential(nn.Linear(h + z, h), nn.GELU(), nn.Linear(h, 1))
             self.continuation_head = nn.Sequential(nn.Linear(h + z, h), nn.GELU(), nn.Linear(h, 1))
-        self.k, self.d_model = k, d_model
+        self.h_k, self.z_k, self.d_model = h_k, z_k, d_model
+        # Kept for legacy z-only callers/checkpoints; use h_k/z_k in new code.
+        self.k = z_k
         self.register_buffer('soft_token_target_rms', torch.tensor(float(cfg['soft_token_target_rms'])))
         with torch.no_grad():
             generator = torch.Generator(device='cpu').manual_seed(0)
@@ -120,24 +127,30 @@ class QwenTransitionRSSMRecon(nn.Module):
             self.register_buffer('decoder_h_soft_token_gain', self.soft_token_target_rms / decoder_h_rms.clamp_min(1e-8))
 
     def transition_tokens(self, h, z):
-        h_tokens = self.transition_h_projector(h).reshape(*h.shape[:-1], self.k, self.d_model)
-        z_tokens = self.transition_z_projector(z).reshape(*z.shape[:-1], self.k, self.d_model)
+        h_tokens = self.transition_h_projector(h).reshape(*h.shape[:-1], self.h_k, self.d_model)
+        z_tokens = self.transition_z_projector(z).reshape(*z.shape[:-1], self.z_k, self.d_model)
         return (h_tokens * self.transition_h_soft_token_gain.to(h.dtype),
                 z_tokens * self.transition_z_soft_token_gain.to(z.dtype))
 
     def posterior_tokens(self, h):
         # The posterior receives h and the real observation only, never prior tensors.
-        return self.posterior_h_projector(h).reshape(*h.shape[:-1], self.k, self.d_model) * self.posterior_soft_token_gain.to(h.dtype)
+        return self.posterior_h_projector(h).reshape(*h.shape[:-1], self.h_k, self.d_model) * self.posterior_soft_token_gain.to(h.dtype)
 
     def decoder_tokens(self, z, h=None):
-        z_tokens = self.decoder_z_projector(z).reshape(*z.shape[:-1], self.k, self.d_model)
+        z_tokens = self.decoder_z_projector(z).reshape(*z.shape[:-1], self.z_k, self.d_model)
         z_tokens = z_tokens * self.decoder_soft_token_gain.to(z.dtype)
         if not self.decoder_uses_h:
             return z_tokens
         if h is None:
             raise RuntimeError('decoder_uses_h requires the matching RSSM h state')
-        h_tokens = self.decoder_h_projector(h).reshape(*h.shape[:-1], self.k, self.d_model)
-        return z_tokens + h_tokens * self.decoder_h_soft_token_gain.to(h.dtype)
+        h_tokens = self.decoder_h_projector(h).reshape(*h.shape[:-1], self.h_k, self.d_model)
+        # With unequal h/z capacities, preserve both channels instead of
+        # silently collapsing/adding them elementwise.
+        return torch.cat((h_tokens * self.decoder_h_soft_token_gain.to(h.dtype), z_tokens), dim=-2)
+
+    @property
+    def decoder_soft_token_count(self):
+        return self.z_k + (self.h_k if self.decoder_uses_h else 0)
 
     def reward_and_continuation(self, h, z):
         if not self.reward_continuation_heads:
@@ -195,7 +208,7 @@ def transition_layout(tokenizer, model, action, device, cfg):
         'transition_latent_soft_tokens_total': int(h_soft.shape[1] + z_soft.shape[1]),
         'posterior_soft_tokens_total': int(model.posterior_tokens(h).shape[1]),
         'decoder_soft_tokens_total': int(model.decoder_tokens(z, h).shape[1]),
-        'transition_input': 'soft(h_t) x5 + soft(z_t) x5 + action(a_t) + EOS',
+        'transition_input': f'soft(h_t) x{model.h_k} + soft(z_t) x{model.z_k} + action(a_t) + EOS',
         'transition_observation_tokens': 0, 'transition_action_tokens': len(action_ids) - 1,
         'transition_eos_tokens': 1, 'transition_sequence_length': total,
         'transition_attention_mask_length': total, 'transition_attention_mask_all_ones': True,
@@ -220,7 +233,7 @@ def reconstruction(qwen, tokenizer, model, observations, z, device, max_length, 
     if tokenizer.eos_token_id is None:
         raise RuntimeError('tokenizer must define eos_token_id for reconstruction')
     pieces, labels_list = [], []
-    soft_count = 0 if no_soft else model.k
+    soft_count = 0 if no_soft else model.decoder_soft_token_count
     h_values = [None] * len(observations) if h is None else h
     for observation, latent, h_state in zip(observations, z, h_values):
         target_ids = tokenizer(str(observation), add_special_tokens=False, truncation=True,
@@ -355,7 +368,8 @@ def main():
     commit = args.source_commit or subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
     info = {'git_commit': commit, 'train_transitions': len(train_rows), 'val_transitions': len(val_rows), 'test_transitions': len(test_rows),
             'train_chunks': len(train_chunks), 'val_chunks': len(val_chunks), 'effective_optimizer_batch': int(cfg['train_batch_size']),
-            'transition_observation_tokens': 0, 'transition_interface': 'soft_h_x5_soft_z_x5_action_eos'}
+            'transition_observation_tokens': 0,
+            'transition_interface': f'soft_h_x{model.h_k}_soft_z_x{model.z_k}_action_eos'}
     assert_action_only_transition()
     (root / 'resolved_config.yaml').write_text(yaml.safe_dump({**cfg, **info, 'run_name': args.run_name}, sort_keys=True))
     (root / 'splits.json').write_text(json.dumps(info, indent=2))
@@ -485,7 +499,7 @@ def main():
             # logits/activations for all targets until one joint backward pass
             # can exceed an 80-GB GPU, so release every item's graph promptly.
             decoder_instruction_tokens = len(tokenizer(DECODER_INSTRUCTION, add_special_tokens=False)['input_ids'])
-            max_target_tokens = int(cfg['max_sequence_length']) - decoder_instruction_tokens - model.k - 1
+            max_target_tokens = int(cfg['max_sequence_length']) - decoder_instruction_tokens - model.decoder_soft_token_count - 1
             target_token_counts = [
                 len(tokenizer(str(target), add_special_tokens=False, truncation=True, max_length=max_target_tokens)['input_ids']) + 1
                 for target in targets
