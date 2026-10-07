@@ -27,6 +27,8 @@ def main() -> None:
     parser.add_argument('--source', required=True, help='Directory containing reward-free transitions.jsonl')
     parser.add_argument('--output', required=True)
     parser.add_argument('--settings', default='debug_square_16x16')
+    parser.add_argument('--fixed-layout', action='store_true',
+                        help='Match collection performed with --fixed-layout.')
     args = parser.parse_args()
     source, output = Path(args.source), Path(args.output)
     output.mkdir(parents=True, exist_ok=False)
@@ -39,6 +41,7 @@ def main() -> None:
     inverse_actions = {str(name): action_id for action_id, name in enumerate(ACTION_TO_TEXT)}
     workers: dict[int, CagedCraftextWorker] = {}
     env_kwargs = {'config_name': args.settings, 'use_debug_square_map': True,
+                  'fixed_debug_square_layout': bool(args.fixed_layout),
                   'observation_type': 'ascii', 'encode_form': 'embedding'}
     tmp = output / 'transitions.jsonl.tmp'
     restored = 0
@@ -86,7 +89,7 @@ def main() -> None:
             if close: close()
     tmp.replace(output / 'transitions.jsonl')
     (output / 'reward_restore_metadata.json').write_text(json.dumps({
-        'source': str(source), 'settings': args.settings, 'episodes': len(by_episode),
+        'source': str(source), 'settings': args.settings, 'fixed_layout': bool(args.fixed_layout), 'episodes': len(by_episode),
         'transitions': restored, 'replay_observation_verification': 'exact',
     }, indent=2), encoding='utf-8')
     print(json.dumps({'status': 'ok', 'transitions': restored, 'output': str(output)}), flush=True)
