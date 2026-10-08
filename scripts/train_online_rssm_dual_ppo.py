@@ -118,8 +118,16 @@ def _last_hidden(qwen, tokenizer, prompts: list[str], soft: torch.Tensor) -> tor
     mask = torch.tensor([[1] * piece.shape[0] + [0] * (length - piece.shape[0])
                          for piece in pieces], device=device, dtype=torch.long)
     positions = torch.arange(length, device=device)[None].expand(len(pieces), -1)
-    out = qwen(inputs_embeds=inputs, attention_mask=mask, position_ids=positions,
-               output_hidden_states=True, use_cache=False).hidden_states[-1]
+    # Calling the CausalLM wrapper with ``output_hidden_states=True`` retains
+    # one [batch, sequence, hidden] tensor per transformer layer.  PPO needs
+    # only the final state, and its longest minibatches made this otherwise
+    # unnecessary collection grow to OOM on H200.  Go through the frozen
+    # transformer backbone directly so only ``last_hidden_state`` is returned.
+    backbone = getattr(qwen, "model", None)
+    if backbone is None:
+        raise RuntimeError("base CausalLM does not expose a transformer backbone")
+    out = backbone(inputs_embeds=inputs, attention_mask=mask, position_ids=positions,
+                   use_cache=False, return_dict=True).last_hidden_state
     last = mask.sum(dim=-1) - 1
     return out[torch.arange(len(pieces), device=device), last].float()
 

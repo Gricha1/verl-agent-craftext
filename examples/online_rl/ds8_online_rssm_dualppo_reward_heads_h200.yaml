@@ -35,7 +35,10 @@ clip_ratio: 0.2
 value_clip_ratio: 0.2
 entropy_coef: 0.01
 ppo_epochs: 4
-ppo_minibatch_size: 32
+# Qwen backward activations are large for 512-token task prompts.  Eight keeps
+# the effective PPO rollout and every other hyperparameter unchanged while
+# bounding the per-minibatch activation peak on H200.
+ppo_minibatch_size: 8
 rollout_envs: 8
 wm_batch_size: 16
 wm_val_batch_size: 4

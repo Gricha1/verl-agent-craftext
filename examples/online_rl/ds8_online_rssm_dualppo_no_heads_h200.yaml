@@ -34,7 +34,8 @@ clip_ratio: 0.2
 value_clip_ratio: 0.2
 entropy_coef: 0.01
 ppo_epochs: 4
-ppo_minibatch_size: 32
+# Must match the reward-head run: bound Qwen PPO activation memory.
+ppo_minibatch_size: 8
 rollout_envs: 8
 wm_batch_size: 16
 wm_val_batch_size: 4
