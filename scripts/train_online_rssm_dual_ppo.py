@@ -363,6 +363,15 @@ def evaluate(cfg, qwen, critic_qwen, tokenizer, rssm, actor, critic, actor_devic
 
 def main() -> None:
     args = parse_args(); cfg = yaml.safe_load(Path(args.config).read_text())
+    if args.smoke_updates:
+        # A genuine end-to-end smoke (posterior -> actor -> real env -> RSSM
+        # loss -> PPO loss) must finish quickly and must not trigger the
+        # 32-seed final evaluator.
+        cfg.update({"rollout_envs": 1, "env_episode_max_steps": 2,
+                    "eval_updates": [], "eval_episodes": 1,
+                    "final_eval_episodes": 1, "wm_batch_size": 1,
+                    "wm_val_batch_size": 0, "ppo_epochs": 1,
+                    "ppo_minibatch_size": 2})
     _seed(int(cfg["seed"])); actor_device, critic_device = torch.device(args.actor_device), torch.device(args.critic_device)
     if actor_device == critic_device:
         raise ValueError("actor and critic must occupy distinct GPUs")
