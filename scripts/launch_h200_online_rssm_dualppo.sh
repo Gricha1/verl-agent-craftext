@@ -24,9 +24,12 @@ mkdir -p "$latent_root/logs" "$latent_root/runs"
 log="$latent_root/logs/${run_name}.log"
 commit="$(git rev-parse HEAD)"
 echo "launching $run_name GPUs=$gpus config=$config"
-nohup docker run --rm --network host --memory=300g --shm-size=32g --gpus "device=$gpus" \
+# Docker's multi-device parser needs the inner double quotes preserved; without
+# them it treats `0,1` as both a Count and a DeviceIDs request.
+nohup docker run --rm --network host --memory=300g --shm-size=32g --gpus "\"device=$gpus\"" \
   --entrypoint /usr/home/workspace/docker/entrypoint.sh \
   -e COMET_API_KEY -e COMET_WORKSPACE="${COMET_WORKSPACE:-gregory-gorbov}" \
+  -e SKIP_ALFWORLD_DATA_SETUP=1 \
   -e PYTHONPATH="/usr/home/workspace:/usr/home/workspace/caged_craftext:/usr/home/workspace/caged_craftext/Craftax" \
   -e CRAFTAX_RELOAD_TEXTURES=True \
   -v "$repo_root:/usr/home/workspace" -v "$latent_root:$latent_root" -w /usr/home/workspace "$image" \
