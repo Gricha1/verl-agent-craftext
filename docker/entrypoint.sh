@@ -12,6 +12,11 @@ cd "$WORKSPACE" || {
   exit 1
 }
 
+# The bind-mounted checkout is owned by the host user, while this entrypoint
+# runs as root in the image.  Mark precisely this mount safe so training can
+# record its source commit; do not use a broad ``safe.directory=*`` override.
+git config --global --add safe.directory "$WORKSPACE" || true
+
 if [ -f /opt/conda/etc/profile.d/conda.sh ]; then
   # shellcheck source=/dev/null
   source /opt/conda/etc/profile.d/conda.sh
