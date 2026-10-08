@@ -329,14 +329,18 @@ def wm_loss_one(cfg, qwen, decoder_qwen, tokenizer, rssm, row, device, decoder_d
     recon, _correct, _tokens = reconstruction(
         decoder_qwen, tokenizer, rssm, [row["next_observation"]], qm.to(decoder_device), decoder_device,
         int(cfg["max_sequence_length"]), h=hn.to(decoder_device))
-    loss = float(cfg["lambda_recon"]) * recon + float(cfg["beta_kl"]) * kl_loss
+    # Combine scalar terms explicitly on the decoder device. Tensor.to retains
+    # a differentiable cross-device copy, so KL/reward gradients still reach
+    # their actor-device RSSM parameters.
+    loss = float(cfg["lambda_recon"]) * recon + float(cfg["beta_kl"]) * kl_loss.to(decoder_device)
     out = {"recon_ce": recon.detach(), "kl": raw.detach(), "reward_mse": torch.zeros((), device=device),
            "continuation_bce": torch.zeros((), device=device)}
     if rssm.reward_continuation_heads:
         reward_pred, continuation = rssm.reward_and_continuation(hn, qm)
         reward_loss = F.mse_loss(reward_pred, torch.tensor([row["reward"]], device=device))
         continuation_loss = F.binary_cross_entropy_with_logits(continuation, torch.tensor([1.0 - float(row["done"])], device=device))
-        loss = loss + float(cfg["lambda_reward"]) * reward_loss + float(cfg["lambda_continuation"]) * continuation_loss
+        loss = (loss + float(cfg["lambda_reward"]) * reward_loss.to(decoder_device)
+                + float(cfg["lambda_continuation"]) * continuation_loss.to(decoder_device))
         out["reward_mse"], out["continuation_bce"] = reward_loss.detach(), continuation_loss.detach()
     return loss, out
 
