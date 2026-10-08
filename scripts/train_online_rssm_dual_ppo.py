@@ -72,6 +72,18 @@ def _seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
 def _task_prompt(task: str) -> str:
     actions = ", ".join(ACTION_TO_TEXT)
     return (
@@ -428,7 +440,8 @@ def main() -> None:
         if update in set(int(x) for x in cfg["eval_updates"]):
             ev, raw = evaluate(cfg, qwen, critic_qwen, tokenizer, rssm, actor, critic, actor_device, critic_device,
                                int(cfg["eval_seed"]), int(cfg["eval_episodes"]))
-            (root / f"eval_update_{update}.json").write_text(json.dumps({"metrics": ev, "raw_examples": raw}, indent=2))
+            (root / f"eval_update_{update}.json").write_text(json.dumps(
+                _json_safe({"metrics": ev, "raw_examples": raw}), indent=2))
             comet.log_metrics(ev, step=env_steps); print(json.dumps({"update": update, **ev}), flush=True)
         if update % int(cfg["checkpoint_every_updates"]) == 0 or update == updates:
             torch.save({"update": update, "env_steps": env_steps, "rssm": rssm.state_dict(), "actor": actor.state_dict(),
@@ -436,7 +449,8 @@ def main() -> None:
                        root / f"checkpoint_update_{update}.pt")
     final_eval, raw = evaluate(cfg, qwen, critic_qwen, tokenizer, rssm, actor, critic, actor_device, critic_device,
                                int(cfg["eval_seed"]), int(cfg["final_eval_episodes"]))
-    (root / "final_eval.json").write_text(json.dumps({"metrics": final_eval, "raw_examples": raw}, indent=2))
+    (root / "final_eval.json").write_text(json.dumps(
+        _json_safe({"metrics": final_eval, "raw_examples": raw}), indent=2))
     comet.log_metrics(final_eval, step=env_steps); comet.end()
 
 
