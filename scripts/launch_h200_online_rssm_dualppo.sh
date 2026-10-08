@@ -10,6 +10,7 @@ gpus="${H200_GPUS:?set H200_GPUS to three physical GPU IDs, e.g. 0,1,2}"
 config="${H200_CONFIG:?set H200_CONFIG}"
 run_name="${1:?run name required}"
 latent_root="${H200_LATENT_ROOT:-/data/homes/gorbov_gv/latent_wm}"
+run_args="${H200_RUN_ARGS:-}"
 [[ "$gpus" =~ ^[0-9]+,[0-9]+,[0-9]+$ ]] || { echo "H200_GPUS must be a triple like 0,1,2" >&2; exit 2; }
 [[ -f "$config" ]] || { echo "missing config: $config" >&2; exit 2; }
 [[ ! -e "$latent_root/runs/$run_name" ]] || { echo "run already exists: $run_name" >&2; exit 2; }
@@ -38,7 +39,7 @@ nohup docker run --rm --network host --memory=300g --shm-size=32g --gpus "\"devi
   -e CRAFTAX_RELOAD_TEXTURES=True \
   -v "$repo_root:/usr/home/workspace" -v "$latent_root:$latent_root" -w /usr/home/workspace "$image" \
   python scripts/train_online_rssm_dual_ppo.py --config "$config" --run-name "$run_name" \
-    --actor-device cuda:0 --critic-device cuda:1 --decoder-device cuda:2 --source-commit "$commit" \
+    --actor-device cuda:0 --critic-device cuda:1 --decoder-device cuda:2 --source-commit "$commit" $run_args \
   >"$log" 2>&1 < /dev/null &
 pid=$!
 echo "$pid" > "$latent_root/logs/${run_name}.host_pid"
