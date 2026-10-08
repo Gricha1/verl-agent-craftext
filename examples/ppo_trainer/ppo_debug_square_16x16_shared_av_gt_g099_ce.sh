@@ -24,6 +24,8 @@ RETURN_BIN_MIN="${RETURN_BIN_MIN:--26}"
 RETURN_BIN_MAX="${RETURN_BIN_MAX:-16}"
 RETURN_BIN_STEP="${RETURN_BIN_STEP:-1.5}"
 HISTORY_LENGTH="${HISTORY_LENGTH:-50}"
+PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-64}"
+PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-16}"
 export RUN_NAME="${RUN_NAME:-ds16_shared_av_gt_g099_ce_h50}"
 
 echo "=========================================="
@@ -32,6 +34,7 @@ echo "=========================================="
 echo "[INFO] HYPER_YAML=$HYPER_YAML"
 echo "[INFO] CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES N_GPUS=$N_GPUS"
 echo "[INFO] NUM_OPTIMISTIC_ENVS=$NUM_OPTIMISTIC_ENVS HISTORY_LENGTH=$HISTORY_LENGTH"
+echo "[INFO] PPO mini-batch=$PPO_MINI_BATCH_SIZE micro-batch/GPU=$PPO_MICRO_BATCH_SIZE_PER_GPU"
 echo "[INFO] remaining_return_gamma=0.99 use_remaining_return_as_token_reward=True"
 echo "[INFO] use_actor_value_token=True separate_critic=False value_loss=two_hot_ce (NOT MAE)"
 echo "[INFO] bins=[$RETURN_BIN_MIN,$RETURN_BIN_MAX] step=$RETURN_BIN_STEP (16x16 range)"
@@ -87,8 +90,8 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   actor_rollout_ref.actor.entropy_action_single_token_fastpath=True \
   actor_rollout_ref.actor.entropy_action_batched_forward=False \
   actor_rollout_ref.actor.entropy_action_length_normalize=True \
-  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
-  actor_rollout_ref.actor.ppo_mini_batch_size=64 \
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu="$PPO_MICRO_BATCH_SIZE_PER_GPU" \
+  actor_rollout_ref.actor.ppo_mini_batch_size="$PPO_MINI_BATCH_SIZE" \
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8 \
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=8 \
   trainer.critic_warmup="$CRITIC_WARMUP" \

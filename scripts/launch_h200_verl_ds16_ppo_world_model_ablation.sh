@@ -46,7 +46,8 @@ nohup docker run --rm --network host --memory=300g --shm-size=32g --gpus "\"devi
   -e COMET_PROJECT_NAME="${COMET_PROJECT_NAME:-verl_agent_caged_craftext}" \
   -e SKIP_ALFWORLD_DATA_SETUP=1 -e CRAFTAX_RELOAD_TEXTURES=True \
   -e CUDA_VISIBLE_DEVICES=0,1,2 -e N_GPUS=3 -e FORCE_NEW_RAY_CLUSTER=1 \
-  -e NUM_OPTIMISTIC_ENVS="${H200_NUM_OPTIMISTIC_ENVS:-63}" \
+  -e NUM_OPTIMISTIC_ENVS="${H200_NUM_OPTIMISTIC_ENVS:-48}" \
+  -e PPO_MINI_BATCH_SIZE="${H200_PPO_MINI_BATCH_SIZE:-48}" \
   -e RAY_TEMP_DIR="$ray_temp_dir" \
   -e PYTHONPATH="/usr/home/workspace:/usr/home/workspace/caged_craftext:/usr/home/workspace/caged_craftext/Craftax" \
   -e RUN_NAME="$run_name" \
