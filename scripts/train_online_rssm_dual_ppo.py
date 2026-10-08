@@ -59,6 +59,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--run-name", required=True)
     p.add_argument("--actor-device", default="cuda:0")
     p.add_argument("--critic-device", default="cuda:1")
+    p.add_argument("--decoder-device", default="cuda:2")
     p.add_argument("--source-commit", default=None)
     p.add_argument("--smoke-updates", type=int, default=0)
     p.add_argument("--disable-comet", action="store_true")
@@ -295,7 +296,7 @@ def ppo_update(cfg, records, qwen, critic_qwen, tokenizer, actor, critic, actor_
             entropy = dist.entropy().mean()
             loss = policy_loss - float(cfg["entropy_coef"]) * entropy
             actor_opt.zero_grad(set_to_none=True); loss.backward()
-            torch.nn.utils.clip_grad_norm_(actor.parameters(), float(cfg["max_grad_norm"]))
+            _clip_by_device(actor.parameters(), float(cfg["max_grad_norm"]))
             actor_opt.step()
             metrics["ppo/policy_loss"].append(float(policy_loss.detach())); metrics["ppo/entropy"].append(float(entropy.detach()))
             metrics["ppo/approx_kl"].append(float(approx_kl.detach())); metrics["ppo/clip_fraction"].append(float(clipfrac.detach()))
@@ -312,7 +313,7 @@ def ppo_update(cfg, records, qwen, critic_qwen, tokenizer, actor, critic, actor_
     return {k: float(np.mean(v)) for k, v in metrics.items()}
 
 
-def wm_loss_one(cfg, qwen, tokenizer, rssm, row, device):
+def wm_loss_one(cfg, qwen, decoder_qwen, tokenizer, rssm, row, device, decoder_device):
     h = row["h"].to(device)[None]; z = row["z"].to(device)[None]
     hn = transition(qwen, tokenizer, rssm, ACTION_TO_TEXT[int(row["action"])], h, z, device, cfg)
     pm, ps, _ = gaussian(rssm.prior_head(hn))
@@ -321,8 +322,13 @@ def wm_loss_one(cfg, qwen, tokenizer, rssm, row, device):
     dyn = kl(qm.detach(), qs.detach(), pm, ps).mean()
     rep = kl(qm, qs, pm.detach(), ps.detach()).mean()
     kl_loss = float(cfg["kl_balance"]) * dyn + (1 - float(cfg["kl_balance"])) * rep
-    recon, _correct, _tokens = reconstruction(qwen, tokenizer, rssm, [row["next_observation"]], qm, device,
-                                               int(cfg["max_sequence_length"]), h=hn)
+    # The reconstruction branch is deliberately placed on its own Qwen copy.
+    # Autograd preserves the path from decoder soft tokens back into the shared
+    # RSSM posterior/dynamics state across devices; no observation is exposed to
+    # actor, critic, or transition by this placement.
+    recon, _correct, _tokens = reconstruction(
+        decoder_qwen, tokenizer, rssm, [row["next_observation"]], qm.to(decoder_device), decoder_device,
+        int(cfg["max_sequence_length"]), h=hn.to(decoder_device))
     loss = float(cfg["lambda_recon"]) * recon + float(cfg["beta_kl"]) * kl_loss
     out = {"recon_ce": recon.detach(), "kl": raw.detach(), "reward_mse": torch.zeros((), device=device),
            "continuation_bce": torch.zeros((), device=device)}
@@ -335,7 +341,17 @@ def wm_loss_one(cfg, qwen, tokenizer, rssm, row, device):
     return loss, out
 
 
-def world_model_update(cfg, records, qwen, tokenizer, rssm, actor_opt, device):
+def _clip_by_device(parameters, max_norm: float) -> None:
+    """Clip independently per CUDA device; torch cannot stack cross-device grads."""
+    grouped: dict[torch.device, list[torch.nn.Parameter]] = defaultdict(list)
+    for parameter in parameters:
+        if parameter.grad is not None:
+            grouped[parameter.device].append(parameter)
+    for group in grouped.values():
+        torch.nn.utils.clip_grad_norm_(group, max_norm)
+
+
+def world_model_update(cfg, records, qwen, decoder_qwen, tokenizer, rssm, actor_opt, device, decoder_device):
     perm = torch.randperm(len(records)).tolist()
     n_train = min(int(cfg["wm_batch_size"]), max(1, int(len(records) * .8)))
     train_rows = [records[i] for i in perm[:n_train]]
@@ -343,17 +359,17 @@ def world_model_update(cfg, records, qwen, tokenizer, rssm, actor_opt, device):
     actor_opt.zero_grad(set_to_none=True)
     sums: dict[str, float] = defaultdict(float)
     for row in train_rows:
-        loss, values = wm_loss_one(cfg, qwen, tokenizer, rssm, row, device)
+        loss, values = wm_loss_one(cfg, qwen, decoder_qwen, tokenizer, rssm, row, device, decoder_device)
         (loss / len(train_rows)).backward(); sums["total_loss"] += float(loss.detach())
         for key, value in values.items(): sums[key] += float(value)
-    torch.nn.utils.clip_grad_norm_(rssm.parameters(), float(cfg["max_grad_norm"])); actor_opt.step()
+    _clip_by_device(rssm.parameters(), float(cfg["max_grad_norm"])); actor_opt.step()
     metrics = {f"rssm/train_{k}": v / len(train_rows) for k, v in sums.items()}
     if val_rows:
         with torch.no_grad():
             vals: dict[str, float] = defaultdict(float)
             shuffled_gap = []
             for row in val_rows:
-                loss, value = wm_loss_one(cfg, qwen, tokenizer, rssm, row, device)
+                loss, value = wm_loss_one(cfg, qwen, decoder_qwen, tokenizer, rssm, row, device, decoder_device)
                 vals["total_loss"] += float(loss); [vals.__setitem__(k, vals[k] + float(v)) for k, v in value.items()]
                 shuffled_gap.append(float(row["z"].float().norm()))
             metrics.update({f"rssm/val_{k}": v / len(val_rows) for k, v in vals.items()})
@@ -388,9 +404,10 @@ def main() -> None:
                     "final_eval_episodes": 1, "wm_batch_size": 1,
                     "wm_val_batch_size": 0, "ppo_epochs": 1,
                     "ppo_minibatch_size": 2})
-    _seed(int(cfg["seed"])); actor_device, critic_device = torch.device(args.actor_device), torch.device(args.critic_device)
-    if actor_device == critic_device:
-        raise ValueError("actor and critic must occupy distinct GPUs")
+    _seed(int(cfg["seed"])); actor_device, critic_device, decoder_device = (
+        torch.device(args.actor_device), torch.device(args.critic_device), torch.device(args.decoder_device))
+    if len({actor_device, critic_device, decoder_device}) != 3:
+        raise ValueError("actor/RSSM, critic, and decoder must occupy three distinct GPUs")
     assert_information_flow()
     tokenizer = AutoTokenizer.from_pretrained(cfg["base_model"], trust_remote_code=True)
     tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
@@ -398,11 +415,21 @@ def main() -> None:
                                                  trust_remote_code=True).to(actor_device).eval()
     critic_qwen = AutoModelForCausalLM.from_pretrained(cfg["base_model"], torch_dtype=torch.bfloat16,
                                                         trust_remote_code=True).to(critic_device).eval()
-    for module in (qwen, critic_qwen):
+    decoder_qwen = AutoModelForCausalLM.from_pretrained(cfg["base_model"], torch_dtype=torch.bfloat16,
+                                                         trust_remote_code=True).to(decoder_device).eval()
+    for module in (qwen, critic_qwen, decoder_qwen):
         for p in module.parameters(): p.requires_grad_(False)
     cfg["soft_token_target_rms"] = float(qwen.get_input_embeddings().weight.detach().float().square().mean().sqrt())
     rssm = QwenTransitionRSSMRecon(cfg, qwen.config.hidden_size).to(actor_device)
     actor = LatentActor(rssm, qwen.config.hidden_size).to(actor_device)
+    # Keep dynamics/posterior/prior/reward heads with the online actor state;
+    # reconstruction is the third-GPU branch of the same RSSM. This must be
+    # after constructing actor: nn.Module.to() recursively visits its RSSM.
+    rssm.decoder_z_projector.to(decoder_device)
+    if rssm.decoder_uses_h:
+        rssm.decoder_h_projector.to(decoder_device)
+        rssm.decoder_h_soft_token_gain = rssm.decoder_h_soft_token_gain.to(decoder_device)
+    rssm.decoder_soft_token_gain = rssm.decoder_soft_token_gain.to(decoder_device)
     critic = LatentCritic(int(cfg["latent_h_dim"]), int(cfg["latent_z_dim"]), critic_qwen.config.hidden_size,
                           int(cfg["h_soft_tokens"]), int(cfg["z_soft_tokens"]), cfg["soft_token_target_rms"]).to(critic_device)
     actor_opt = torch.optim.AdamW(actor.parameters(), lr=float(cfg["actor_learning_rate"]), weight_decay=float(cfg["weight_decay"]))
@@ -410,7 +437,8 @@ def main() -> None:
     root = Path(cfg["output_root"]) / args.run_name; root.mkdir(parents=True, exist_ok=False)
     commit = args.source_commit or subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     manifest = {**cfg, "run_name": args.run_name, "git_commit": commit, "actor_device": str(actor_device),
-                "critic_device": str(critic_device), "transition_observation_tokens": 0,
+                "critic_device": str(critic_device), "decoder_device": str(decoder_device),
+                "transition_observation_tokens": 0,
                 "actor_observation_tokens": 0, "critic_observation_tokens": 0,
                 "posterior_observation_tokens": "real_o_t", "reconstruction_target": "real_o_t",
                 "transition_interface": f"soft(h)x{rssm.h_k}+soft(z)x{rssm.z_k}+action"}
@@ -432,7 +460,8 @@ def main() -> None:
         if not records: raise RuntimeError("online rollout yielded no transitions")
         env_steps += len(records)
         ppo = ppo_update(cfg, records, qwen, critic_qwen, tokenizer, actor, critic, actor_opt, critic_opt, actor_device, critic_device)
-        wm = world_model_update(cfg, records, qwen, tokenizer, rssm, actor_opt, actor_device)
+        wm = world_model_update(cfg, records, qwen, decoder_qwen, tokenizer, rssm, actor_opt,
+                                actor_device, decoder_device)
         metrics = {"online/env_steps": float(env_steps), "online/mean_reward": rollout["reward"] / max(rollout["episodes"], 1),
                    "online/success_rate": rollout["success"] / max(rollout["episodes"], 1), **ppo, **wm}
         if update == 1 or update % int(cfg["log_every_updates"]) == 0:
