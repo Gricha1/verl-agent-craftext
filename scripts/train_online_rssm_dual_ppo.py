@@ -227,6 +227,10 @@ def collect_rollout(cfg, qwen, tokenizer, rssm, actor, critic, actor_device, cri
                 break
     finally:
         env.envs.close()
+    # Emit zeros explicitly: a short smoke rollout can contain no terminal
+    # state, hence never touch the success counter.
+    for key in ("reward", "steps", "repeated", "success"):
+        stats.setdefault(key, 0.0)
     stats["episodes"] = float(n)
     return records, dict(stats)
 
