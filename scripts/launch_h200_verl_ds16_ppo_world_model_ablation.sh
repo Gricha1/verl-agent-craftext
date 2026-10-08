@@ -38,6 +38,7 @@ if [[ "$mode" == "reward" ]]; then
 fi
 
 checkpoint_dir="$runs_root/checkpoints/$run_name"
+ray_temp_dir="/tmp/ray_${gpus//,/}${mode:0:1}"
 echo "launching native verl PPO: run=$run_name mode=$mode GPUs=$gpus"
 nohup docker run --rm --network host --memory=300g --shm-size=32g --gpus "\"device=$gpus\"" \
   --entrypoint /usr/home/workspace/docker/entrypoint.sh \
@@ -45,7 +46,7 @@ nohup docker run --rm --network host --memory=300g --shm-size=32g --gpus "\"devi
   -e COMET_PROJECT_NAME="${COMET_PROJECT_NAME:-verl_agent_caged_craftext}" \
   -e SKIP_ALFWORLD_DATA_SETUP=1 -e CRAFTAX_RELOAD_TEXTURES=True \
   -e CUDA_VISIBLE_DEVICES=0,1,2 -e N_GPUS=3 -e FORCE_NEW_RAY_CLUSTER=1 \
-  -e RAY_TEMP_DIR="/tmp/ray_${run_name}" \
+  -e RAY_TEMP_DIR="$ray_temp_dir" \
   -e PYTHONPATH="/usr/home/workspace:/usr/home/workspace/caged_craftext:/usr/home/workspace/caged_craftext/Craftax" \
   -e RUN_NAME="$run_name" \
   -v "$repo_root:/usr/home/workspace" -v "$runs_root:$runs_root" \
