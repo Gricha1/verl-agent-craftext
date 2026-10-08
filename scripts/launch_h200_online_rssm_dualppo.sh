@@ -20,6 +20,10 @@ if [[ -z "${COMET_API_KEY:-}" && -r "$HOME/.hosts_comet" ]]; then
   COMET_API_KEY="$(tr -d '\r\n' < "$HOME/.hosts_comet")"
 fi
 [[ -n "${COMET_API_KEY:-}" ]] || { echo "COMET API credential unavailable" >&2; exit 2; }
+# `docker -e NAME` forwards only an exported shell variable.  Reading the
+# host credential above creates a shell variable, so export it explicitly
+# without printing it.
+export COMET_API_KEY
 mkdir -p "$latent_root/logs" "$latent_root/runs"
 log="$latent_root/logs/${run_name}.log"
 commit="$(git rev-parse HEAD)"
