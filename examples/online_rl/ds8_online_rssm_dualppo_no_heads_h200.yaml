@@ -6,7 +6,8 @@ comet_project: verl-agent-caged-craftext
 seed: 20261008
 env_eval_seed: 20261018
 eval_seed: 20261028
-env_eval_craftext_settings: debug_square_8x8
+# STONE/WOOD/WATER inner-corner locations are re-permuted on every environment reset.
+env_eval_craftext_settings: debug_square_16x16
 env_eval_num_episodes: 4
 env_episode_max_steps: 50
 env_eval_history_length: 50
