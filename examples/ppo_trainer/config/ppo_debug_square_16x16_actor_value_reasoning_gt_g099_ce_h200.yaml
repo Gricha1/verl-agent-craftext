@@ -66,5 +66,6 @@ overrides:
   - trainer.nnodes=1
   - trainer.critic_warmup=0
   - trainer.resume_mode=disable
+  - trainer.val_before_train=False
   - trainer.save_freq=100
   - trainer.test_freq=20

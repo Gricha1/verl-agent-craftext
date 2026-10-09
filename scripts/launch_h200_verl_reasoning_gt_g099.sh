@@ -68,7 +68,7 @@ nohup docker run --rm --network host --memory=300g --shm-size=32g --gpus "\"devi
     actor_rollout_ref.actor.ppo_mini_batch_size=64 \
     critic.ppo_micro_batch_size_per_gpu=16 critic.ppo_mini_batch_size=64 \
     trainer.n_gpus_per_node=2 trainer.nnodes=1 trainer.critic_warmup=0 \
-    trainer.resume_mode=disable trainer.save_freq=100 trainer.test_freq=20 \
+    trainer.resume_mode=disable trainer.val_before_train=False trainer.save_freq=100 trainer.test_freq=20 \
     trainer.default_local_dir="$checkpoint_dir" \
   >"$log" 2>&1 < /dev/null &
 pid=$!
