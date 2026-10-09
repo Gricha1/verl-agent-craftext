@@ -72,4 +72,5 @@ bash examples/ppo_trainer/run_caged_craftext_lora_job.sh \
   trainer.max_critic_ckpt_to_keep=1 \
   trainer.default_local_dir="$CHECKPOINT_DIR" \
   trainer.experiment_name="$RUN_NAME" \
-  ++ray_init.local_fs_capacity_threshold=0.999
+  ++ray_init.local_fs_capacity_threshold=0.999 \
+  "$@"

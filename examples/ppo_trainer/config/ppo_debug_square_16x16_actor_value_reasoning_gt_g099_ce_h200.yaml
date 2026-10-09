@@ -1,0 +1,70 @@
+# Native verl-agent/vLLM 16x16 reasoning baseline for H200.
+#
+# This is deliberately a direct-observation baseline: the generated reasoning
+# describes the real text grid, then terminates in one canonical action name.
+# It is not an RSSM ablation; actor/critic therefore retain their historical
+# observation input.  Its token score and shared value target are both the
+# discounted remaining environment return G_t (gamma=0.99).
+job:
+  run_name: ds16_shared_av_reasoning_gt_g099_ce_h200
+  num_optimistic_envs: 64
+  max_response_length: 320
+  prompt_template_type: single_token_action_reasoning
+  history_length: 50
+  reasoning_history_length: 3
+  actor_value_loss_type: ce
+
+overrides:
+  - ++env.craftext_settings=debug_square_16x16
+  - +env.use_optimistic_parallel=True
+  - +env.optimistic_reset_ratio=8
+  - +env.use_ray_text_render_workers=False
+  - +env.value_prompt_template_type=single_token_return
+  - +env.value_return_min=-26
+  - +env.value_return_max=16
+  - +env.value_return_bin_step=1.5
+  - ++env.use_jax_gpu=False
+  - env.max_steps=50
+  - env.history_length=50
+  - +env.reasoning_history_length=3
+  - +env.enable_reasoning=True
+  - +env.prompt_template_type=single_token_action_reasoning
+  - data.max_prompt_length=3072
+  - data.max_response_length=320
+
+  # Do not assign the same undiscounted episode total to every response.
+  - reward_model.use_episode_return_as_token_reward=False
+  - reward_model.use_remaining_return_as_token_reward=True
+  - reward_model.remaining_return_gamma=0.99
+  - algorithm.gamma=1.0
+  - algorithm.lam=1.0
+  - algorithm.gae_by_trajectory=False
+
+  # Shared actor/value LLM; value CE is supervised by the same G_t target.
+  - algorithm.use_actor_value_token=True
+  - actor_rollout_ref.actor.actor_value_token=True
+  - actor_rollout_ref.actor.actor_value_target_encoding=two_hot
+  - actor_rollout_ref.actor.actor_value_loss_type=ce
+  - actor_rollout_ref.actor.actor_value_loss_coef=1.0
+  - actor_rollout_ref.actor.actor_value_target_from_returns=True
+  - actor_rollout_ref.actor.actor_value_return_min=-26
+  - actor_rollout_ref.actor.actor_value_return_max=16
+  - actor_rollout_ref.actor.actor_value_return_bin_step=1.5
+  - actor_rollout_ref.actor.actor_value_separate_optimizer_steps=True
+  - actor_rollout_ref.actor.actor_value_entropy_coef=0.1
+
+  - actor_rollout_ref.rollout.name=vllm
+  - actor_rollout_ref.rollout.gpu_memory_utilization=0.55
+  - actor_rollout_ref.rollout.tensor_model_parallel_size=1
+  - actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16
+  - actor_rollout_ref.actor.ppo_mini_batch_size=64
+  - critic.ppo_micro_batch_size_per_gpu=16
+  - critic.ppo_mini_batch_size=64
+  - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8
+  - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=8
+  - trainer.n_gpus_per_node=2
+  - trainer.nnodes=1
+  - trainer.critic_warmup=0
+  - trainer.resume_mode=disable
+  - trainer.save_freq=100
+  - trainer.test_freq=20
