@@ -436,7 +436,7 @@ def actor_probe(qwen, tokenizer, state: State, model, variants: tuple[str, ...],
         prompt = actor_base_prompt(state.task, state.observation, actor_suffix()) if variant == "base" else actor_hz_prompt(state.task, actor_suffix())
         soft = None if variant == "base" else actor_soft(qwen, model, state.h, state.z, variant)
         if soft is not None: assert_hz_contract(prompt, state.observation, state.history, soft, cfg)
-        raw = _generate(qwen, tokenizer, prompt, soft, int(cfg.get("env_eval_actor_max_new_tokens", 64)), generation={"do_sample": False})
+        raw = _generate(qwen, tokenizer, prompt, soft, int(cfg.get("env_eval_actor_max_new_tokens", 64)), assistant_prefix="<think>\n", generation={"do_sample": False})
         ids, valid = craftext_projection([raw]); action = str(ACTION_TO_TEXT[int(ids[0])]) if valid[0] and int(ids[0]) >= 0 else None
         reasoning = re.search(r"<think>\s*(.*?)\s*</think>", raw, re.I | re.S)
         records[variant] = {"prompt": prompt, "soft_token_count": 0 if soft is None else int(soft.shape[0]),
@@ -490,8 +490,9 @@ def continuation_smoke(qwen, tokenizer, model, state: State, cfg: dict[str, Any]
     for variant in ("base", "hz"):
         prompt = actor_base_prompt(state.task, state.observation, actor_suffix()) if variant == "base" else actor_hz_prompt(state.task, actor_suffix())
         soft = None if variant == "base" else actor_soft(qwen, model, state.h, state.z, "hz")
-        raw = _generate(qwen, tokenizer, prompt, soft, int(cfg.get("env_eval_actor_max_new_tokens", 64)), generation={"do_sample": False})
-        normalized_raw, normalized_prompt = " ".join(raw.split()), " ".join(prompt.split())
+        assistant_prefix = "<think>\n"
+        raw = _generate(qwen, tokenizer, prompt, soft, int(cfg.get("env_eval_actor_max_new_tokens", 64)), assistant_prefix=assistant_prefix, generation={"do_sample": False})
+        normalized_raw, normalized_prompt = " ".join(raw[len(assistant_prefix):].split()), " ".join(prompt.split())
         prompt_echo = len(normalized_raw) >= 16 and normalized_raw in normalized_prompt
         if not normalized_raw or prompt_echo:
             raise RuntimeError(f"{variant} generation smoke failed: decoded prompt text rather than a continuation: {raw!r}")
@@ -542,7 +543,7 @@ def free_generation_examples(qwen, tokenizer, model, states: list[State], cfg: d
             soft = None if variant == "base" else actor_soft(qwen, model, state.h, state.z, "hz")
             if soft is not None:
                 assert_hz_contract(prompt, state.observation, state.history, soft, cfg)
-            raw = _generate(qwen, tokenizer, prompt, soft, int(cfg.get("env_eval_actor_max_new_tokens", 64)), generation={"do_sample": False})
+            raw = _generate(qwen, tokenizer, prompt, soft, int(cfg.get("env_eval_actor_max_new_tokens", 64)), assistant_prefix="<think>\n", generation={"do_sample": False})
             parsed = parse_free_generation(raw, question.candidates)
             examples.append({"episode": state.episode, "seed": state.seed, "step": state.step, "question_id": question.question_id,
                              "question_group": question.group, "ground_truth": question.truth, "model": variant,
@@ -680,7 +681,7 @@ def autonomous(qwen, tokenizer, model, device: torch.device, cfg: dict[str, Any]
             for step in range(50):
                 before = position(worker); target = tuple(map(int, info["debug_goal_cell"])); prompt = actor_base_prompt(task, observation, actor_suffix()) if variant == "base" else actor_hz_prompt(task, actor_suffix()); soft = None if variant == "base" else actor_soft(qwen, model, h, z, "hz")
                 if soft is not None: assert_hz_contract(prompt, observation, [], soft, cfg)
-                raw = _generate(qwen, tokenizer, prompt, soft, int(cfg.get("env_eval_actor_max_new_tokens", 64)), generation={"do_sample": False}); ids, valid = craftext_projection([raw]); name = str(ACTION_TO_TEXT[int(ids[0])]) if valid[0] and int(ids[0]) >= 0 else "NOOP"
+                raw = _generate(qwen, tokenizer, prompt, soft, int(cfg.get("env_eval_actor_max_new_tokens", 64)), assistant_prefix="<think>\n", generation={"do_sample": False}); ids, valid = craftext_projection([raw]); name = str(ACTION_TO_TEXT[int(ids[0])]) if valid[0] and int(ids[0]) >= 0 else "NOOP"
                 _pixel, reward, done, info = worker.step(action_id(name), return_render=False); after = position(worker); total += float(reward)
                 trace.append({"step": step, "prompt": prompt, "raw_output": raw, "parsed_action": name if valid[0] else None, "executed_action": name, "reward": float(reward), "blocked": bool(name in MOVE_ACTIONS and before == after), "closer": bool(name in MOVE_ACTIONS and manhattan(after, target) < manhattan(before, target)), "repeated": name == previous})
                 h = transition(qwen, tokenizer, model, name, h, z, device, cfg).detach(); observation = str(info["text_render"]); qm, _qs, _ql, _hidden = posterior(qwen, tokenizer, model, task, observation, h[0], device, cfg); z = qm.detach(); previous = name

@@ -42,8 +42,9 @@ def main() -> None:
     embedding_rows = model.get_input_embeddings().weight.detach()[:10]
     records = []
     for name, text, soft in (("base", base_prompt, None), ("hz", hz_prompt, embedding_rows)):
-        raw = _generate(model, tokenizer, text, soft, args.max_new_tokens, generation={"do_sample": False})
-        normalized = " ".join(raw.split())
+        assistant_prefix = "<think>\n"
+        raw = _generate(model, tokenizer, text, soft, args.max_new_tokens, assistant_prefix=assistant_prefix, generation={"do_sample": False})
+        normalized = " ".join(raw[len(assistant_prefix):].split())
         prompt_echo = len(normalized) >= 16 and normalized in " ".join(text.split())
         if not normalized or prompt_echo:
             raise RuntimeError(f"{name} decoded a prompt prefix instead of new output: {raw!r}")
