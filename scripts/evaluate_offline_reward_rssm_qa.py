@@ -507,7 +507,9 @@ def representative_free_questions(states: list[State]) -> list[tuple[State, Ques
         episodes[state.episode].append(state)
     requested = (("Grounding", ("G1_target_direction", "G2_target_shortest_path_distance"), 1),
                  ("Current-state Z", ("Z1_cell_up", "Z5_blocked_actions"), 2),
-                 ("Memory H", ("H1_previous_action", "H6_last5_position_changes"), 2))
+                 # Keep an immediate and delayed-action memory probe in every
+                 # qualitative bundle; H6 remains available in candidate QA.
+                 ("Memory H", ("H1_previous_action", "H2_action_2_steps_ago"), 2))
     for episode_states in episodes.values():
         for group, preferred_ids, needed in requested:
             found: list[tuple[State, Question]] = []
