@@ -554,7 +554,11 @@ def write_markdown(path: Path, summary: list[dict[str, Any]], macro: list[dict[s
 
 def write_html(path: Path, rows: list[dict[str, Any]]) -> None:
     columns = ["episode", "seed", "step", "question_id", "question_group", "question_text", "ground_truth", "base_answer", "base_correct", "hz_answer", "hz_correct", "h_only_answer", "z_only_answer", "base_qa_reasoning_short", "hz_qa_reasoning_short", "base_actor_raw_output", "hz_actor_raw_output", "frame_path"]
-    body = "\n".join("<tr>" + "".join(f"<td>{('<a href=\"' + html.escape(r[c]) + '\">frame</a>') if c == 'frame_path' else html.escape(str(r.get(c, '')))}</td>" for c in columns) + "</tr>" for r in rows)
+    def cell(row: dict[str, Any], column: str) -> str:
+        if column == "frame_path":
+            return f'<td><a href="{html.escape(str(row.get(column, "")))}">frame</a></td>'
+        return f"<td>{html.escape(str(row.get(column, '')))}</td>"
+    body = "\n".join("<tr>" + "".join(cell(row, column) for column in columns) + "</tr>" for row in rows)
     path.write_text("<html><body><table border=\"1\"><tr>" + "".join(f"<th>{c}</th>" for c in columns) + "</tr>" + body + "</table></body></html>", encoding="utf-8")
 
 
