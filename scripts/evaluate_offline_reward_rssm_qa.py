@@ -18,8 +18,9 @@ import hashlib
 import html
 import json
 import os
+import re
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
@@ -47,12 +48,22 @@ DELTAS = {"UP": (-1, 0), "DOWN": (1, 0), "LEFT": (0, -1), "RIGHT": (0, 1)}
 QUADRANTS = ("RIGHT_UP", "RIGHT_DOWN", "LEFT_UP", "LEFT_DOWN")
 CONSEQUENCES = ("CLOSER", "FARTHER", "SAME")
 OBJECTS = ("STONE", "WOOD", "WATER")
-# The identical sequence is used for every seed and every model.  It includes
-# border collisions, reversals, revisits, and moves in both axes.  The stored
-# trajectory itself is the authoritative executed-action record.
-FIXED_ACTIONS = tuple("UP UP UP UP UP LEFT LEFT LEFT LEFT LEFT DOWN DOWN RIGHT RIGHT "
-                      "UP RIGHT DOWN LEFT DOWN LEFT UP UP RIGHT RIGHT DOWN DOWN LEFT LEFT "
-                      "UP DOWN LEFT RIGHT UP DOWN".split())
+# Six-cell sweeps deliberately reach a debug-square border from the usual
+# start locations, while the four loops guarantee reversals and revisits.
+# Every schedule has exactly ten occurrences of each movement direction.
+_SCHEDULE_TEMPLATE = tuple(("UP " * 6 + "DOWN " * 6 + "LEFT " * 6 + "RIGHT " * 6 +
+                            "UP RIGHT DOWN LEFT " * 4).split())
+
+
+def action_schedule(seed: int) -> tuple[str, ...]:
+    """Seed-deterministic, balanced schedule shared by every evaluated mode."""
+    directions = MOVE_ACTIONS
+    shift = int(seed) % len(directions)
+    rotate = {direction: directions[(index + shift) % len(directions)] for index, direction in enumerate(directions)}
+    schedule = tuple(rotate[action] for action in _SCHEDULE_TEMPLATE)
+    if Counter(schedule) != Counter({action: 10 for action in MOVE_ACTIONS}):
+        raise AssertionError(f"unbalanced paired schedule for seed={seed}: {Counter(schedule)}")
+    return schedule
 
 
 @dataclass
@@ -66,6 +77,7 @@ class State:
     player: tuple[int, int]
     target: tuple[int, int]
     history: list[dict[str, Any]]
+    action_schedule: tuple[str, ...]
     h: torch.Tensor
     z: torch.Tensor
 
@@ -343,20 +355,21 @@ def collect_states(qwen, tokenizer, model, device: torch.device, cfg: dict[str, 
     """Generate paired trajectories before a single QA/model answer is requested."""
     states: list[State] = []
     for episode, seed in enumerate(seeds):
+        schedule = action_schedule(seed)
         worker = CagedCraftextWorker(seed=seed, env_kwargs={"config_name": "debug_square_8x8", "use_debug_square_map": True, "observation_type": "ascii", "encode_form": "embedding"})
         _pixel, info = worker.reset(scenario_idx=seed % 3, return_render=False)
         task, observation = str(info["instruction"]), str(info["text_render"])
         h = torch.zeros(1, int(cfg["latent_h_dim"]), device=device)
         qm, _qs, _ql, _hidden = posterior(qwen, tokenizer, model, task, observation, h[0], device, cfg)
         z, history = qm.detach(), []
-        for step in range(len(FIXED_ACTIONS) + 1):
+        for step in range(len(schedule) + 1):
             current_info = info
-            states.append(State(episode, seed, step, task, observation, state_map(worker), position(worker), tuple(map(int, current_info["debug_goal_cell"])), list(history), h.detach().clone(), z.detach().clone()))
+            states.append(State(episode, seed, step, task, observation, state_map(worker), position(worker), tuple(map(int, current_info["debug_goal_cell"])), list(history), schedule, h.detach().clone(), z.detach().clone()))
             if limit is not None and len(states) >= limit:
                 return states
-            if step == len(FIXED_ACTIONS):
+            if step == len(schedule):
                 break
-            action, before = FIXED_ACTIONS[step], position(worker)
+            action, before = schedule[step], position(worker)
             before_map = state_map(worker)
             dr_try, dc_try = DELTAS[action]
             attempt = (before[0] + dr_try, before[1] + dc_try)
@@ -382,7 +395,39 @@ def serialise_paired_trajectory(states: list[State]) -> list[dict[str, Any]]:
     return [{"episode": state.episode, "seed": state.seed, "step": state.step,
              "task": state.task, "observation": state.observation, "map": state.map_names,
              "player": state.player, "target": state.target, "executed_history": state.history,
-             "fixed_action_schedule": list(FIXED_ACTIONS)} for state in states]
+             "action_schedule": list(state.action_schedule),
+             "action_schedule_counts": dict(Counter(state.action_schedule))} for state in states]
+
+
+def memory_target_distribution(states: list[State]) -> dict[str, Any]:
+    """Audit label balance before scoring memory questions."""
+    def tally(values: Iterable[Any], expected: Iterable[str] | None = None) -> dict[str, int]:
+        counts = Counter(str(value) for value in values)
+        if expected is not None:
+            for value in expected: counts.setdefault(value, 0)
+        return dict(sorted(counts.items()))
+
+    eligible = [state for state in states if state.history]
+    previous = [state.history[-1] for state in eligible]
+    two_back = [state.history[-2]["action"] for state in states if len(state.history) >= 2]
+    three_back = [state.history[-3]["action"] for state in states if len(state.history) >= 3]
+    report = {
+        "schedule_counts_by_seed": {str(state.seed): dict(Counter(state.action_schedule)) for state in states if state.step == 0},
+        "previous_action": tally((item["action"] for item in previous), MOVE_ACTIONS),
+        "action_2_steps_ago": tally(two_back, MOVE_ACTIONS),
+        "action_3_steps_ago": tally(three_back, MOVE_ACTIONS),
+        "changed": tally(("changed" if item["changed"] else "not_changed" for item in previous), ("changed", "not_changed")),
+        "blocked": tally(("blocked" if item["tree_or_border_collision"] else "not_blocked" for item in previous), ("blocked", "not_blocked")),
+        "visited": tally(("visited" if any(tuple(item["before"]) == state.player for item in state.history) else "not_visited" for state in eligible), ("visited", "not_visited")),
+    }
+    warnings: list[str] = []
+    for name in ("previous_action", "action_2_steps_ago", "action_3_steps_ago", "changed", "blocked", "visited"):
+        counts = list(report[name].values())
+        observed = [count for count in counts if count > 0]
+        if observed and (0 in counts or max(observed) > 3 * min(observed)):
+            warnings.append(f"{name} is imbalanced: {report[name]}")
+    report["warnings"] = warnings
+    return report
 
 
 def actor_probe(qwen, tokenizer, state: State, model, variants: tuple[str, ...], cfg: dict[str, Any]) -> dict[str, Any]:
@@ -393,7 +438,9 @@ def actor_probe(qwen, tokenizer, state: State, model, variants: tuple[str, ...],
         if soft is not None: assert_hz_contract(prompt, state.observation, state.history, soft, cfg)
         raw = _generate(qwen, tokenizer, prompt, soft, int(cfg.get("env_eval_actor_max_new_tokens", 64)), generation={"do_sample": False})
         ids, valid = craftext_projection([raw]); action = str(ACTION_TO_TEXT[int(ids[0])]) if valid[0] and int(ids[0]) >= 0 else None
-        records[variant] = {"prompt": prompt, "soft_token_count": 0 if soft is None else int(soft.shape[0]), "raw_output": raw, "parsed_action": action,
+        reasoning = re.search(r"<think>\s*(.*?)\s*</think>", raw, re.I | re.S)
+        records[variant] = {"prompt": prompt, "soft_token_count": 0 if soft is None else int(soft.shape[0]),
+                            "raw_reasoning": reasoning.group(1).strip() if reasoning else "", "raw_output": raw, "parsed_action": action,
                             "closer": bool(action in MOVE_ACTIONS and action_consequence(state, action) == "CLOSER"),
                             "blocked": bool(action in MOVE_ACTIONS and is_blocked(state, action))}
     return records
@@ -425,6 +472,31 @@ def short_reasoning(raw: str, limit: int = 180) -> str:
     """Compact audit text for HTML/GIF; the complete response stays in JSON."""
     value = " ".join(str(raw).replace("<think>", "").replace("</think>", "").split())
     return value[:limit] + ("..." if len(value) > limit else "")
+
+
+def parse_free_generation(raw: str, candidates: Iterable[str]) -> dict[str, Any]:
+    """Parse only explicit answer tags; never infer an answer from prose."""
+    think = re.search(r"<think>\s*(.*?)\s*</think>", raw, re.I | re.S)
+    answers = re.findall(r"<answer>\s*(.*?)\s*</answer>", raw, re.I | re.S)
+    candidate_map = {candidate.casefold(): candidate for candidate in candidates}
+    answer = candidate_map.get(answers[-1].strip().casefold()) if answers else None
+    return {"think": think.group(1).strip() if think else "", "answer": answer,
+            "parse_success": answer is not None}
+
+
+def continuation_smoke(qwen, tokenizer, model, state: State, cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """Fail closed when generation decodes a prompt prefix instead of new tokens."""
+    checks = []
+    for variant in ("base", "hz"):
+        prompt = actor_base_prompt(state.task, state.observation, actor_suffix()) if variant == "base" else actor_hz_prompt(state.task, actor_suffix())
+        soft = None if variant == "base" else actor_soft(qwen, model, state.h, state.z, "hz")
+        raw = _generate(qwen, tokenizer, prompt, soft, int(cfg.get("env_eval_actor_max_new_tokens", 64)), generation={"do_sample": False})
+        normalized_raw, normalized_prompt = " ".join(raw.split()), " ".join(prompt.split())
+        prompt_echo = len(normalized_raw) >= 16 and normalized_raw in normalized_prompt
+        if not normalized_raw or prompt_echo:
+            raise RuntimeError(f"{variant} generation smoke failed: decoded prompt text rather than a continuation: {raw!r}")
+        checks.append({"model": variant, "prompt": prompt, "raw_output": raw, "prompt_echo": prompt_echo})
+    return checks
 
 
 def representative_free_questions(states: list[State]) -> list[tuple[State, Question]]:
@@ -469,18 +541,29 @@ def free_generation_examples(qwen, tokenizer, model, states: list[State], cfg: d
             if soft is not None:
                 assert_hz_contract(prompt, state.observation, state.history, soft, cfg)
             raw = _generate(qwen, tokenizer, prompt, soft, int(cfg.get("env_eval_actor_max_new_tokens", 64)), generation={"do_sample": False})
+            parsed = parse_free_generation(raw, question.candidates)
             examples.append({"episode": state.episode, "seed": state.seed, "step": state.step, "question_id": question.question_id,
-                             "ground_truth": question.truth, "model": variant, "prompt": prompt, "raw_output": raw})
+                             "question_group": question.group, "ground_truth": question.truth, "model": variant,
+                             "prompt": prompt, "raw_output": raw, "extracted_think": parsed["think"],
+                             "extracted_answer": parsed["answer"], "parse_success": parsed["parse_success"],
+                             "correct": bool(parsed["answer"] == question.truth)})
     return examples
 
 
 def attach_free_reasoning(rows: list[dict[str, Any]], examples: list[dict[str, Any]]) -> None:
     index = {(row["episode"], row["step"], row["question_id"]): row for row in rows}
     for row in rows:
-        row["base_qa_reasoning_short"] = ""; row["hz_qa_reasoning_short"] = ""
+        for variant in ("base", "hz"):
+            row[f"{variant}_qa_reasoning_short"] = ""
+            row[f"{variant}_freegen_answer"] = ""
+            row[f"{variant}_freegen_correct"] = None
+            row[f"{variant}_freegen_parse_success"] = None
     for item in examples:
         row = index[(item["episode"], item["step"], item["question_id"])]
         row[f"{item['model']}_qa_reasoning_short"] = short_reasoning(item["raw_output"])
+        row[f"{item['model']}_freegen_answer"] = item["extracted_answer"] or ""
+        row[f"{item['model']}_freegen_correct"] = item["correct"]
+        row[f"{item['model']}_freegen_parse_success"] = item["parse_success"]
 
 
 def paired_actor_probe_summary(probes: dict[tuple[int, int], dict[str, Any]]) -> dict[str, Any]:
@@ -505,7 +588,12 @@ def render_map(state: State) -> str:
 def draw_frame(path: Path, state: State, question: Question, row: dict[str, Any]) -> Image.Image:
     base_reason = row.get("base_qa_reasoning_short") or short_reasoning(row.get("base_actor_raw_output", ""), 110)
     hz_reason = row.get("hz_qa_reasoning_short") or short_reasoning(row.get("hz_actor_raw_output", ""), 110)
-    font = ImageFont.load_default(); lines = [f"Episode {state.seed} | step {state.step} | Task: {state.task}", "", *render_map(state).splitlines(), "", f"{question.question_id}: {question.text}", f"Ground truth: {question.truth}", f"Base Qwen: {row['base_answer']} {'OK' if row['base_correct'] else 'X'}", f"HZ Qwen:   {row['hz_answer']} {'OK' if row['hz_correct'] else 'X'}", f"Base actor action: {row.get('base_actor_action')}", f"HZ actor action:   {row.get('hz_actor_action')}", f"Base reasoning: {base_reason}", f"HZ reasoning: {hz_reason}"]
+    def free_line(variant: str) -> str:
+        parsed = row.get(f"{variant}_freegen_parse_success")
+        if parsed is None: return f"{variant.upper()} freegen: n/a"
+        answer = row.get(f"{variant}_freegen_answer") or "PARSE_FAILURE"
+        return f"{variant.upper()} freegen: {answer} {'OK' if row.get(f'{variant}_freegen_correct') else 'X'}"
+    font = ImageFont.load_default(); lines = [f"Episode {state.seed} | step {state.step} | Task: {state.task}", "", *render_map(state).splitlines(), "", f"{question.question_id}: {question.text}", f"Ground truth: {question.truth}", f"Base candidate: {row['base_answer']} {'OK' if row['base_correct'] else 'X'}", f"HZ candidate:   {row['hz_answer']} {'OK' if row['hz_correct'] else 'X'}", free_line("base"), free_line("hz"), f"Base actor action: {row.get('base_actor_action')}", f"HZ actor action:   {row.get('hz_actor_action')}", f"Base reasoning: {base_reason}", f"HZ reasoning: {hz_reason}"]
     if question.group == "Memory H": lines.append("true last actions: " + " -> ".join(x["action"] for x in state.history[-5:]))
     image = Image.new("RGB", (920, max(260, 16 * (len(lines) + 2))), "white"); draw = ImageDraw.Draw(image)
     for i, line in enumerate(lines): draw.text((10, 8 + 16 * i), line, fill="black", font=font)
@@ -526,17 +614,33 @@ def write_visuals(output: Path, states: list[State], rows: list[dict[str, Any]])
         frames[0].save(directory / f"{question_id}.gif", save_all=True, append_images=frames[1:], duration=650, loop=0)
 
 
-def aggregate(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def aggregate(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     summaries = []
     groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows: groups[(row["question_group"], row["question_id"], row["question"])].append(row)
     for (group, question_id, label), values in groups.items():
-        summaries.append({"Group": group, "Question": label, "question_id": question_id, "N": len(values), **{f"{variant} Qwen acc": float(np.mean([v[f"{variant}_correct"] for v in values])) for variant in ("base", "hz", "h_only", "z_only")}, "Delta HZ-Base": float(np.mean([v["hz_correct"] for v in values]) - np.mean([v["base_correct"] for v in values]))})
-    macro = []
+        free = {variant: [value for value in values if value[f"{variant}_freegen_parse_success"] is not None] for variant in ("base", "hz")}
+        summaries.append({"Group": group, "Question": label, "question_id": question_id, "N": len(values),
+                          **{f"{variant} Qwen acc": float(np.mean([v[f"{variant}_correct"] for v in values])) for variant in ("base", "hz", "h_only", "z_only")},
+                          "Base freegen acc": float(np.mean([v["base_freegen_correct"] for v in free["base"]])) if free["base"] else None,
+                          "HZ freegen acc": float(np.mean([v["hz_freegen_correct"] for v in free["hz"]])) if free["hz"] else None,
+                          "Base freegen parse": float(np.mean([v["base_freegen_parse_success"] for v in free["base"]])) if free["base"] else None,
+                          "HZ freegen parse": float(np.mean([v["hz_freegen_parse_success"] for v in free["hz"]])) if free["hz"] else None,
+                          "Delta HZ-Base": float(np.mean([v["hz_correct"] for v in values]) - np.mean([v["base_correct"] for v in values]))})
+    candidate_macro = []
     for variant in ("base", "hz", "h_only", "z_only"):
         selected = {group: [r[f"{variant}_correct"] for r in rows if r["question_group"] == group] for group in ("Grounding", "Current-state Z", "Memory H")}
-        macro.append({"Model": {"base": "Base Qwen", "hz": "HZ Qwen", "h_only": "H-only", "z_only": "Z-only"}[variant], "Grounding": float(np.mean(selected["Grounding"])), "Current-state Z": float(np.mean(selected["Current-state Z"])), "Memory H": float(np.mean(selected["Memory H"])) if selected["Memory H"] else None, "Overall": float(np.mean([r[f"{variant}_correct"] for r in rows]))})
-    return summaries, macro
+        candidate_macro.append({"Model": {"base": "Base Qwen", "hz": "HZ Qwen", "h_only": "H-only", "z_only": "Z-only"}[variant], "Grounding": float(np.mean(selected["Grounding"])), "Current-state Z": float(np.mean(selected["Current-state Z"])), "Memory H": float(np.mean(selected["Memory H"])) if selected["Memory H"] else None, "Overall": float(np.mean([r[f"{variant}_correct"] for r in rows]))})
+    freegen_macro = []
+    for variant in ("base", "hz"):
+        selected = [row for row in rows if row[f"{variant}_freegen_parse_success"] is not None]
+        group_values = {group: [row for row in selected if row["question_group"] == group] for group in ("Grounding", "Current-state Z", "Memory H")}
+        freegen_macro.append({"Model": "Base Qwen" if variant == "base" else "HZ Qwen",
+                              **{group: float(np.mean([row[f"{variant}_freegen_correct"] for row in values])) if values else None for group, values in group_values.items()},
+                              "Overall": float(np.mean([row[f"{variant}_freegen_correct"] for row in selected])) if selected else None,
+                              "Parse rate": float(np.mean([row[f"{variant}_freegen_parse_success"] for row in selected])) if selected else None,
+                              "N": len(selected)})
+    return summaries, candidate_macro, freegen_macro
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -545,15 +649,15 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer = csv.DictWriter(f, fieldnames=list(rows[0])); writer.writeheader(); writer.writerows(rows)
 
 
-def write_markdown(path: Path, summary: list[dict[str, Any]], macro: list[dict[str, Any]], actor: list[dict[str, Any]]) -> None:
+def write_markdown(path: Path, summary: list[dict[str, Any]], candidate_macro: list[dict[str, Any]], freegen_macro: list[dict[str, Any]], actor: list[dict[str, Any]]) -> None:
     def table(values: list[dict[str, Any]]) -> str:
         if not values: return ""
         columns = list(values[0]); return "| " + " | ".join(columns) + " |\n|" + "|".join(["---"] * len(columns)) + "|\n" + "\n".join("| " + " | ".join("" if value[c] is None else f"{value[c]:.4f}" if isinstance(value[c], float) else str(value[c]) for c in columns) + " |" for value in values)
-    path.write_text("# Offline reward-RSSM paired QA evaluation\n\n## Question accuracy\n\n" + table(summary) + "\n\n## Group macro\n\n" + table(macro) + "\n\n## Autonomous actor\n\n" + table(actor) + "\n", encoding="utf-8")
+    path.write_text("# Offline reward-RSSM paired QA evaluation\n\n## Candidate question accuracy\n\n" + table(summary) + "\n\n## Candidate group macro\n\n" + table(candidate_macro) + "\n\n## Free-generation group macro\n\n" + table(freegen_macro) + "\n\n## Autonomous actor\n\n" + table(actor) + "\n", encoding="utf-8")
 
 
 def write_html(path: Path, rows: list[dict[str, Any]]) -> None:
-    columns = ["episode", "seed", "step", "question_id", "question_group", "question_text", "ground_truth", "base_answer", "base_correct", "hz_answer", "hz_correct", "h_only_answer", "z_only_answer", "base_qa_reasoning_short", "hz_qa_reasoning_short", "base_actor_raw_output", "hz_actor_raw_output", "frame_path"]
+    columns = ["episode", "seed", "step", "question_id", "question_group", "question_text", "ground_truth", "base_answer", "base_correct", "hz_answer", "hz_correct", "base_freegen_answer", "base_freegen_correct", "base_freegen_parse_success", "hz_freegen_answer", "hz_freegen_correct", "hz_freegen_parse_success", "h_only_answer", "z_only_answer", "base_qa_reasoning_short", "hz_qa_reasoning_short", "base_actor_raw_output", "hz_actor_raw_output", "frame_path"]
     def cell(row: dict[str, Any], column: str) -> str:
         if column == "frame_path":
             return f'<td><a href="{html.escape(str(row.get(column, "")))}">frame</a></td>'
@@ -594,24 +698,29 @@ def main() -> None:
     if args.base_model is not None:
         cfg["base_model"] = str(args.base_model)
     cfg.update({"max_sequence_length": int(cfg.get("max_sequence_length", 3072)), "env_eval_actor_max_new_tokens": int(cfg.get("env_eval_actor_max_new_tokens", 64))})
+    # An online PPO update is not an offline reconstruction checkpoint.  Refuse
+    # the online trainer's ``rssm`` payload before allocating a model or GPU.
+    loaded = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    if "model" not in loaded or "rssm" in loaded:
+        raise RuntimeError(f"expected offline reconstruction payload key 'model', got {sorted(loaded)}; online PPO checkpoints are forbidden")
     manifest = checkpoint_manifest(args.run_dir, args.checkpoint, cfg, args.output_dir)
     device = torch.device(args.device); tokenizer = AutoTokenizer.from_pretrained(cfg["base_model"], trust_remote_code=True); tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token; tokenizer.padding_side = "left"
     qwen = AutoModelForCausalLM.from_pretrained(cfg["base_model"], torch_dtype=torch.bfloat16, trust_remote_code=True).to(device).eval()
     for p in qwen.parameters(): p.requires_grad_(False)
     cfg["soft_token_target_rms"] = float(qwen.get_input_embeddings().weight.detach().float().square().mean().sqrt())
-    model = QwenTransitionRSSMRecon(cfg, qwen.config.hidden_size).to(device).eval(); loaded = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    # Offline reconstruction runs store ``model``; the compatible online
-    # reward-RSSM trainer stores the identical RSSM module under ``rssm``.
-    model_key = "model" if "model" in loaded else "rssm" if "rssm" in loaded else None
-    if model_key is None:
-        raise KeyError(f"checkpoint has neither 'model' nor 'rssm': {sorted(loaded)}")
-    model.load_state_dict(loaded[model_key], strict=True)
-    manifest["checkpoint_payload_key"] = model_key
-    manifest["checkpoint_step"] = loaded.get("step", loaded.get("update"))
+    model = QwenTransitionRSSMRecon(cfg, qwen.config.hidden_size).to(device).eval()
+    model.load_state_dict(loaded["model"], strict=True)
+    manifest["checkpoint_payload_key"] = "model"
+    manifest["checkpoint_step"] = loaded.get("step")
     (args.output_dir / "checkpoint_identity.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     seeds = list(range(args.seed_start, args.seed_start + (8 if args.full else 1))); states = collect_states(qwen, tokenizer, model, device, cfg, seeds, None if args.full else args.max_states)
     if not states: raise RuntimeError("fixed trajectory generated no states")
     (args.output_dir / "paired_trajectories.json").write_text(json.dumps(serialise_paired_trajectory(states), indent=2), encoding="utf-8")
+    memory_distribution = memory_target_distribution(states)
+    (args.output_dir / "memory_target_distribution.json").write_text(json.dumps(memory_distribution, indent=2), encoding="utf-8")
+    print(json.dumps({"memory_target_distribution": memory_distribution}, indent=2), flush=True)
+    smoke = continuation_smoke(qwen, tokenizer, model, states[0], cfg)
+    (args.output_dir / "generation_smoke.json").write_text(json.dumps(smoke, indent=2), encoding="utf-8")
     rows, probes = evaluate_questions(qwen, tokenizer, model, states, cfg, args.candidate_batch_size)
     free_examples = free_generation_examples(qwen, tokenizer, model, states, cfg)
     attach_free_reasoning(rows, free_examples)
@@ -619,9 +728,12 @@ def main() -> None:
     (args.output_dir / "actor_probe.json").write_text(json.dumps({f"{k[0]}:{k[1]}": v for k, v in probes.items()}, indent=2), encoding="utf-8")
     (args.output_dir / "actor_probe_summary.json").write_text(json.dumps(paired_actor_probe_summary(probes), indent=2), encoding="utf-8")
     (args.output_dir / "free_generation.json").write_text(json.dumps(free_examples, indent=2), encoding="utf-8")
-    summary, macro = aggregate(rows); write_csv(args.output_dir / "question_summary.csv", summary); write_csv(args.output_dir / "group_macro.csv", macro)
+    summary, candidate_macro, freegen_macro = aggregate(rows)
+    write_csv(args.output_dir / "question_summary.csv", summary)
+    write_csv(args.output_dir / "candidate_group_macro.csv", candidate_macro)
+    write_csv(args.output_dir / "freegen_group_macro.csv", freegen_macro)
     actor = autonomous(qwen, tokenizer, model, device, cfg, seeds, args.output_dir)
-    write_csv(args.output_dir / "actor_summary.csv", actor); write_markdown(args.output_dir / "summary.md", summary, macro, actor)
+    write_csv(args.output_dir / "actor_summary.csv", actor); write_markdown(args.output_dir / "summary.md", summary, candidate_macro, freegen_macro, actor)
     sanity = {"mode": "full" if args.full else "sanity", "states": len(states), "seeds": seeds, "first_base_prompt": actor_base_prompt(states[0].task, states[0].observation, qa_suffix(questions(states[0])[0].text, questions(states[0])[0].candidates)), "first_hz_prompt": actor_hz_prompt(states[0].task, qa_suffix(questions(states[0])[0].text, questions(states[0])[0].candidates)), "hz_soft_tokens": 10, "hz_textual_observation": False, "hz_textual_action_history": False, "hz_textual_reasoning_history": False, "posterior_contract": "z_t=q(z_t|h_t,o_t); observation is used only here", "transition_contract": "h_(t+1)=f(h_t,z_t,a_t); z_(t+1)=q(z_(t+1)|h_(t+1),o_(t+1))", "sample_question_ids": [q.question_id for q in questions(states[0])[:3]]}
     (args.output_dir / "sanity.json").write_text(json.dumps(sanity, indent=2), encoding="utf-8")
     print(json.dumps({"output": str(args.output_dir), "checkpoint": manifest, "states": len(states), "questions": len(rows), "mode": sanity["mode"]}, indent=2), flush=True)

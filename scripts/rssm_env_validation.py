@@ -105,7 +105,14 @@ def _actor_hz_soft(qwen, model, h: torch.Tensor, z: torch.Tensor) -> torch.Tenso
 @torch.no_grad()
 def _generate(qwen, tokenizer, prompt: str, soft: torch.Tensor | None, max_new_tokens: int,
               assistant_prefix: str = "", generation: dict[str, Any] | None = None) -> str:
-    """Soft conditioning is inserted before, never after, the assistant boundary."""
+    """Generate only the continuation after the complete prompt prefix.
+
+    ``generate(inputs_embeds=...)`` used to leave the returned sequence format
+    version-dependent: some Transformers releases returned the virtual prompt
+    prefix, and the evaluator decoded it as though it were model output.  Pass
+    matching bookkeeping ``input_ids`` (PAD IDs occupy soft-token positions)
+    so every branch has a concrete input length and slice that prefix away.
+    """
     before_ids, assistant_ids = _chat_parts(tokenizer, prompt)
     device = next(qwen.parameters()).device
     prefix_ids = tokenizer(assistant_prefix, add_special_tokens=False)["input_ids"]
@@ -120,16 +127,27 @@ def _generate(qwen, tokenizer, prompt: str, soft: torch.Tensor | None, max_new_t
     if soft is None:
         ids = torch.tensor(before_ids + assistant_ids + prefix_ids, device=device)[None]
         result = qwen.generate(input_ids=ids, **kwargs)
-        new_ids = result[0, ids.shape[1]:]
+        input_length = ids.shape[1]
     else:
         embedding = qwen.get_input_embeddings()
         prefix = embedding(torch.tensor(before_ids, device=device))
         boundary = embedding(torch.tensor(assistant_ids + prefix_ids, device=device))
         inputs = torch.cat((prefix, soft.to(embedding.weight.dtype), boundary), 0)[None]
-        result = qwen.generate(inputs_embeds=inputs,
+        # These IDs are only generation bookkeeping: the actual virtual-token
+        # values are supplied by ``inputs_embeds``.  Keeping the lengths equal
+        # makes ``result[:, input_length:]`` valid across HF versions.
+        bookkeeping_ids = torch.tensor(
+            before_ids + [tokenizer.pad_token_id] * int(soft.shape[0]) + assistant_ids + prefix_ids,
+            device=device,
+        )[None]
+        if bookkeeping_ids.shape[1] != inputs.shape[1]:
+            raise RuntimeError("soft-generation bookkeeping length mismatch")
+        result = qwen.generate(input_ids=bookkeeping_ids, inputs_embeds=inputs,
                                attention_mask=torch.ones(inputs.shape[:2], device=device, dtype=torch.long), **kwargs)
-        # HF versions differ on whether they prepend an inputs_embeds prefix.
-        new_ids = result[0, inputs.shape[1]:] if result.shape[1] > inputs.shape[1] else result[0]
+        input_length = inputs.shape[1]
+    if result.ndim != 2 or result.shape[1] < input_length:
+        raise RuntimeError(f"generate returned no decodable prompt prefix: shape={tuple(result.shape)}, input_length={input_length}")
+    new_ids = result[0, input_length:]
     return assistant_prefix + tokenizer.decode(new_ids, skip_special_tokens=True)
 
 

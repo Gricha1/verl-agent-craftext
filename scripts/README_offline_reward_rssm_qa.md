@@ -1,8 +1,10 @@
 # Offline reward-RSSM QA suite
 
 `evaluate_offline_reward_rssm_qa.py` is a read-only, two-stage evaluator for a
-saved `reward_continuation_heads=true` RSSM checkpoint on `debug_square_8x8`.
-It does not construct an optimizer or modify a checkpoint.
+saved, fully trained *offline reconstruction* `reward_continuation_heads=true`
+RSSM checkpoint on `debug_square_8x8`. It does not construct an optimizer or
+modify a checkpoint. Online-PPO payloads (their state is stored under `rssm`)
+are rejected before any model is loaded.
 
 It first records `checkpoint_identity.json` with the checkpoint's absolute
 path, SHA-256, byte length, saved training step, resolved config, and source
@@ -30,8 +32,11 @@ python scripts/evaluate_offline_reward_rssm_qa.py \
   --device cuda:0 --full --candidate-batch-size 64
 ```
 
-The evaluator creates fixed trajectories before asking the models questions;
-therefore Base, HZ, H-only, and Z-only are scored on identical states. HZ is
+The evaluator creates a seed-deterministic, action-balanced trajectory before
+asking the models questions; therefore Base, HZ, H-only, and Z-only are scored
+on identical states. Each schedule has exactly ten UP/DOWN/LEFT/RIGHT actions
+and includes sweeps, blocked moves, reversals, loops, revisits, and direction
+changes. HZ is
 hard-asserted to receive exactly `soft(h)×5 + soft(z)×5`, and its text prompt
 cannot contain the observation, action-history template, or reasoning-history
 template. Real observations are used solely by the RSSM posterior.
@@ -39,10 +44,15 @@ template. Real observations are used solely by the RSSM posterior.
 Key artifacts:
 
 - `per_state_questions.csv` and `.html`: every scored question and model answer;
-- `question_summary.csv`, `group_macro.csv`, and `summary.md`;
-- `paired_trajectories.json`: executed fixed actions and simulator ground truth;
+- `question_summary.csv`, `candidate_group_macro.csv`,
+  `freegen_group_macro.csv`, and `summary.md`;
+- `paired_trajectories.json`: executed seed schedule and simulator ground truth;
+- `memory_target_distribution.json`: action/memory-label balance audit and warnings;
+- `generation_smoke.json`: Base/HZ continuation checks (the decoder never
+  reports an input-prompt prefix as model output);
 - `actor_probe.json` and `actor_probe_summary.json`;
 - `autonomous_base.json`, `autonomous_hz.json`, and `actor_summary.csv`;
-- `free_generation.json`: qualitative `<think>/<answer>` traces, not used in
-  accuracy;
+- `free_generation.json`: qualitative `<think>/<answer>` traces with parsed
+  answer, parse status, and free-generation accuracy, kept separate from
+  candidate accuracy;
 - `frames/` and `gifs/`: auditable visualizations.
