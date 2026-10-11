@@ -86,6 +86,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint", required=True, type=Path, help="immutable .pt checkpoint to evaluate")
     p.add_argument("--output-dir", required=True, type=Path)
     p.add_argument("--device", default="cuda:0")
+    p.add_argument("--base-model", type=Path, help="override base_model when evaluating a checkpoint on another host")
     p.add_argument("--seed-start", type=int, default=20261001)
     p.add_argument("--candidate-batch-size", type=int, default=64)
     p.add_argument("--max-states", type=int, default=8, help="sanity limit; ignored by --full")
@@ -586,14 +587,24 @@ def main() -> None:
     config_path = args.run_dir / "resolved_config.yaml"
     if not config_path.is_file() and not args.allow_unverified_checkpoint: raise FileNotFoundError(f"missing {config_path}; exact checkpoint identity is mandatory")
     cfg = yaml.safe_load(config_path.read_text()) if config_path.is_file() else {}
+    if args.base_model is not None:
+        cfg["base_model"] = str(args.base_model)
     cfg.update({"max_sequence_length": int(cfg.get("max_sequence_length", 3072)), "env_eval_actor_max_new_tokens": int(cfg.get("env_eval_actor_max_new_tokens", 64))})
     manifest = checkpoint_manifest(args.run_dir, args.checkpoint, cfg, args.output_dir)
     device = torch.device(args.device); tokenizer = AutoTokenizer.from_pretrained(cfg["base_model"], trust_remote_code=True); tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token; tokenizer.padding_side = "left"
     qwen = AutoModelForCausalLM.from_pretrained(cfg["base_model"], torch_dtype=torch.bfloat16, trust_remote_code=True).to(device).eval()
     for p in qwen.parameters(): p.requires_grad_(False)
     cfg["soft_token_target_rms"] = float(qwen.get_input_embeddings().weight.detach().float().square().mean().sqrt())
-    model = QwenTransitionRSSMRecon(cfg, qwen.config.hidden_size).to(device).eval(); loaded = torch.load(args.checkpoint, map_location=device, weights_only=False); model.load_state_dict(loaded["model"], strict=True)
-    manifest["checkpoint_step"] = loaded.get("step"); (args.output_dir / "checkpoint_identity.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    model = QwenTransitionRSSMRecon(cfg, qwen.config.hidden_size).to(device).eval(); loaded = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    # Offline reconstruction runs store ``model``; the compatible online
+    # reward-RSSM trainer stores the identical RSSM module under ``rssm``.
+    model_key = "model" if "model" in loaded else "rssm" if "rssm" in loaded else None
+    if model_key is None:
+        raise KeyError(f"checkpoint has neither 'model' nor 'rssm': {sorted(loaded)}")
+    model.load_state_dict(loaded[model_key], strict=True)
+    manifest["checkpoint_payload_key"] = model_key
+    manifest["checkpoint_step"] = loaded.get("step", loaded.get("update"))
+    (args.output_dir / "checkpoint_identity.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     seeds = list(range(args.seed_start, args.seed_start + (8 if args.full else 1))); states = collect_states(qwen, tokenizer, model, device, cfg, seeds, None if args.full else args.max_states)
     if not states: raise RuntimeError("fixed trajectory generated no states")
     (args.output_dir / "paired_trajectories.json").write_text(json.dumps(serialise_paired_trajectory(states), indent=2), encoding="utf-8")
