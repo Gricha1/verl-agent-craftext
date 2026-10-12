@@ -99,6 +99,12 @@ def run_ppo(config) -> None:
             if ray_temp_dir:
                 ray_init_kwargs["_temp_dir"] = ray_temp_dir
             print(f"[INFO] FORCE_NEW_RAY_CLUSTER=1: starting a private Ray cluster (address=local, _temp_dir={ray_temp_dir})")
+        # Some native cluster environments have the optional Ray dashboard
+        # dependencies but cannot start its MetricsHead.  Training does not
+        # depend on the web UI, so allow an explicit per-run opt-out.
+        if os.environ.get("RAY_DISABLE_DASHBOARD", "").strip() in ("1", "true", "True"):
+            ray_init_kwargs["include_dashboard"] = False
+            print("[INFO] RAY_DISABLE_DASHBOARD=1 -> ray.init(include_dashboard=False)")
         ray.init(**ray_init_kwargs)
 
     # Do not set num_gpus on TaskRunner: Ray would subtract it from the pool and
