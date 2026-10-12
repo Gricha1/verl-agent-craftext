@@ -22,7 +22,9 @@ overrides:
   - env.auto_reset=True
   - env.max_steps=50
   - env.history_length=50
-  - +env.enable_reasoning=True
+  # enable_reasoning is already present in the base PPO environment config;
+  # use a normal override (Hydra rejects `+` for an existing key).
+  - env.enable_reasoning=True
   - +env.prompt_template_type=single_token_action_reasoning
   - data.max_prompt_length=256
   - data.max_response_length=320
