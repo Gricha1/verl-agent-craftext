@@ -30,6 +30,9 @@ overrides:
   - data.max_response_length=320
   - data.train_batch_size=64
   - data.truncation=left
+  # Prompts are already bounded by this fixed debug-square dataset.  Avoid a
+  # post-JAX fork in datasets' overlong-prompt filter on native workers.
+  - data.filter_overlong_prompts=False
 
   # Soft-token positions must survive rollout, actor and critic forwards.
   - actor_rollout_ref.model.use_remove_padding=False
