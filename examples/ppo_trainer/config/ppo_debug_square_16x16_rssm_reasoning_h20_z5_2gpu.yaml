@@ -28,7 +28,9 @@ overrides:
   - env.prompt_template_type=single_token_action_reasoning
   - data.max_prompt_length=256
   - data.max_response_length=320
-  - data.train_batch_size=64
+  # aicenter3's existing rollout parquet has 32 training rows; a larger
+  # batch is dropped by the dataloader and yields zero PPO updates.
+  - data.train_batch_size=32
   - data.truncation=left
   # Prompts are already bounded by this fixed debug-square dataset.  Avoid a
   # post-JAX fork in datasets' overlong-prompt filter on native workers.
@@ -49,11 +51,11 @@ overrides:
   - +actor_rollout_ref.rollout.constrain_single_token_actions=False
   - actor_rollout_ref.actor.entropy_over_valid_actions=False
 
-  # Two-GPU adaptation of the 3-GPU reference: batch stays 64, while PPO and
-  # RSSM microbatches are reduced to retain headroom for vLLM plus frozen Qwen.
-  - actor_rollout_ref.actor.ppo_mini_batch_size=64
+  # Two-GPU adaptation: match the available 32-row rollout dataset while
+  # retaining headroom for vLLM plus frozen Qwen.
+  - actor_rollout_ref.actor.ppo_mini_batch_size=32
   - actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=8
-  - critic.ppo_mini_batch_size=64
+  - critic.ppo_mini_batch_size=32
   - critic.ppo_micro_batch_size_per_gpu=8
   - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8
   - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=8
