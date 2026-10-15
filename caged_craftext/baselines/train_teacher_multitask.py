@@ -27,7 +27,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 # Prefer the Craftax sibling shipped by this canonical checkout over a stale
 # site-package/snapshot that may also be present in PYTHONPATH.
-_CRAFTAX_ROOT = Path(__file__).resolve().parents[1] / "Craftax" / "craftax"
+_CRAFTAX_ROOT = Path(__file__).resolve().parents[1] / "Craftax"
 sys.path.insert(0, str(_CRAFTAX_ROOT))
 from craftax.craftax_env import make_craftax_env_from_name
 from craftext.environment.craftext_wrapper import InstructionWrapper

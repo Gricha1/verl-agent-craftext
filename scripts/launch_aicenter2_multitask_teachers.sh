@@ -8,7 +8,7 @@ legacy=/home/gorbov_gv/craftext_cnn_ppo_expert_v1
 python_bin="$legacy/venv/bin/python"
 source_root="$canonical/caged_craftext"
 runner="$source_root/baselines/train_teacher_multitask.py"
-export PYTHONPATH="$source_root:$source_root/Craftax/craftax:$source_root/baselines${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$source_root:$source_root/Craftax:$source_root/baselines${PYTHONPATH:+:$PYTHONPATH}"
 export COMET_WORKSPACE=gregory-gorbov
 export COMET_PROJECT=verl-agent-caged-craftext
 
