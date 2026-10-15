@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw
 
 from craftax.craftax_classic.envs.craftax_pixels_env import CraftaxClassicPixelsEnv
 from craftax.craftax_classic.envs.craftax_state import StaticEnvParams
+from craftax.craftax_classic.constants import BlockType
 from craftext.environment.craftext_wrapper import InstructionWrapper
 from models.actor_critic_with_text import ActorCriticConvWithBERT
 from train_teacher_multitask import Config, load_checkpoint
@@ -29,6 +30,45 @@ def frame(image, caption: str, scale: int = 5) -> np.ndarray:
     draw.rectangle((0, 0, canvas.width, 18), fill=(0, 0, 0))
     draw.text((3, 3), caption, fill=(255, 255, 255))
     return np.asarray(canvas)
+
+
+def global_debug_square_frame(env_state, caption: str, cell_size: int = 22) -> np.ndarray:
+    """Render the complete tiny map, rather than the policy's 63x63 local view.
+
+    Qwen receives this whole 16x16 state through the CrafText renderer.  The
+    CNN receives a local pixel view, so using that view for a diagnostic GIF
+    hides the border and made a correct debug arena look like procedural
+    Craftax.  This rendering is diagnostic-only; it never enters the policy.
+    """
+    game_map = np.asarray(jax.device_get(env_state.map), dtype=np.int32)
+    height, width = game_map.shape
+    colours = {
+        BlockType.GRASS.value: (51, 145, 53),
+        BlockType.TREE.value: (22, 82, 25),
+        BlockType.STONE.value: (132, 137, 142),
+        BlockType.WATER.value: (46, 113, 197),
+        BlockType.WOOD.value: (137, 88, 43),
+    }
+    image = Image.new("RGB", (width * cell_size, height * cell_size + 20), (0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    for row in range(height):
+        for col in range(width):
+            left, top = col * cell_size, row * cell_size + 20
+            colour = colours.get(int(game_map[row, col]), (190, 55, 190))
+            draw.rectangle((left, top, left + cell_size - 1, top + cell_size - 1), fill=colour)
+            draw.rectangle((left, top, left + cell_size - 1, top + cell_size - 1), outline=(25, 25, 25))
+    row, col = map(int, np.asarray(jax.device_get(env_state.player_position)))
+    left, top = col * cell_size, row * cell_size + 20
+    draw.ellipse((left + 4, top + 4, left + cell_size - 5, top + cell_size - 5), fill=(250, 235, 55), outline=(0, 0, 0))
+    draw.text((3, 3), caption, fill=(255, 255, 255))
+    return np.asarray(image)
+
+
+def diagnostic_frame(obs, state, caption: str) -> np.ndarray:
+    game_map = getattr(state.env_state, "map", None)
+    if game_map is not None and tuple(game_map.shape) in ((8, 8), (16, 16)):
+        return global_debug_square_frame(state.env_state, caption)
+    return frame(obs, caption)
 
 
 def main() -> None:
@@ -65,7 +105,7 @@ def main() -> None:
     params = restored["params"]
 
     task = env.scenario_handler.scenario_data.instructions_list[args.task_index]
-    frames = [frame(obs, f"{task} | start | history=PADx8")]
+    frames = [diagnostic_frame(obs, state, f"{task} | global 16x16 | start | history=PADx8")]
     total_reward = 0.0
     done = False
     for step in range(1, args.max_steps + 1):
@@ -77,7 +117,10 @@ def main() -> None:
         done = bool(raw_done) or success
         total_reward += float(reward)
         history = jnp.concatenate((history[:, 1:], jnp.array([[action]], dtype=jnp.int32)), axis=1)
-        frames.append(frame(next_obs, f"{task} | step={step} a={action} r={float(reward):+.2f} R={total_reward:+.2f} success={success}"))
+        frames.append(diagnostic_frame(
+            next_obs, next_state,
+            f"{task} | global 16x16 | step={step} a={action} r={float(reward):+.2f} R={total_reward:+.2f} success={success}",
+        ))
         obs, state = next_obs, next_state
         obs_batch, instruction = obs[None, ...], state.instruction[None, ...]
         if done:
