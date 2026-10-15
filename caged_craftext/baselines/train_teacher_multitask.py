@@ -220,10 +220,11 @@ def save_checkpoint(path: Path, state: TrainState, cfg: Config, step: int, best:
 
 def load_checkpoint(path: Path, state_template: TrainState) -> dict[str, Any]:
     """Restore a teacher payload against the exact Flax state structure."""
+    raw = serialization.msgpack_restore(path.read_bytes())
     template = {"params": state_template.params, "opt_state": state_template.opt_state,
                 "step": 0, "best_validation_success": -1., "config": {},
-                "architecture": {}, "tasks": []}
-    return serialization.from_bytes(template, path.read_bytes())
+                "architecture": {}, "tasks": ["" for _ in raw["tasks"]]}
+    return serialization.from_state_dict(template, raw)
 
 
 def main():
