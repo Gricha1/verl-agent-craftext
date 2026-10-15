@@ -12,10 +12,11 @@ export PYTHONPATH="$source_root:$source_root/Craftax:$source_root/baselines${PYT
 export COMET_WORKSPACE=gregory-gorbov
 export COMET_PROJECT=verl-agent-caged-craftext
 
-CUDA_VISIBLE_DEVICES='' JAX_PLATFORMS=cpu "$python_bin" - <<'PY'
-import train_teacher_multitask
+CUDA_VISIBLE_DEVICES='' "$python_bin" - <<'PY'
+import torch
+import transformers
 from torch.utils.tensorboard import SummaryWriter
-print('PRELAUNCH_IMPORTS_OK')
+print('PRELAUNCH_RUNTIME_IMPORTS_OK', torch.__version__, transformers.__version__)
 PY
 
 start() {
