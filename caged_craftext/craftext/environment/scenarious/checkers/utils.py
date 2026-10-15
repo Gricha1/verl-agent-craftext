@@ -10,8 +10,11 @@ def extract_square_region(game_map, x, y, radius, region_size: int, pad_value=-1
     Pads maps smaller than region_size (e.g. 8x8 debug) so slice_sizes stay static.
     """
     map_h, map_w = game_map.shape
-    pad_h = jnp.maximum(0, region_size - map_h)
-    pad_w = jnp.maximum(0, region_size - map_w)
+    # `game_map.shape` and `region_size` are static while a checker is traced.
+    # Keep padding widths as Python integers: jnp.pad requires static widths
+    # and generic_check traces every checker through lax.switch.
+    pad_h = max(0, region_size - map_h)
+    pad_w = max(0, region_size - map_w)
     padded = jnp.pad(game_map, ((0, pad_h), (0, pad_w)), constant_values=pad_value)
     start_x = jnp.clip(x - radius, 0, region_size - 1)
     start_y = jnp.clip(y - radius, 0, region_size - 1)
