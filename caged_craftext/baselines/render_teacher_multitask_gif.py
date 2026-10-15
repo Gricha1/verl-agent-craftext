@@ -13,7 +13,8 @@ import optax
 from flax.training.train_state import TrainState
 from PIL import Image, ImageDraw
 
-from craftax.craftax_env import make_craftax_env_from_name
+from craftax.craftax_classic.envs.craftax_pixels_env import CraftaxClassicPixelsEnv
+from craftax.craftax_classic.envs.craftax_state import StaticEnvParams
 from craftext.environment.craftext_wrapper import InstructionWrapper
 from models.actor_critic_with_text import ActorCriticConvWithBERT
 from train_teacher_multitask import Config, load_checkpoint
@@ -40,7 +41,12 @@ def main() -> None:
     parser.add_argument("--max-steps", type=int, default=50)
     args = parser.parse_args()
 
-    base_env = make_craftax_env_from_name("Craftax-Classic-Pixels-v1", True)
+    if "debug_square_16x16" in args.settings:
+        base_env = CraftaxClassicPixelsEnv(StaticEnvParams(map_size=(16, 16)))
+    elif "debug_square_8x8" in args.settings:
+        base_env = CraftaxClassicPixelsEnv(StaticEnvParams(map_size=(8, 8)))
+    else:
+        base_env = CraftaxClassicPixelsEnv()
     env_params = base_env.default_params
     env = InstructionWrapper(base_env, args.settings)
     key = jax.random.PRNGKey(args.seed)

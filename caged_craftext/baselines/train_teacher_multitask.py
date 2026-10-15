@@ -29,7 +29,8 @@ from torch.utils.tensorboard import SummaryWriter
 # site-package/snapshot that may also be present in PYTHONPATH.
 _CRAFTAX_ROOT = Path(__file__).resolve().parents[1] / "Craftax"
 sys.path.insert(0, str(_CRAFTAX_ROOT))
-from craftax.craftax_env import make_craftax_env_from_name
+from craftax.craftax_classic.envs.craftax_pixels_env import CraftaxClassicPixelsEnv
+from craftax.craftax_classic.envs.craftax_state import StaticEnvParams
 from craftext.environment.craftext_wrapper import InstructionWrapper
 from craftext.environment.scenarious.loader import load_scenarios
 from models.actor_critic_with_text import ActorCriticConvWithBERT
@@ -257,9 +258,17 @@ def main():
     ckpt.mkdir(parents=True, exist_ok=True); tb.mkdir(parents=True, exist_ok=True)
     (out / "resolved_config.json").write_text(json.dumps(asdict(cfg), indent=2))
     writer = SummaryWriter(str(tb))
-    # The dataset config declares ``Craftax-Classic-Pixels-v1-Text``.  Keep
-    # this identical base MDP instead of silently selecting non-Classic Craftax.
-    base_env = make_craftax_env_from_name("Craftax-Classic-Pixels-v1", True)
+    # ``jax_debug_square_16x16`` is not just an instruction/reward setting:
+    # the base Craftax world itself must be the 16x16 tree-bordered arena.
+    # Construct it explicitly, as the Qwen CrafText path does through
+    # ``use_debug_square_map=True``.  The previous factory call silently
+    # created Craftax's default procedural 64x64 world.
+    if "debug_square_16x16" in cfg.craftext_settings:
+        base_env = CraftaxClassicPixelsEnv(StaticEnvParams(map_size=(16, 16)))
+    elif "debug_square_8x8" in cfg.craftext_settings:
+        base_env = CraftaxClassicPixelsEnv(StaticEnvParams(map_size=(8, 8)))
+    else:
+        base_env = CraftaxClassicPixelsEnv()
     env_params = base_env.default_params
     env = InstructionWrapper(base_env, cfg.craftext_settings)
     scenario_map = load_scenarios(env.scenario_handler.config)
