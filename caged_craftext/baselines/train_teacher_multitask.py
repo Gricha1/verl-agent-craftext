@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -24,6 +25,10 @@ from flax import serialization
 from flax.training.train_state import TrainState
 from torch.utils.tensorboard import SummaryWriter
 
+# Prefer the Craftax sibling shipped by this canonical checkout over a stale
+# site-package/snapshot that may also be present in PYTHONPATH.
+_CRAFTAX_ROOT = Path(__file__).resolve().parents[1] / "Craftax" / "craftax"
+sys.path.insert(0, str(_CRAFTAX_ROOT))
 from craftax.craftax_env import make_craftax_env_from_name
 from craftext.environment.craftext_wrapper import InstructionWrapper
 from craftext.environment.scenarious.loader import load_scenarios
