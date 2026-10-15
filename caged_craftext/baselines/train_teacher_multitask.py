@@ -242,7 +242,9 @@ def main():
     ckpt.mkdir(parents=True, exist_ok=True); tb.mkdir(parents=True, exist_ok=True)
     (out / "resolved_config.json").write_text(json.dumps(asdict(cfg), indent=2))
     writer = SummaryWriter(str(tb))
-    base_env = make_craftax_env_from_name("Craftax-Pixels-v1", True)
+    # The dataset config declares ``Craftax-Classic-Pixels-v1-Text``.  Keep
+    # this identical base MDP instead of silently selecting non-Classic Craftax.
+    base_env = make_craftax_env_from_name("Craftax-Classic-Pixels-v1", True)
     env_params = base_env.default_params
     env = InstructionWrapper(base_env, cfg.craftext_settings)
     scenario_map = load_scenarios(env.scenario_handler.config)
