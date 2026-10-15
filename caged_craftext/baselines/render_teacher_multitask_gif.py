@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+from flax import serialization
 from flax.training.train_state import TrainState
 from PIL import Image, ImageDraw
 
@@ -96,10 +97,14 @@ def main() -> None:
     key = jax.random.PRNGKey(args.seed)
     obs, state = env.reset(key, env_params, instruction_idx=args.task_index)
     obs_batch, instruction = obs[None, ...], state.instruction[None, ...]
+    # Early wood-achievements teachers predate action-history conditioning.
+    # Read this from the checkpoint rather than imposing the newer h=8 input.
+    raw_checkpoint = serialization.msgpack_restore(Path(args.checkpoint).read_bytes())
+    history_length = int(raw_checkpoint.get("architecture", {}).get("action_history_length", 0))
     action_dim = env.action_space(env_params).n
     pad_id = action_dim
-    history = jnp.full((1, 8), pad_id, dtype=jnp.int32)
-    network = ActorCriticConvWithBERT(action_dim, 512, action_history_length=8)
+    history = jnp.full((1, history_length), pad_id, dtype=jnp.int32)
+    network = ActorCriticConvWithBERT(action_dim, 512, action_history_length=history_length)
     params = network.init(jax.random.PRNGKey(0), obs_batch, instruction, history)
     state_template = TrainState.create(
         apply_fn=network.apply, params=params,
@@ -115,7 +120,7 @@ def main() -> None:
     else:
         render_frame = diagnostic_frame
         view_label = "global 16x16"
-    frames = [render_frame(obs, state, f"{task} | {view_label} | start | history=PADx8")]
+    frames = [render_frame(obs, state, f"{task} | {view_label} | start | history={history_length}")]
     total_reward = 0.0
     done = False
     for step in range(1, args.max_steps + 1):
@@ -126,7 +131,8 @@ def main() -> None:
         success = bool(next_state.instruction_done)
         done = bool(raw_done) or success
         total_reward += float(reward)
-        history = jnp.concatenate((history[:, 1:], jnp.array([[action]], dtype=jnp.int32)), axis=1)
+        if history_length:
+            history = jnp.concatenate((history[:, 1:], jnp.array([[action]], dtype=jnp.int32)), axis=1)
         frames.append(render_frame(
             next_obs, next_state,
             f"{task} | {view_label} | step={step} a={action} r={float(reward):+.2f} R={total_reward:+.2f} success={success}",
