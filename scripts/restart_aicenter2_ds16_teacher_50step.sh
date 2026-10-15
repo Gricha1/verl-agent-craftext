@@ -6,7 +6,7 @@ set -euo pipefail
 canonical=/home/gorbov_gv/safe_rl_nlp
 legacy=/home/gorbov_gv/craftext_cnn_ppo_expert_v1
 python_bin="$legacy/venv/bin/python"
-run_name=cnn_bert_mlp_ppo_debug_square16_multitask_a100gpu0_20261015_r3_ep50_h8
+run_name=cnn_bert_mlp_ppo_debug_square16_multitask_a100gpu0_20261016_r4_map16_ep50_h8
 out="$canonical/runs/$run_name"
 export PYTHONPATH="$canonical/caged_craftext:$canonical/caged_craftext/Craftax:$canonical/caged_craftext/baselines${PYTHONPATH:+:$PYTHONPATH}"
 
