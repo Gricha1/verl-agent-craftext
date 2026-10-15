@@ -35,6 +35,7 @@ def main() -> None:
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--settings", required=True)
     parser.add_argument("--eval-envs", type=int, default=None)
+    parser.add_argument("--validation-seed", type=int, default=None)
     args = parser.parse_args()
 
     raw = serialization.msgpack_restore(Path(args.checkpoint).read_bytes())
@@ -64,7 +65,8 @@ def main() -> None:
         tx=optax.chain(optax.clip_by_global_norm(cfg.max_grad_norm), optax.adam(cfg.lr, eps=1e-5)),
     )
     restored = load_checkpoint(Path(args.checkpoint), template)
-    validation_keys = jax.random.split(jax.random.PRNGKey(cfg.seed + 100_000), cfg.eval_envs)
+    validation_seed = cfg.seed + 100_000 if args.validation_seed is None else args.validation_seed
+    validation_keys = jax.random.split(jax.random.PRNGKey(validation_seed), cfg.eval_envs)
     values = np.asarray(jax.device_get(evaluate(restored["params"], validation_keys)))
     successes, counts = values[3 : 3 + task_count], values[3 + task_count : 3 + 2 * task_count]
     per_task = {name: float(success / max(count, 1.0)) for name, success, count in zip(task_names, successes, counts)}
@@ -72,7 +74,7 @@ def main() -> None:
         "checkpoint": str(args.checkpoint), "checkpoint_step": int(raw["step"]),
         "settings": cfg.craftext_settings, "eval_envs": cfg.eval_envs,
         "history_length": history_length,
-        "fixed_validation_seed": cfg.seed + 100_000,
+        "fixed_validation_seed": validation_seed,
         "mean_return": float(values[0]), "success_rate": float(values[1]),
         "episode_length": float(values[2]), "per_task_success_rate": per_task,
     }, indent=2, sort_keys=True))
