@@ -196,11 +196,13 @@ class AC_IMG_conv_TXT_mlp_film(nn.Module):
 class ActorCriticConvWithBERT(nn.Module):
     action_dim: Sequence[int]
     layer_width: int
+    action_history_length: int = 0
+    action_history_embedding_dim: int = 32
     activation: str = "tanh"
     bert_model_name: str = "bert-base-uncased"
 
     @nn.compact
-    def __call__(self, obs, encoded_input):
+    def __call__(self, obs, encoded_input, action_history=None):
         
         # Image processing (unchanged)
         x = nn.Conv(features=32, kernel_size=(5, 5))(obs)
@@ -218,8 +220,28 @@ class ActorCriticConvWithBERT(nn.Module):
         
         text_embedding = encoded_input
 
-        # Combine image and text embeddings
-        combined_embedding = jnp.concatenate([image_embedding, text_embedding], axis=-1)
+        # The multi-task teacher opts in to exactly eight prior action IDs.
+        # Other baselines retain their original pixels+text architecture.
+        if self.action_history_length:
+            # The final vocabulary item is PAD, used at episode start. Reward,
+            # done and any other environment-only signal are never inputs.
+            if action_history is None:
+                action_history = jnp.full(
+                    (obs.shape[0], self.action_history_length), self.action_dim, dtype=jnp.int32
+                )
+            action_history_embedding = nn.Embed(
+                num_embeddings=self.action_dim + 1,
+                features=self.action_history_embedding_dim,
+                name="past_action_embedding",
+            )(action_history)
+            action_history_embedding = action_history_embedding.reshape(
+                (action_history_embedding.shape[0], -1)
+            )
+            combined_embedding = jnp.concatenate(
+                [image_embedding, text_embedding, action_history_embedding], axis=-1
+            )
+        else:
+            combined_embedding = jnp.concatenate([image_embedding, text_embedding], axis=-1)
 
         # Actor network
         actor_mean = nn.Dense(

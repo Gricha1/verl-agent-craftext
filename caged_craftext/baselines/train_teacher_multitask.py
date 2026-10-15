@@ -58,11 +58,13 @@ class Config:
     checkpoint_every: int = 50
     eval_envs: int = 64
     max_episode_length: int = 1000
+    action_history_length: int = 8
 
 
 class Transition(NamedTuple):
     obs: jax.Array
     instruction: jax.Array
+    action_history: jax.Array
     action: jax.Array
     log_prob: jax.Array
     value: jax.Array
@@ -82,7 +84,7 @@ def _logprob(pi, action):
     return pi.log_prob(action)
 
 
-def make_fns(env, env_params, net, cfg: Config, task_count: int):
+def make_fns(env, env_params, net, cfg: Config, task_count: int, pad_action_id: int):
     reset_v = jax.vmap(lambda key: env.reset(key, env_params))
 
     def reset_batch(keys):
@@ -101,27 +103,30 @@ def make_fns(env, env_params, net, cfg: Config, task_count: int):
 
     step_v = jax.vmap(one_step, in_axes=(0, 0, 0, 0, 0))
 
-    def update(train_state, env_state, obs, ep_return, ep_length, rng):
+    def update(train_state, env_state, obs, action_history, ep_return, ep_length, rng):
         def rollout(carry, _):
-            state, states, current_obs, returns, lengths, key = carry
+            state, states, current_obs, history, returns, lengths, key = carry
             key, action_key, env_key = jax.random.split(key, 3)
             instruction = states.instruction
-            pi, value = net.apply(state.params, current_obs, instruction)
+            pi, value = net.apply(state.params, current_obs, instruction, history)
             action = pi.sample(seed=action_key)
             log_prob = _logprob(pi, action)
             keys = jax.random.split(env_key, cfg.num_envs)
             nobs, nstates, reward, done, success, completed_return, completed_length = step_v(
                 states, action, keys, returns, lengths
             )
-            tr = Transition(current_obs, instruction, action, log_prob, value, reward, done,
+            next_history = jnp.concatenate((history[:, 1:], action[:, None]), axis=1)
+            reset_history = jnp.full_like(history, pad_action_id)
+            next_history = jnp.where(done[:, None], reset_history, next_history)
+            tr = Transition(current_obs, instruction, history, action, log_prob, value, reward, done,
                             success, states.idx, completed_return, completed_length)
-            return (state, nstates, nobs, jnp.where(done, 0., completed_return),
+            return (state, nstates, nobs, next_history, jnp.where(done, 0., completed_return),
                     jnp.where(done, 0, completed_length), key), tr
 
-        (_, env_state, obs, ep_return, ep_length, rng), traj = jax.lax.scan(
-            rollout, (train_state, env_state, obs, ep_return, ep_length, rng), None, cfg.num_steps
+        (_, env_state, obs, action_history, ep_return, ep_length, rng), traj = jax.lax.scan(
+            rollout, (train_state, env_state, obs, action_history, ep_return, ep_length, rng), None, cfg.num_steps
         )
-        _, last_value = net.apply(train_state.params, obs, env_state.instruction)
+        _, last_value = net.apply(train_state.params, obs, env_state.instruction, action_history)
 
         def gae_step(carry, tr):
             advantage, next_value = carry
@@ -136,7 +141,7 @@ def make_fns(env, env_params, net, cfg: Config, task_count: int):
 
         def loss_fn(params, batch):
             tr, adv, target = batch
-            pi, value = net.apply(params, tr.obs, tr.instruction)
+            pi, value = net.apply(params, tr.obs, tr.instruction, tr.action_history)
             log_prob = _logprob(pi, tr.action)
             ratio = jnp.exp(log_prob - tr.log_prob)
             normalized_adv = (adv - adv.mean()) / (adv.std() + 1e-8)
@@ -174,7 +179,7 @@ def make_fns(env, env_params, net, cfg: Config, task_count: int):
             traj.reward.mean(), (traj.success * dones).sum() / count,
             (traj.ep_return * dones).sum() / count, (traj.ep_length * dones).sum() / count,
         ]), task_successes, task_counts, losses.mean(axis=(0, 1))))
-        return train_state, env_state, obs, ep_return, ep_length, rng, metrics
+        return train_state, env_state, obs, action_history, ep_return, ep_length, rng, metrics
 
     def evaluate(params, keys):
         obs, states = reset_batch(keys)
@@ -183,20 +188,25 @@ def make_fns(env, env_params, net, cfg: Config, task_count: int):
         lengths = jnp.zeros((cfg.eval_envs,), dtype=jnp.int32)
         successes = jnp.zeros((cfg.eval_envs,), dtype=jnp.float32)
         task_id = states.idx
+        action_history = jnp.full(
+            (cfg.eval_envs, cfg.action_history_length), pad_action_id, dtype=jnp.int32
+        )
 
         def step(carry, _):
-            obs, states, live, returns, lengths, successes = carry
-            pi, _ = net.apply(params, obs, states.instruction)
+            obs, states, history, live, returns, lengths, successes = carry
+            pi, _ = net.apply(params, obs, states.instruction, history)
             actions = pi.mode()
             env_keys = jax.random.split(jax.random.PRNGKey(10), cfg.eval_envs)
             nobs, nstates, rewards, raw_done, _ = jax.vmap(lambda s, a, k: env.step(k, s, a, env_params))(states, actions, env_keys)
             success = nstates.instruction_done.astype(bool)
             done = jnp.logical_or(raw_done, jnp.logical_or(success, lengths + 1 >= cfg.max_episode_length))
-            return (nobs, nstates, live & ~done, returns + jnp.where(live, rewards, 0.),
+            next_history = jnp.concatenate((history[:, 1:], actions[:, None]), axis=1)
+            next_history = jnp.where(done[:, None], jnp.full_like(history, pad_action_id), next_history)
+            return (nobs, nstates, next_history, live & ~done, returns + jnp.where(live, rewards, 0.),
                     lengths + live.astype(jnp.int32), jnp.maximum(successes, (live & success).astype(jnp.float32))), None
 
-        (obs, states, live, returns, lengths, successes), _ = jax.lax.scan(
-            step, (obs, states, live, returns, lengths, successes), None, cfg.max_episode_length
+        (obs, states, action_history, live, returns, lengths, successes), _ = jax.lax.scan(
+            step, (obs, states, action_history, live, returns, lengths, successes), None, cfg.max_episode_length
         )
         task_counts = jnp.bincount(task_id, length=task_count)
         task_successes = jnp.bincount(task_id, weights=successes, length=task_count)
@@ -210,7 +220,9 @@ def save_checkpoint(path: Path, state: TrainState, cfg: Config, step: int, best:
                "best_validation_success": best, "config": asdict(cfg),
                "architecture": {"name": "ActorCriticConvWithBERT", "cnn": [32, 32, 32],
                                 "layer_width": cfg.layer_size, "bert_model": "distilbert-base-uncased",
-                                "bert_frozen": True, "instruction_embedding_dim": 768},
+                                "bert_frozen": True, "instruction_embedding_dim": 768,
+                                "past_actions_only": True,
+                                "action_history_length": cfg.action_history_length},
                "tasks": task_names}
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_bytes(serialization.to_bytes(payload))
@@ -254,22 +266,29 @@ def main():
     task_names = list(scenario_map.keys())
     if not task_names: raise RuntimeError("dataset has no tasks")
     task_count = len(task_names)
-    network = ActorCriticConvWithBERT(env.action_space(env_params).n, cfg.layer_size)
-    reset, update, evaluate = make_fns(env, env_params, network, cfg, task_count)
+    action_dim = env.action_space(env_params).n
+    pad_action_id = action_dim
+    network = ActorCriticConvWithBERT(
+        action_dim, cfg.layer_size, action_history_length=cfg.action_history_length
+    )
+    reset, update, evaluate = make_fns(env, env_params, network, cfg, task_count, pad_action_id)
     rng = jax.random.PRNGKey(cfg.seed); rng, init_key, reset_key = jax.random.split(rng, 3)
     obs, states = reset(jax.random.split(reset_key, cfg.num_envs))
-    params = network.init(init_key, obs, states.instruction)
+    action_history = jnp.full((cfg.num_envs, cfg.action_history_length), pad_action_id, dtype=jnp.int32)
+    params = network.init(init_key, obs, states.instruction, action_history)
     state = TrainState.create(apply_fn=network.apply, params=params,
                               tx=optax.chain(optax.clip_by_global_norm(cfg.max_grad_norm), optax.adam(cfg.lr, eps=1e-5)))
-    pi, value = network.apply(state.params, obs[:1], states.instruction[:1])
+    pi, value = network.apply(state.params, obs[:1], states.instruction[:1], action_history[:1])
     first = {"image_shape": list(obs[:1].shape), "instruction": env.scenario_handler.scenario_data.instructions_list[0],
              "bert_embedding_shape": list(states.instruction[:1].shape), "cnn_plus_text": "ActorCriticConvWithBERT",
+             "past_actions_only": True, "action_history_length": cfg.action_history_length,
+             "action_history_shape": list(action_history[:1].shape), "action_history_pad_id": pad_action_id,
              "logits_shape": list(pi.logits.shape), "value_shape": list(value.shape)}
     print(json.dumps({"event": "first_batch_shapes", **first}), flush=True)
     (out / "first_batch_shapes.json").write_text(json.dumps(first, indent=2))
     save_checkpoint(ckpt / "teacher_init.pt", state, cfg, 0, -1., task_names)
     restored_init = load_checkpoint(ckpt / "teacher_init.pt", state)
-    reload_pi, reload_value = network.apply(restored_init["params"], obs[:1], states.instruction[:1])
+    reload_pi, reload_value = network.apply(restored_init["params"], obs[:1], states.instruction[:1], action_history[:1])
     assert reload_pi.logits.shape == pi.logits.shape and reload_value.shape == value.shape
     (out / "reload_test_init.json").write_text(json.dumps({"ok": True, "logits_shape": list(reload_pi.logits.shape),
                                                             "greedy_action": int(reload_pi.mode()[0]),
@@ -279,7 +298,9 @@ def main():
     validation_keys = jax.random.split(jax.random.PRNGKey(cfg.seed + 100_000), cfg.eval_envs)
     for step in range(1, updates + 1):
         start = time.time(); rng, key = jax.random.split(rng)
-        state, states, obs, ep_return, ep_length, rng, metrics = update(state, states, obs, ep_return, ep_length, key)
+        state, states, obs, action_history, ep_return, ep_length, rng, metrics = update(
+            state, states, obs, action_history, ep_return, ep_length, key
+        )
         m = np.asarray(jax.device_get(metrics)); elapsed = max(time.time() - start, 1e-6)
         names = ["train/mean_reward", "train/success_rate", "train/episode_return", "train/episode_length"]
         values = {k: float(v) for k, v in zip(names, m[:4])}
@@ -303,8 +324,10 @@ def main():
             save_checkpoint(ckpt / "teacher_latest.pt", state, cfg, step, best, task_names)
             if step == 1:
                 restored_latest = load_checkpoint(ckpt / "teacher_latest.pt", state)
-                test_pi, test_value = network.apply(restored_latest["params"], obs[:1], states.instruction[:1])
-                assert test_pi.logits.shape[-1] == env.action_space(env_params).n and test_value.shape == (1,)
+                test_pi, test_value = network.apply(
+                    restored_latest["params"], obs[:1], states.instruction[:1], action_history[:1]
+                )
+                assert test_pi.logits.shape[-1] == action_dim and test_value.shape == (1,)
                 (out / "reload_test_first_update.json").write_text(json.dumps({"ok": True, "step": step,
                     "logits_shape": list(test_pi.logits.shape), "value_shape": list(test_value.shape),
                     "greedy_action": int(test_pi.mode()[0])}, indent=2))
