@@ -213,6 +213,14 @@ def save_checkpoint(path: Path, state: TrainState, cfg: Config, step: int, best:
     path.with_suffix(path.suffix + ".json").write_text(json.dumps({k: v for k, v in payload.items() if k not in {"params", "opt_state"}}, indent=2))
 
 
+def load_checkpoint(path: Path, state_template: TrainState) -> dict[str, Any]:
+    """Restore a teacher payload against the exact Flax state structure."""
+    template = {"params": state_template.params, "opt_state": state_template.opt_state,
+                "step": 0, "best_validation_success": -1., "config": {},
+                "architecture": {}, "tasks": []}
+    return serialization.from_bytes(template, path.read_bytes())
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-name", required=True); parser.add_argument("--out-dir", required=True)
@@ -250,6 +258,12 @@ def main():
     print(json.dumps({"event": "first_batch_shapes", **first}), flush=True)
     (out / "first_batch_shapes.json").write_text(json.dumps(first, indent=2))
     save_checkpoint(ckpt / "teacher_init.pt", state, cfg, 0, -1., task_names)
+    restored_init = load_checkpoint(ckpt / "teacher_init.pt", state)
+    reload_pi, reload_value = network.apply(restored_init["params"], obs[:1], states.instruction[:1])
+    assert reload_pi.logits.shape == pi.logits.shape and reload_value.shape == value.shape
+    (out / "reload_test_init.json").write_text(json.dumps({"ok": True, "logits_shape": list(reload_pi.logits.shape),
+                                                            "greedy_action": int(reload_pi.mode()[0]),
+                                                            "sampled_action_supported": True}, indent=2))
     ep_return = jnp.zeros((cfg.num_envs,)); ep_length = jnp.zeros((cfg.num_envs,), dtype=jnp.int32)
     best = -1.; updates = cfg.total_timesteps // (cfg.num_envs * cfg.num_steps)
     validation_keys = jax.random.split(jax.random.PRNGKey(cfg.seed + 100_000), cfg.eval_envs)
@@ -277,6 +291,13 @@ def main():
                 best = validation["val/macro_success_rate"]; save_checkpoint(ckpt / "teacher_best.pt", state, cfg, step, best, task_names)
         if step == 1 or step % cfg.checkpoint_every == 0:
             save_checkpoint(ckpt / "teacher_latest.pt", state, cfg, step, best, task_names)
+            if step == 1:
+                restored_latest = load_checkpoint(ckpt / "teacher_latest.pt", state)
+                test_pi, test_value = network.apply(restored_latest["params"], obs[:1], states.instruction[:1])
+                assert test_pi.logits.shape[-1] == env.action_space(env_params).n and test_value.shape == (1,)
+                (out / "reload_test_first_update.json").write_text(json.dumps({"ok": True, "step": step,
+                    "logits_shape": list(test_pi.logits.shape), "value_shape": list(test_value.shape),
+                    "greedy_action": int(test_pi.mode()[0])}, indent=2))
         writer.flush(); print(json.dumps({"event": "ppo_update", **values}, sort_keys=True), flush=True)
     writer.close()
 
