@@ -79,6 +79,10 @@ def main() -> None:
     parser.add_argument("--task-index", type=int, default=0)
     parser.add_argument("--seed", type=int, default=20261015)
     parser.add_argument("--max-steps", type=int, default=50)
+    parser.add_argument(
+        "--render-mode", choices=("global_state", "craftext_pixels"), default="global_state",
+        help="global_state is a diagnostic full-map view; craftext_pixels is the exact observation returned by InstructionWrapper.",
+    )
     args = parser.parse_args()
 
     if "debug_square_16x16" in args.settings:
@@ -105,7 +109,13 @@ def main() -> None:
     params = restored["params"]
 
     task = env.scenario_handler.scenario_data.instructions_list[args.task_index]
-    frames = [diagnostic_frame(obs, state, f"{task} | global 16x16 | start | history=PADx8")]
+    if args.render_mode == "craftext_pixels":
+        render_frame = lambda image, _state, caption: frame(image, caption)
+        view_label = "CrafText pixel observation"
+    else:
+        render_frame = diagnostic_frame
+        view_label = "global 16x16"
+    frames = [render_frame(obs, state, f"{task} | {view_label} | start | history=PADx8")]
     total_reward = 0.0
     done = False
     for step in range(1, args.max_steps + 1):
@@ -117,9 +127,9 @@ def main() -> None:
         done = bool(raw_done) or success
         total_reward += float(reward)
         history = jnp.concatenate((history[:, 1:], jnp.array([[action]], dtype=jnp.int32)), axis=1)
-        frames.append(diagnostic_frame(
+        frames.append(render_frame(
             next_obs, next_state,
-            f"{task} | global 16x16 | step={step} a={action} r={float(reward):+.2f} R={total_reward:+.2f} success={success}",
+            f"{task} | {view_label} | step={step} a={action} r={float(reward):+.2f} R={total_reward:+.2f} success={success}",
         ))
         obs, state = next_obs, next_state
         obs_batch, instruction = obs[None, ...], state.instruction[None, ...]
