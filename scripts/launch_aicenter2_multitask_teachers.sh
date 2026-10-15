@@ -12,7 +12,7 @@ export PYTHONPATH="$source_root:$source_root/Craftax:$source_root/baselines${PYT
 export COMET_WORKSPACE=gregory-gorbov
 export COMET_PROJECT=verl-agent-caged-craftext
 
-"$python_bin" - <<'PY'
+CUDA_VISIBLE_DEVICES='' JAX_PLATFORMS=cpu "$python_bin" - <<'PY'
 import train_teacher_multitask
 from torch.utils.tensorboard import SummaryWriter
 print('PRELAUNCH_IMPORTS_OK')
