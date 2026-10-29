@@ -116,9 +116,12 @@ def make_fns(env, env_params, net, cfg: Config, task_count: int, pad_action_id: 
             nobs, nstates, reward, done, success, completed_return, completed_length = step_v(
                 states, action, keys, returns, lengths
             )
-            next_history = jnp.concatenate((history[:, 1:], action[:, None]), axis=1)
-            reset_history = jnp.full_like(history, pad_action_id)
-            next_history = jnp.where(done[:, None], reset_history, next_history)
+            if cfg.action_history_length:
+                next_history = jnp.concatenate((history[:, 1:], action[:, None]), axis=1)
+                reset_history = jnp.full_like(history, pad_action_id)
+                next_history = jnp.where(done[:, None], reset_history, next_history)
+            else:  # pixels + text only: the (num_envs, 0) history stays empty
+                next_history = history
             tr = Transition(current_obs, instruction, history, action, log_prob, value, reward, done,
                             success, states.idx, completed_return, completed_length)
             return (state, nstates, nobs, next_history, jnp.where(done, 0., completed_return),
@@ -201,8 +204,11 @@ def make_fns(env, env_params, net, cfg: Config, task_count: int, pad_action_id: 
             nobs, nstates, rewards, raw_done, _ = jax.vmap(lambda s, a, k: env.step(k, s, a, env_params))(states, actions, env_keys)
             success = nstates.instruction_done.astype(bool)
             done = jnp.logical_or(raw_done, jnp.logical_or(success, lengths + 1 >= cfg.max_episode_length))
-            next_history = jnp.concatenate((history[:, 1:], actions[:, None]), axis=1)
-            next_history = jnp.where(done[:, None], jnp.full_like(history, pad_action_id), next_history)
+            if cfg.action_history_length:
+                next_history = jnp.concatenate((history[:, 1:], actions[:, None]), axis=1)
+                next_history = jnp.where(done[:, None], jnp.full_like(history, pad_action_id), next_history)
+            else:
+                next_history = history
             return (nobs, nstates, next_history, live & ~done, returns + jnp.where(live, rewards, 0.),
                     lengths + live.astype(jnp.int32), jnp.maximum(successes, (live & success).astype(jnp.float32))), None
 
@@ -248,11 +254,14 @@ def main():
     parser.add_argument("--num-steps", type=int, default=100); parser.add_argument("--total-timesteps", type=int, default=250_000_000)
     parser.add_argument("--eval-every", type=int, default=50); parser.add_argument("--checkpoint-every", type=int, default=50)
     parser.add_argument("--max-episode-length", type=int, default=1000)
+    # 0 = pixels + instruction only (the teacher of the wood pipeline, commit 33b0562);
+    # the demonstration collector accepts only such teachers.
+    parser.add_argument("--action-history-length", type=int, default=8)
     args = parser.parse_args()
     cfg = Config(run_name=args.run_name, out_dir=args.out_dir, craftext_settings=args.craftext_settings,
                  seed=args.seed, num_envs=args.num_envs, num_steps=args.num_steps, total_timesteps=args.total_timesteps,
                  eval_every=args.eval_every, checkpoint_every=args.checkpoint_every,
-                 max_episode_length=args.max_episode_length)
+                 max_episode_length=args.max_episode_length, action_history_length=args.action_history_length)
     if (cfg.num_envs * cfg.num_steps) % cfg.num_minibatches: raise ValueError("global batch must divide minibatches")
     out = Path(cfg.out_dir); ckpt = out / "checkpoints"; tb = out / "tensorboard"
     ckpt.mkdir(parents=True, exist_ok=True); tb.mkdir(parents=True, exist_ok=True)
