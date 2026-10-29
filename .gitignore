@@ -165,3 +165,5 @@ CACHEDIR.TAG
 
 # vlm_pipeline: docker-build wheels are not versioned
 vlm_pipeline/phase3_verl/craftext_integration/wheels/
+# the vendored veRL keeps its hydra data configs
+!vlm_pipeline/phase3_verl/verl/trainer/config/data/
