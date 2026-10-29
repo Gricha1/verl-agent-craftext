@@ -156,6 +156,15 @@ class CrafterVisionQwen3ForCausalLM(TransformersForCausalLM, SupportsMultiModal)
             nn.Flatten(), nn.Linear(32 * 7 * 7, self.visual_tokens * int(config.hidden_size)),
         )
 
+    def compute_logits(self, hidden_states: torch.Tensor, *args, **kwargs):
+        # The visual marker ids are input-only placeholders; they must never be
+        # sampled (a marker in a response would be mistaken for a frame slot).
+        # The HF policy masks them identically, so rollout and actor agree.
+        logits = super().compute_logits(hidden_states, *args, **kwargs)
+        if logits is not None:
+            logits[..., list(self.visual_token_ids)] = float("-inf")
+        return logits
+
     def _visual_embeds(self, input_ids: torch.Tensor, pixel_values: torch.Tensor) -> torch.Tensor:
         if pixel_values.ndim != 4 or tuple(pixel_values.shape[1:]) != (3, 63, 63):
             raise ValueError(f"Expected Crafter pixels [B,3,63,63], got {tuple(pixel_values.shape)}")

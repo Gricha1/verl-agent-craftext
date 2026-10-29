@@ -123,7 +123,15 @@ class CrafterVisionQwen3ForCausalLM(_CrafterVisionMixin, Qwen3ForCausalLM):
         **kwargs,
     ):
         input_ids, inputs_embeds = self._visual_inputs(input_ids, pixel_values, inputs_embeds)
-        return super().forward(input_ids=input_ids, inputs_embeds=inputs_embeds, **kwargs)
+        output = super().forward(input_ids=input_ids, inputs_embeds=inputs_embeds, **kwargs)
+        if output.logits is not None:
+            # The visual markers are input-only: give them zero probability, exactly as the
+            # vLLM rollout model does, so a response can never contain a frame slot.
+            # -1e4 rather than -inf keeps p * log p (entropy) finite, also after a
+            # temperature division; exp(-1e4 - max) is exactly 0 in fp32.
+            marker_ids = torch.tensor(self.crafter_visual_token_ids, device=output.logits.device)
+            output.logits = output.logits.index_fill(-1, marker_ids, -1e4)
+        return output
 
     def prepare_inputs_for_generation(self, *args, pixel_values=None, **kwargs):
         model_inputs = super().prepare_inputs_for_generation(*args, **kwargs)
