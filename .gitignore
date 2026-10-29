@@ -162,3 +162,6 @@ CACHEDIR.TAG
 .cursor/
 *.orig
 *.rej
+
+# vlm_pipeline: docker-build wheels are not versioned
+vlm_pipeline/phase3_verl/craftext_integration/wheels/
