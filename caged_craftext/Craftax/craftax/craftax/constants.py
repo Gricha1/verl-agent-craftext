@@ -1112,9 +1112,12 @@ def load_all_textures(block_pixel_size):
 
 
 load_cached_textures_success = True
-if os.path.exists(TEXTURE_CACHE_FILE) and not os.environ.get(
-    "CRAFTAX_RELOAD_TEXTURES", False
-):
+# This module is imported by independent Ray worker processes.  The legacy
+# launcher may inject CRAFTAX_RELOAD_TEXTURES=True into each worker, which
+# otherwise makes concurrent PPO jobs overwrite this shared cache.  Treat an
+# existing validated cache as authoritative; a deliberate rebuild is done by
+# removing the cache in the maintenance/setup workflow.
+if os.path.exists(TEXTURE_CACHE_FILE):
     print("Loading textures from cache.")
     TEXTURES = load_compressed_pickle(TEXTURE_CACHE_FILE)
     # Check validity of texture cache

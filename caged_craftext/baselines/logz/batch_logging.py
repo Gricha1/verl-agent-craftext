@@ -6,6 +6,22 @@ import wandb
 
 batch_logs = {}
 log_times = []
+# Updates completed by earlier restarts of the same process (see start_restart).
+update_offset = 0
+
+
+def start_restart(offset):
+    """Begin a new train() call whose update_step counts from 0 again.
+
+    ``batch_logs`` is keyed by update_step and a key is logged only when it first
+    reaches NUM_REPEATS entries, so without clearing it every update_step already
+    seen in an earlier restart would be silently dropped. ``offset`` is the number
+    of updates run before this restart; it gives the cumulative x-axis.
+    """
+    global update_offset
+    batch_logs.clear()
+    log_times.clear()
+    update_offset = int(offset)
 
 
 def create_log_dict(info, config):
@@ -83,4 +99,7 @@ def batch_log(update_step, log, config):
                 sps = steps_between_updates / dt
                 agg_logs["sps"] = sps
 
+        # Cumulative over restarts; "global_steps" from the rollout info is always 0.
+        agg_logs["update"] = update_offset + update_step
+        agg_logs["env_steps"] = (update_offset + update_step + 1) * config['NUM_STEPS'] * config['NUM_ENVS']
         wandb.log(agg_logs)

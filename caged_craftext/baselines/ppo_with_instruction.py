@@ -21,7 +21,7 @@ from orbax.checkpoint import (
 )
 
 
-from logz.batch_logging import batch_log, create_log_dict
+from logz.batch_logging import batch_log, create_log_dict, start_restart
 from models.actor_critic import (
     ActorCritic,
     ActorCriticConv)
@@ -629,8 +629,10 @@ def make_train(config, network_params):
                 ex_state = ex_update_state[0]
                 rng = ex_update_state[-1]
                 
-            # metric['global_steps'] = traj_batch.info['']
-            metric['global_steps'] = update_state.traj_batch.info['steps'][0].sum()
+            # `update_state` is the tuple returned by the PPO epoch scan.  The
+            # rollout is held in the local `traj_batch`, not as an attribute on
+            # that tuple (the previous access crashed before PPO update 1).
+            metric["global_steps"] = traj_batch.info["steps"][0].sum()
             # wandb logging
             if config["DEBUG"] and config["USE_WANDB"]:
 
@@ -694,6 +696,7 @@ def run_ppo(config):
 
     # Define the number of restarts
     num_restarts = 5  # Hyperparameter for the number of restarts
+    completed_updates = 0  # over all restarts, for the cumulative log axis
     for restart in range(num_restarts):
         print(f"Starting training iteration {restart + 1}/{num_restarts}")
 
@@ -728,10 +731,12 @@ def run_ppo(config):
         # Prepare the training function
         train_jit = jax.jit(make_train(config, network_params))
 
-        # Run the training
+        # Run the training; update_step restarts from 0, so reset the batch logger.
+        start_restart(completed_updates)
         t0 = time.time()
         train_state = train_jit(current_rng)
         t1 = time.time()
+        completed_updates += config["NUM_UPDATES"]  # set by make_train
 
         # Print performance metrics
         print(f"Iteration {restart + 1} completed.")
