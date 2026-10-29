@@ -1,0 +1,4 @@
+Metadata-Version: 2.1
+Name: craftext-vllm-plugin
+Version: 0.1
+Summary: Registers the Crafter visual SLM with vLLM in every vLLM process.

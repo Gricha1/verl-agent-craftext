@@ -1,0 +1,2 @@
+- name: craftext_reasoning
+  _target_: craftext_integration.agent_loop.CraftextReasoningAgentLoop

@@ -1,0 +1,40 @@
+FROM vllm/vllm-openai:v0.24.0
+
+WORKDIR /workspace/verl
+COPY . /workspace/verl
+COPY craftext_integration/wheels/ /tmp/wheels/
+
+# Keep the vLLM image's CUDA/Torch stack.  Install veRL's runtime explicitly
+# instead of its vLLM extra, which would otherwise attempt to replace that
+# known-good stack during a smoke test.
+RUN python3 -m pip install --no-cache-dir --upgrade pip && \
+    python3 -m pip install --no-cache-dir -e . --no-deps && \
+    python3 -m pip install --no-cache-dir \
+      'ray[default] @ file:///tmp/wheels/ray-2.55.1-cp312-cp312-manylinux2014_x86_64.whl' hydra-core omegaconf \
+      'tensordict==0.10.0' accelerate \
+      datasets dill pandas peft pyarrow torchdata packaging wandb tensorboard comet_ml \
+      'trl==0.27.0' \
+      fastapi uvicorn codetiming qwen_vl_utils mathruler nvtx torchcodec \
+      pylatexenc cachetools 'transformers==5.9.0' && \
+    python3 -m pip install --no-cache-dir \
+      'jax==0.4.30' /tmp/wheels/jaxlib-0.4.30-cp312-cp312-manylinux2014_x86_64.whl \
+      'chex==0.1.86' 'distrax==0.1.5' \
+      'flax==0.8.5' 'gym==0.26.2' 'gymnax==0.0.6' 'optax==0.2.1'
+
+# The base vLLM image intentionally omits the git executable.  An immutable
+# source archive keeps this image self-contained and lets the heavy JAX layer
+# remain cached when TransferQueue changes.
+RUN python3 -m pip install --no-cache-dir \
+      'https://github.com/Ascend/TransferQueue/archive/1195ec1c0f10795c371754f28ff6997aa54a6a53.zip'
+
+# ``pybind11`` is a direct veRL runtime requirement.  The upstream vLLM image
+# includes optional LMCache telemetry constraints which conflict with Ray and
+# disabled W&B telemetry; a global ``pip check`` therefore reports unrelated
+# base-image extras as broken.  Verify the imports this smoke run actually
+# executes instead; the following runtime check exercises vLLM again before
+# GPU allocation.
+RUN python3 -m pip install --no-cache-dir \
+      'pybind11>=2.12.0' gymnasium imageio matplotlib pygame && \
+    python3 -c "import jax, ray, torch, transfer_queue, vllm; import verl"
+
+ENV PYTHONPATH=/workspace/verl
