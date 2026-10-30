@@ -27,7 +27,8 @@ record_code_version "${OUT}"
 
 chain() {
   if [ "${WAIT:-0}" = 1 ]; then
-    while docker ps --format '{{.Names}}' | grep -qx "${RL_RUN}"; do sleep 60; done
+    # (not "docker ps | grep -q": under pipefail grep's early exit makes the pipeline fail)
+    while [ -n "$(docker ps -q --filter "name=^${RL_RUN}\$")" ]; do sleep 60; done
     echo "RL run finished $(date)"
   fi
   local steps="${STEPS:-$(ls "${RUN_DIR}/checkpoints" | sed -n 's/^global_step_//p' | sort -n | tr '\n' ' ')}"

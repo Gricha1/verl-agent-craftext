@@ -404,7 +404,10 @@ class FSDPCheckpointManager(BaseCheckpointManager):
                 # model's module. For a PEFT model unwrap_model is the PeftModel wrapper, so unwrap it
                 # first; get_base_model() is peft-only (a plain model lacks it and is passed through).
                 save_obj = unwrap_model.get_base_model() if hasattr(unwrap_model, "get_base_model") else unwrap_model
-                custom_object_save(save_obj, hf_config_tokenizer_path, config=model_config)
+                # A trl value-head critic (AutoModelForCausalLMWithValueHead) is not a PreTrainedModel and has
+                # no _auto_class: custom_object_save raised AttributeError and killed training at the first save.
+                if hasattr(save_obj, "_auto_class"):
+                    custom_object_save(save_obj, hf_config_tokenizer_path, config=model_config)
 
             # Also save runtime FSDP config
             fsdp_config_path = os.path.join(local_path, "fsdp_config.json")
