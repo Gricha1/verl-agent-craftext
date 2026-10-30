@@ -285,8 +285,11 @@ class ScenariosNoLambdaCMDP:
                     cost_types.append(cost_type)
             assert len(cost_types) == len(textual_constraints), f"{len(cost_types)} VS {len(textual_constraints)}"
             
+        elif "textual_constraint" not in scenario and "textual_constraints" not in scenario:
+            # unconstrained goal (e.g. achievements_all): one empty constraint, no cost type
+            textual_constraints = [""]
+            cost_types = [None]
         else:
-            assert ("textual_constraint" in scenario) or ("textual_constraints" in scenario)
             if "textual_constraint" in scenario:
                 textual_constraints = [scenario.get("textual_constraint", "Unknown textual constraint")]
             else:

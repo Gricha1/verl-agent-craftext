@@ -119,6 +119,9 @@ class CMDPInstructionWrapper(InstructionWrapper):
             "debug_square_16x16",
         ):
             cost = checker_budget_energy_level(game_data_vector, ts.energy_level_state.level).astype(float)
+        elif self.config_name == "achievements_all":
+            # plain achievement goals (the teacher's task set): no safety constraint, cost is always 0
+            cost = jnp.zeros((), dtype=float)
         elif self.config_name == "achievements_safe_budget_hp":
             cost = checker_budget_hp_level(game_data_vector, ts.hp_level_state.level).astype(float)
         elif self.config_name == "achievements_safe_budget_hungry" or \
