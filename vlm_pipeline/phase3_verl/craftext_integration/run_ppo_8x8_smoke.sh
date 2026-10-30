@@ -50,6 +50,9 @@ USE_TORCH_COMPILE="${USE_TORCH_COMPILE:-true}"
 USE_KL_LOSS="${USE_KL_LOSS:-false}"
 KL_LOSS_COEF="${KL_LOSS_COEF:-0.001}"
 ENTROPY_COEFF="${ENTROPY_COEFF:-0.0}"
+# 1e-6 / 1e-5 suit billion-parameter LLMs; small models usually need more.
+ACTOR_LR="${ACTOR_LR:-1e-6}"
+CRITIC_LR="${CRITIC_LR:-1e-5}"
 ROLLOUT_MODE="${ROLLOUT_MODE:-async}"
 ROLLOUT_MAX_MODEL_LEN="${ROLLOUT_MAX_MODEL_LEN:-1536}"
 ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-${NUM_ENVS}}"
@@ -142,7 +145,7 @@ cd "${REPO_ROOT}"
   actor_rollout_ref.model.lora_rank="${LORA_RANK}" \
   actor_rollout_ref.model.lora_alpha="${LORA_ALPHA}" \
   actor_rollout_ref.model.use_remove_padding="${USE_REMOVE_PADDING}" \
-  actor_rollout_ref.actor.optim.lr=1e-6 \
+  actor_rollout_ref.actor.optim.lr="${ACTOR_LR}" \
   actor_rollout_ref.actor.ppo_mini_batch_size="${PPO_MINI_BATCH_SIZE}" \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu="${PPO_MICRO_BATCH_SIZE}" \
   actor_rollout_ref.actor.use_kl_loss="${USE_KL_LOSS}" \
@@ -153,7 +156,7 @@ cd "${REPO_ROOT}"
   actor_rollout_ref.actor.fsdp_config.use_torch_compile="${USE_TORCH_COMPILE}" \
   actor_rollout_ref.actor.fsdp_config.param_offload=false \
   actor_rollout_ref.actor.fsdp_config.optimizer_offload=false \
-  critic.optim.lr=1e-5 \
+  critic.optim.lr="${CRITIC_LR}" \
   critic.ppo_mini_batch_size="${PPO_MINI_BATCH_SIZE}" \
   critic.ppo_micro_batch_size_per_gpu="${PPO_MICRO_BATCH_SIZE}" \
   critic.fsdp.param_offload=false \
