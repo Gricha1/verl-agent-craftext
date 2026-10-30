@@ -43,6 +43,7 @@ def main() -> None:
         if path.is_file() and path.suffix != ".safetensors":
             shutil.copy2(path, args.output / path.name)
     import sys
+    sys.dont_write_bytecode = True  # leave the start checkpoint untouched (no __pycache__)
     sys.path.insert(0, str(args.start))
     from modeling_crafter_vision_slm import CrafterVisionQwen3ForCausalLM
 

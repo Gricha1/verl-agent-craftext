@@ -40,7 +40,9 @@ HF_HOME=${R}/closed_loop/cache/hf
     local export_dir="${RUN_DIR}/export_global_step_${S}"
     if [ ! -f "${export_dir}/config.json" ]; then
       mkdir -p "${export_dir}" && chmod 777 "${export_dir}"
-      CUDA_VISIBLE_DEVICES="${GPU_ID}" docker run --rm --name "${RL_RUN}_export_${S}" -v "${CHECKOUT}:/workspace/repo:ro" \
+      # as our user: written as root, NFS squashes to nobody and model.safetensors stays 0600
+      CUDA_VISIBLE_DEVICES="${GPU_ID}" docker run --rm --name "${RL_RUN}_export_${S}" --user 1007:100 \
+        --env-file "${OUT}/eval.env" -v "${CHECKOUT}:/workspace/repo:ro" \
         -v "${RUNS}:/mnt/runs" -w /workspace/repo/vlm_pipeline/phase3_verl/craftext_integration/slm_vision \
         --entrypoint python3 "${VERL_IMAGE}" export_rl_checkpoint.py \
         --actor "${R}/checkpoints/global_step_${S}/actor" --start "${START_IN}" \
