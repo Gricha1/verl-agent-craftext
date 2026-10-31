@@ -28,6 +28,10 @@ export VLLM_MAX_BATCHED_TOKENS="${VLLM_MAX_BATCHED_TOKENS:-2048}" ROLLOUT_MAX_MO
 export PPO_MICRO_BATCH_SIZE="${PPO_MICRO_BATCH_SIZE:-8}" USE_REMOVE_PADDING=false USE_TORCH_COMPILE=false
 export LOGGER_BACKENDS="${LOGGER_BACKENDS:-[console,file]}"
 export CRAF_TEXT_SEED="${CRAF_TEXT_SEED:-20261029}" VALIDATION_SEED="${VALIDATION_SEED:-20261014}"
+# Every env step is its own PPO response and GAE stops at its end (next value 0), so the per-step reward
+# must already be the discounted return-to-go (as in compat_06c4.env); "immediate" scores an action only
+# by its own reward and gives navigation no credit.
+export CRAF_TEXT_REWARD_MODE="${CRAF_TEXT_REWARD_MODE:-remaining_return}" CRAF_TEXT_REMAINING_RETURN_GAMMA="${CRAF_TEXT_REMAINING_RETURN_GAMMA:-0.99}"
 nohup bash "${CHECKOUT}/vlm_pipeline/phase3_verl/craftext_integration/run_ppo_8x8_smoke_docker.sh" \
   > "${RUN_ROOT}/launcher.log" 2>&1 < /dev/null &
 echo "launched ${RUN_NAME} on GPU${GPU_ID}: ${RUN_ROOT}"
