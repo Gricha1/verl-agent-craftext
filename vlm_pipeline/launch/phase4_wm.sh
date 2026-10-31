@@ -26,7 +26,9 @@ python3 /workspace/repo/vlm_pipeline/phase4_world_model/train_slm_world_model.py
   ${REASONING_FLAG} ${EXTRA_ARGS:-}
 EOF
 mkdir -p "${RUN_DIR}/run" && chmod 777 "${RUN_DIR}/run"
-CUDA_VISIBLE_DEVICES="${GPU_ID}" nohup docker run --rm --name "${RUN_NAME}" --entrypoint bash \
+# several runs share one card: ~10 GB (30 h tokens) to ~19 GB (100) each at K=16
+printf 'PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True\nPYTHONUNBUFFERED=1\n' > "${RUN_DIR}/container.env"
+CUDA_VISIBLE_DEVICES="${GPU_ID}" nohup docker run --rm --name "${RUN_NAME}" --entrypoint bash --env-file "${RUN_DIR}/container.env" \
   -v "${CHECKOUT}:/workspace/repo:ro" -v "${RUNS}:/mnt/runs" "${TORCH_IMAGE}" "/mnt/runs/${RUN_NAME}/train.sh" \
   > "${RUN_DIR}/train.log" 2>&1 < /dev/null &
 echo "launched ${RUN_NAME} on GPU${GPU_ID}: ${RUN_DIR}"
