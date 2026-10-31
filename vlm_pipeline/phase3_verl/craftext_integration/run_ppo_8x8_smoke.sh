@@ -104,6 +104,9 @@ fi
 
 "${PYTHON_BIN}" "${REPO_ROOT}/craftext_integration/make_smoke_dataset.py" \
   --output "${RUN_ROOT}/dataset/craftext_smoke.parquet" --rows "${NUM_ENVS}"
+# Validation has its own batch size (one placeholder prompt per validation env), so its own rows.
+"${PYTHON_BIN}" "${REPO_ROOT}/craftext_integration/make_smoke_dataset.py" \
+  --output "${RUN_ROOT}/dataset/craftext_val.parquet" --rows "${VAL_BATCH_SIZE}"
 "${PYTHON_BIN}" "${REPO_ROOT}/craftext_integration/make_validation_seed_manifest.py" \
   --output "${RUN_ROOT}/dataset/validation_seeds.json" --base-seed "${VALIDATION_SEED}" --episodes "${VAL_BATCH_SIZE}"
 
@@ -127,7 +130,7 @@ cd "${REPO_ROOT}"
   algorithm.adv_estimator=gae \
   algorithm.use_kl_in_reward=false \
   data.train_files="${RUN_ROOT}/dataset/craftext_smoke.parquet" \
-  data.val_files="${RUN_ROOT}/dataset/craftext_smoke.parquet" \
+  data.val_files="${RUN_ROOT}/dataset/craftext_val.parquet" \
   data.train_batch_size="${TRAIN_BATCH_SIZE}" \
   data.val_batch_size="${VAL_BATCH_SIZE}" \
   data.max_prompt_length="${MAX_PROMPT_LENGTH}" \
