@@ -4,7 +4,8 @@
 #   GPU_ID=2 COLLECTION=$RUNS/wood_teacher_collection_20261028/wood_teacher_200_seeds20261500_r1 \
 #     RUN_NAME=wood200_reasoning_gemma4_YYYYMMDD_r1 setsid nohup bash vlm_pipeline/launch/phase2_reasoning.sh &
 #
-# 1) replay_teacher_states.py replays every episode with the stored teacher actions (frames must match)
+# 1) replay_teacher_states.py replays every episode with the stored teacher actions (jitted; frames must
+#    match within 1e-5, float rounding only)
 #    and writes the learner's public state as text: $RUNS/$RUN_NAME/states.jsonl
 # 2) a vLLM server with Gemma (gorbov_gemma4_vllm, port 8383) labels each transition with a reasoning
 #    sentence for the teacher's action: $RUNS/$RUN_NAME/reasoning.jsonl (rerun resumes)
@@ -27,7 +28,7 @@ chain() {
     --env-file "${RUN_DIR}/container.env" -v "${CHECKOUT}:/workspace/repo:ro" -v "${RUNS}:/mnt/runs" \
     -w "/mnt/runs/${RUN_NAME}/cache" --entrypoint python3 "${JAX_IMAGE}" -u "${REASONING}/replay_teacher_states.py" \
     --legacy-root /workspace/repo/caged_craftext --collection-dir "/mnt/runs/${COLLECTION#${RUNS}/}" \
-    --out "/mnt/runs/${RUN_NAME}/states.jsonl" > "${RUN_DIR}/replay.log" 2>&1
+    --out "/mnt/runs/${RUN_NAME}/states.jsonl" --jit --atol 1e-5 > "${RUN_DIR}/replay.log" 2>&1
   if [ -z "$(docker ps -q --filter name=^gorbov_gemma4_vllm\$)" ]; then
     docker rm gorbov_gemma4_vllm > /dev/null 2>&1 || true
     # text only (no image/video/audio encoder profiling), 0.80 of the card next to an RL run

@@ -126,6 +126,8 @@ def main() -> None:
     parser.add_argument("--collection-dir", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--max-episodes", type=int, default=0, help="0 = all (smoke runs use a few)")
+    parser.add_argument("--jit", action="store_true", help="jitted step; frames are then compared with --atol")
+    parser.add_argument("--atol", type=float, default=0.0)
     args = parser.parse_args()
     legacy = args.legacy_root.resolve()
     sys.path[:0] = [str(legacy), str(legacy / "Craftax"), str(legacy / "baselines")]
@@ -152,8 +154,10 @@ def main() -> None:
         ["NOOP", "LEFT", "RIGHT", "UP", "DOWN", "DO", "SLEEP", "PLACE_STONE", "PLACE_TABLE", "PLACE_FURNACE",
          "PLACE_PLANT", "MAKE_WOOD_PICKAXE", "MAKE_STONE_PICKAXE", "MAKE_IRON_PICKAXE", "MAKE_WOOD_SWORD",
          "MAKE_STONE_SWORD", "MAKE_IRON_SWORD"])}
-    # eager, as the collector: a jitted step drifts from the stored frames after a few steps
-    step_fn = env.step
+    # eager, as the collector, reproduces the stored frames bit for bit (~1.5 s per step); a jitted
+    # step is ~100x faster and its frames differ by float rounding only, checked against --atol
+    step_fn = jax.jit(env.step) if args.jit else env.step
+    max_diff = 0.0
 
     trajectories = manifest["trajectories"][: args.max_episodes or None]
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -170,8 +174,9 @@ def main() -> None:
             for step in steps:
                 info = episode[step]
                 stored = np.load(args.collection_dir / "images" / Path(info["observation_path"]).name)["observation"]
-                if not np.array_equal(stored, np.asarray(obs)):
-                    diff = np.abs(stored.astype(np.float64) - np.asarray(obs, dtype=np.float64))
+                diff = np.abs(stored.astype(np.float64) - np.asarray(obs, dtype=np.float64))
+                max_diff = max(max_diff, float(diff.max()))
+                if diff.max() > args.atol:
                     raise RuntimeError(f"episode {trajectory['episode_id']} step {step}: replayed frame differs "
                                        f"(max {diff.max():.4g}, {int((diff > 0).sum())} values)")
                 view = describe(state.env_state)
@@ -186,8 +191,10 @@ def main() -> None:
                 written += 1
                 key, step_key = jax.random.split(key)
                 obs, state, _, _, _ = step_fn(step_key, state, jnp.int32(action_ids[info["teacher_action"]]), env_params)
-            print(json.dumps(dict(episode_id=trajectory["episode_id"], steps=len(steps), frames_match=True)), flush=True)
-    print(json.dumps(dict(episodes=len(trajectories), transitions=written, out=str(args.out))), flush=True)
+            print(json.dumps(dict(episode_id=trajectory["episode_id"], steps=len(steps), frames_match=True,
+                                  max_frame_diff=max_diff)), flush=True)
+    print(json.dumps(dict(episodes=len(trajectories), transitions=written, max_frame_diff=max_diff,
+                          out=str(args.out))), flush=True)
 
 
 if __name__ == "__main__":
