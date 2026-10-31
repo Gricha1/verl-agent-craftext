@@ -16,11 +16,15 @@ from ..actions import ACTION_NAMES, ParsedAction
 VISUAL_SLM_ACTION_HISTORY = 8
 
 
-def vision_image_only_prompt(instruction: str, action_history: list[str] | None = None) -> str:
-    """Must match the visual-only training prompt byte-for-byte."""
+def vision_image_only_prompt(instruction: str, action_history: list[str] | None = None,
+                             reasoning: bool = False) -> str:
+    """Must match the visual-only training prompt byte-for-byte (prepare_teacher_dataset.py;
+    reasoning=True is protocol vision_image_reasoning_v1)."""
     history = ""
     if action_history is not None:
         history = "Previous executed actions (oldest to newest; up to 8): " + (", ".join(action_history) or "none") + "\n\n"
+    answer = ("Think in one short sentence inside <reasoning>...</reasoning>, then output exactly one action "
+              "as ACTION: <ACTION_NAME>." if reasoning else "Output exactly one action as ACTION: <ACTION_NAME>.")
     return (
         "SYSTEM:\n"
         "You are a careful embodied CrafText agent. Infer the current navigational "
@@ -28,7 +32,7 @@ def vision_image_only_prompt(instruction: str, action_history: list[str] | None 
         "USER:\n"
         f"Your goal is to complete this task:\n**TASK:** {instruction}\n\n"
         + history
-        + "Output exactly one action as ACTION: <ACTION_NAME>.\n\nResponse:\n"
+        + answer + "\n\nResponse:\n"
     )
 
 

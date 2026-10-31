@@ -27,7 +27,7 @@ ACTIONS = ("NOOP", "LEFT", "RIGHT", "UP", "DOWN", "DO", "SLEEP", "PLACE_STONE", 
 
 
 class Policy:
-    def __init__(self, model_path: str, repo: str, no_history: bool = False):
+    def __init__(self, model_path: str, repo: str, no_history: bool = False, reasoning: bool = False):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
         sys.path.insert(0, repo)
@@ -39,16 +39,19 @@ class Policy:
         self.markers = list(self.model.config.crafter_visual_token_ids)
         self.eos = int(self.model.config.eos_token_id)
         self.no_history = no_history  # prompt protocol vision_image_only_v1: no history line at all
+        # vision_image_reasoning_v1: <reasoning>one sentence</reasoning> then the action (~40 tokens)
+        self.reasoning, self.max_new_tokens = reasoning, (96 if reasoning else 8)
 
     def act(self, frame01: np.ndarray, task: str, history: list[str]):
-        """frame01: [63,63,3] float in [0,1]. Greedy, no KV cache (8 tokens at most)."""
+        """frame01: [63,63,3] float in [0,1]. Greedy, no KV cache (8 tokens, 96 with reasoning)."""
         torch = self.torch
-        ids = self.markers + self.tok.encode(self.prompt(task, None if self.no_history else history[-self.h:]), add_special_tokens=False)
+        ids = self.markers + self.tok.encode(self.prompt(task, None if self.no_history else history[-self.h:],
+                                                         reasoning=self.reasoning), add_special_tokens=False)
         x = torch.tensor([ids], device="cuda")
         pix = torch.from_numpy(np.ascontiguousarray(np.moveaxis(frame01.astype(np.float32), -1, 0)))[None].cuda()
         out, first_probs = [], None
         with torch.no_grad():
-            for _ in range(8):
+            for _ in range(self.max_new_tokens):
                 logits = self.model(input_ids=x, pixel_values=pix).logits[0, -1]
                 if first_probs is None:
                     first_probs = torch.softmax(logits.float(), -1)
@@ -108,9 +111,11 @@ def run_teacher(args, pol):
         for seed in args.seeds:
             key = jax.random.PRNGKey(seed)
             obs, state = env.reset(key, params, instruction_idx=task)
-            hist, acts, ret, success = [], collections.Counter(), 0.0, False
+            hist, acts, ret, success, responses = [], collections.Counter(), 0.0, False, []
             for t in range(args.max_steps):
-                a, _ = pol.act(np.asarray(obs), instrs[task], hist)
+                a, text = pol.act(np.asarray(obs), instrs[task], hist)
+                if len(responses) < 5:
+                    responses.append(text)
                 acts[a] += 1
                 key, k = jax.random.split(key)
                 obs, state, r, done, _ = step(k, state, jnp.int32(ACTIONS.index(a)), params)
@@ -120,7 +125,7 @@ def run_teacher(args, pol):
                 if bool(done):
                     break
             episodes.append({"task": instrs[task], "seed": seed, "steps": t + 1, "success": success,
-                             "return": ret, "top_actions": acts.most_common(4)})
+                             "return": ret, "top_actions": acts.most_common(4), "first_responses": responses})
             print(json.dumps(episodes[-1]), flush=True)
     return {"mode": "teacher", "craftax_file": craftax.__file__, "instructions": instrs, "episodes": episodes,
             "success_rate": sum(e["success"] for e in episodes) / len(episodes)}
@@ -201,14 +206,16 @@ def main():
     p.add_argument("--lanes", type=int, default=8)
     p.add_argument("--offline-limit", type=int, default=600)
     p.add_argument("--no-history", action="store_true")
+    p.add_argument("--reasoning", action="store_true", help="prompt protocol vision_image_reasoning_v1")
     p.add_argument("--settings", default="achievements_wood", help="CrafText settings of the teacher / adapter env")
     p.add_argument("--out", required=True)
     args = p.parse_args()
     t0 = time.time()
-    pol = Policy(args.model, args.repo, args.no_history)
+    pol = Policy(args.model, args.repo, args.no_history, args.reasoning)
     result = {"offline": run_offline, "teacher": run_teacher, "adapter": run_adapter}[args.mode](args, pol)
     result["seconds"] = time.time() - t0
     result["no_history"] = args.no_history
+    result["reasoning"] = args.reasoning
     Path(args.out).write_text(json.dumps(result, indent=1) + "\n")
     print(json.dumps({k: v for k, v in result.items() if k != "episodes"}), flush=True)
 

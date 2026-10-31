@@ -9,12 +9,16 @@
 # TARGET=argmax: CE on the executed teacher action. Never pass an init checkpoint: phase 2 always starts
 # from the original untrained weights (saved to initial_random/).
 # Eval defaults: wood 4 tasks x 8 seeds x 400 steps; all 22 tasks x 2 seeds x 1000 steps.
+# REASONING=$RUNS/<reasoning run>/reasoning.jsonl (phase2_reasoning.sh): the target becomes
+# <reasoning>LLM-teacher sentence</reasoning> + the action (prompt vision_image_reasoning_v1, --mode cot);
+# with TARGET=teacher_distribution: CE on the reasoning + distillation of the action given it.
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 require_our_gpu
 : "${SETTINGS:?}" "${CORPUS:?teacher corpus dir with train/val.parquet and images/}" "${RUN_NAME:?}"
 TARGET="${TARGET:-teacher_distribution}"
-PROMPT="${PROMPT:-vision_image_only_v1}"
+REASONING="${REASONING:-}"
+if [ -n "${REASONING}" ]; then PROMPT=vision_image_reasoning_v1; MODE=cot; else PROMPT="${PROMPT:-vision_image_only_v1}"; MODE=action; fi
 EPOCHS="${EPOCHS:-48}"
 SEED="${SEED:-7101}"
 CHECKPOINTS="${CHECKPOINTS:-best_validation epoch_12 epoch_48}"
@@ -28,20 +32,23 @@ RUN_DIR="${RUNS}/${RUN_NAME}"
 new_run_dir "${RUN_DIR}"
 record_code_version "${RUN_DIR}"
 CORPUS_IN="/mnt/runs/${CORPUS#${RUNS}/}"
+REASONING_FLAG=""
+[ -n "${REASONING}" ] && REASONING_FLAG="--reasoning /mnt/runs/${REASONING#${RUNS}/}"
 R="/mnt/runs/${RUN_NAME}"
 
 cat > "${RUN_DIR}/train.sh" <<EOF
 set -euo pipefail
 export PYTHONPATH=/workspace/repo/vlm_pipeline/phase2_slm
 python3 -m slm_ce.prepare_teacher_dataset --input-dir ${CORPUS_IN} --output-dir ${R}/data \\
-  --prompt-protocol ${PROMPT} --split-mode episode --successful-only --split-seed ${SEED}
+  --prompt-protocol ${PROMPT} --split-mode episode --successful-only --split-seed ${SEED} ${REASONING_FLAG}
 python3 -m slm_ce.crafter_slm prepare --data ${R}/data
 python3 -m slm_ce.crafter_vision_slm train --data ${R}/data --out ${R}/run_5m_vision_action \\
-  --size 5m --mode action --target ${TARGET} --epochs ${EPOCHS} --seed ${SEED} --visual-tokens 4 --device cuda \\
+  --size 5m --mode ${MODE} --target ${TARGET} --epochs ${EPOCHS} --seed ${SEED} --visual-tokens 4 --device cuda \\
   --initial-checkpoint-out ${R}/initial_random
 EOF
 HISTORY_FLAG=""
 [ "${PROMPT}" = vision_image_only_v1 ] && HISTORY_FLAG="--no-history"
+[ "${PROMPT}" = vision_image_reasoning_v1 ] && HISTORY_FLAG="--no-history --reasoning"
 cat > "${RUN_DIR}/eval.sh" <<EOF
 set -u
 cd ${R}/cache

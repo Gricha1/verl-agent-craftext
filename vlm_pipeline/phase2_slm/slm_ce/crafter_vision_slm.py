@@ -137,21 +137,34 @@ def action_candidates(tok):
     return [tok.encode(f"ACTION: {name}", add_special_tokens=False) + [tok.eos_token_id] for name in TEACHER_ACTIONS]
 
 
-def action_log_probs(model, rows, candidates, pad, device, data: Path):
+def reasoning_prefix(row, mode):
+    """Target tokens before the action: the reasoning of a cot row, nothing for an action row."""
+    if mode == "action":
+        return []
+    target, action = row[mode], row["action"]
+    if target[-len(action):] != action:
+        raise ValueError(f"cot target does not end with the action tokens (seed {row.get('seed')}, step {row.get('step')})")
+    return target[:-len(action)]
+
+
+def action_log_probs(model, rows, candidates, pad, device, data: Path, mode="action"):
     """Sequence log-probability of every action target for every row.
 
     Returns ``(seq_logp [B, A], teacher_probs [B, A])``.  Each row is scored
     against all A candidate targets in one batch of B*A sequences; the CNN runs
     once per row.  ``seq_logp`` is the sum of the target-token log-probs, i.e.
     log p(ACTION: <a><eos> | frame, prompt), so exp(seq_logp) is the student's
-    probability of emitting that exact action string.
+    probability of emitting that exact action string.  In cot mode every
+    candidate follows the row's reasoning, so ``seq_logp`` is
+    log p(<reasoning> | frame, prompt) + log p(ACTION: <a><eos> | frame, prompt, <reasoning>).
     """
     import torch
     from slm_ce.crafter_slm import batch_tensors as text_batch
     if any(row.get("teacher_probs") is None for row in rows):
         raise ValueError("Distillation needs teacher_probs in every token row; rerun prepare")
     count = len(candidates)
-    expanded = [dict(prompt=row["prompt"], action=target) for row in rows for target in candidates]
+    expanded = [dict(prompt=row["prompt"], action=reasoning_prefix(row, mode) + target)
+                for row in rows for target in candidates]
     inputs = text_batch(expanded, "action", pad, device)
     image_tokens = model.vision(load_images(rows, data, device)).repeat_interleave(count, dim=0)
     text_tokens = model.lm.get_input_embeddings()(inputs["input_ids"])
@@ -226,8 +239,6 @@ def train(args):
         save_checkpoint(args.initial_checkpoint_out, model, tok, vision_config,
                         dict(epoch=0, step=0, initialization="random", seed=args.seed))
     optimizer = torch.optim.AdamW(list(lm.parameters()) + list(vision.parameters()), lr=2e-4, weight_decay=.01)
-    if args.target == "teacher_distribution" and args.mode != "action":
-        raise ValueError("--target teacher_distribution is defined for --mode action")
     meta = dict(size=args.size, mode=args.mode, target=args.target, lm_parameters=sum(p.numel() for p in lm.parameters()),
                 vision_parameters=sum(p.numel() for p in vision.parameters()), seed=args.seed,
                 epochs=args.epochs, batch=32, microbatch=8, lr=2e-4, context=4096,
@@ -248,10 +259,16 @@ def train(args):
 
         Dividing the first by the second is the expected per-token CE of a target
         drawn from the teacher policy; with a one-hot teacher it is exactly the
-        argmax CE above, so the two objectives share one scale.
+        argmax CE above, so the two objectives share one scale.  In cot mode a
+        target is the row's reasoning followed by the action, so this is CE on
+        the reasoning tokens plus the distillation term on the action given the
+        reasoning (sum_a pi(a) = 1), normalised by the expected target length.
         """
-        seq_logp, teacher = action_log_probs(model, rows, candidates, tok.pad_token_id, device, args.data)
-        return -(teacher * seq_logp).sum(), (teacher * candidate_lengths).sum(), seq_logp, teacher
+        seq_logp, teacher = action_log_probs(model, rows, candidates, tok.pad_token_id, device, args.data, args.mode)
+        prefix = torch.tensor([len(reasoning_prefix(row, args.mode)) for row in rows], dtype=torch.float32,
+                              device=device)
+        return (-(teacher * seq_logp).sum(), (teacher * (candidate_lengths + prefix[:, None])).sum(),
+                seq_logp, teacher)
 
     def update(batch):
         nonlocal step
@@ -260,7 +277,8 @@ def train(args):
             group["lr"] = 2e-4 * min(1., step / 100)
         optimizer.zero_grad(set_to_none=True)
         if args.target == "teacher_distribution":
-            denominator = sum(sum(p * len(c) for p, c in zip(row["teacher_probs"], candidates)) for row in batch)
+            denominator = sum(sum(p * (len(reasoning_prefix(row, args.mode)) + len(c))
+                                  for p, c in zip(row["teacher_probs"], candidates)) for row in batch)
         else:
             denominator = sum(len(row[args.mode]) for row in batch)
         loss_sum = 0.0

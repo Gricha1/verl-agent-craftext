@@ -48,13 +48,16 @@ def serialize_messages(messages: list[dict[str, str]]) -> str:
     return "\n\n".join(rendered) + "\n\nResponse:\n"
 
 
-def serialize_vision_image_only(instruction: str, action_history: list[str] | None = None) -> str:
+def serialize_vision_image_only(instruction: str, action_history: list[str] | None = None,
+                                reasoning: bool = False) -> str:
     """Prompt protocol for a visual policy: no symbolic state leaks into text."""
     if not instruction:
         raise ValueError("Teacher row has no task instruction")
     history = ""
     if action_history is not None:
         history = "Previous executed actions (oldest to newest; up to 8): " + (", ".join(action_history) or "none") + "\n\n"
+    answer = ("Think in one short sentence inside <reasoning>...</reasoning>, then output exactly one action "
+              "as ACTION: <ACTION_NAME>." if reasoning else "Output exactly one action as ACTION: <ACTION_NAME>.")
     return (
         "SYSTEM:\n"
         "You are a careful embodied CrafText agent. Infer the current navigational "
@@ -62,13 +65,14 @@ def serialize_vision_image_only(instruction: str, action_history: list[str] | No
         "USER:\n"
         f"Your goal is to complete this task:\n**TASK:** {instruction}\n\n"
         + history
-        + "Output exactly one action as ACTION: <ACTION_NAME>.\n\nResponse:\n"
+        + answer + "\n\nResponse:\n"
     )
 
 
 def convert_rows(rows: list[dict], source_image_dir: Path, destination: Path,
                  image_destination: Path, prompt_protocol: str,
-                 histories: dict[tuple[int, int], list[str]], source_split: str) -> list[dict]:
+                 histories: dict[tuple[int, int], list[str]], source_split: str,
+                 reasoning: dict[tuple[int, int], dict] | None = None) -> list[dict]:
     converted = []
     for row in rows:
         extra = row["extra_info"]
@@ -93,8 +97,17 @@ def convert_rows(rows: list[dict], source_image_dir: Path, destination: Path,
         elif prompt_protocol == "vision_image_actions8_v1":
             prompt = serialize_vision_image_only(str(extra["instruction"]),
                                                  histories[(int(extra["episode_id"]), int(extra["step"]))])
+        elif prompt_protocol == "vision_image_reasoning_v1":
+            prompt = serialize_vision_image_only(str(extra["instruction"]), reasoning=True)
         else:
             raise ValueError(f"Unknown prompt protocol: {prompt_protocol}")
+        cot_target = f"ACTION: {action}"
+        label = None
+        if reasoning is not None:
+            label = reasoning.get((int(extra["episode_id"]), int(extra["step"])))
+            if label is None or label["action"] != action:
+                raise ValueError(f"No reasoning for the teacher action at episode {extra['episode_id']} step {extra['step']}")
+            cot_target = f"<reasoning>{label['reasoning']}</reasoning>\nACTION: {action}"
         # The full teacher policy, for distillation targets; its argmax is the
         # executed (deterministic-mode) teacher action.
         teacher_probs = [float(p) for p in extra["teacher_action_probabilities"]]
@@ -109,10 +122,11 @@ def convert_rows(rows: list[dict], source_image_dir: Path, destination: Path,
                 "step": int(extra["step"]),
                 "prompt": prompt,
                 "action_target": f"ACTION: {action}",
-                # The action-only run must never pretend the fixed Qwen wrapper
-                # is a CNN+BERT teacher rationale.
-                "cot_target": f"ACTION: {action}",
+                # Action-only unless --reasoning gives LLM-teacher reasoning for this
+                # teacher action (label_reasoning.py); never a CNN+BERT rationale.
+                "cot_target": cot_target,
                 "action": action,
+                **({"reasoning_effective_action": label["effective"]} if label else {}),
                 "teacher_probs": teacher_probs,
                 "source_episode_id": int(extra["episode_id"]),
                 "source_split": source_split,
@@ -163,8 +177,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--prompt-protocol", choices=["source_chat_serialized_v1", "vision_image_only_v1", "vision_image_actions8_v1"],
+    parser.add_argument("--prompt-protocol", choices=["source_chat_serialized_v1", "vision_image_only_v1", "vision_image_actions8_v1",
+                                                      "vision_image_reasoning_v1"],
                         default="source_chat_serialized_v1")
+    parser.add_argument("--reasoning", type=Path, default=None,
+                        help="reasoning.jsonl from phase2_slm/reasoning/label_reasoning.py: cot_target becomes "
+                             "<reasoning>...</reasoning> + the action (use with vision_image_reasoning_v1)")
     parser.add_argument("--split-mode", choices=["source", "episode"], default="source")
     parser.add_argument("--successful-only", action="store_true",
                         help="Keep only episodes whose final rollout state is successful (episode split only).")
@@ -197,10 +215,16 @@ def main() -> None:
         train_rows, valid_rows = source_train, source_valid
         split_counts = None
         train_label, valid_label = "source_train", "source_valid"
+    if (args.reasoning is not None) != (args.prompt_protocol == "vision_image_reasoning_v1"):
+        raise ValueError("--reasoning goes with --prompt-protocol vision_image_reasoning_v1 and vice versa")
+    reasoning = None
+    if args.reasoning is not None:
+        reasoning = {(int(r["episode_id"]), int(r["step"])): r
+                     for r in map(json.loads, args.reasoning.read_text(encoding="utf-8").splitlines())}
     train = convert_rows(train_rows, args.input_dir / "images", args.output_dir / "train.jsonl", image_destination,
-                         args.prompt_protocol, histories, train_label)
+                         args.prompt_protocol, histories, train_label, reasoning)
     valid = convert_rows(valid_rows, args.input_dir / "images", args.output_dir / "valid.jsonl", image_destination,
-                         args.prompt_protocol, histories, valid_label)
+                         args.prompt_protocol, histories, valid_label, reasoning)
     source_manifest = json.loads((args.input_dir / "manifest.json").read_text(encoding="utf-8"))
     manifest = {
         "schema_version": 1,
@@ -209,7 +233,9 @@ def main() -> None:
         "source_manifest": source_manifest,
         "train_rows": len(train),
         "valid_rows": len(valid),
-        "target": "action-only CE: ACTION: <CNN+BERT teacher action>",
+        "target": ("cot_target: <reasoning>LLM-teacher sentence</reasoning> + ACTION: <CNN+BERT teacher action>"
+                   if reasoning else "action-only CE: ACTION: <CNN+BERT teacher action>"),
+        "reasoning_source": str(args.reasoning.resolve()) if args.reasoning else None,
         "prompt_protocol": args.prompt_protocol,
         "split_mode": args.split_mode,
         "successful_episodes_only": args.successful_only,
@@ -221,7 +247,7 @@ def main() -> None:
             "held-out states; teacher episodes are not disjoint across train/valid"
         ),
         "teacher_reasoning_in_input": False,
-        "teacher_reasoning_target": False,
+        "teacher_reasoning_target": reasoning is not None,
         "vision_observations": "copied current 63x63x3 float32 observations; image_path is relative to this dataset",
         "state_in_text": args.prompt_protocol == "source_chat_serialized_v1",
         "action_history_in_text": 8 if args.prompt_protocol == "vision_image_actions8_v1" else 0,
