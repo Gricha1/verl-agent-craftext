@@ -69,10 +69,24 @@ def serialize_vision_image_only(instruction: str, action_history: list[str] | No
     )
 
 
+def serialize_text_state(instruction: str, observation_text: str) -> str:
+    """Prompt protocol for a text policy: the replayed public state as text (what the LLM teacher saw),
+    no image."""
+    return (
+        "SYSTEM:\n"
+        "You are a careful embodied CrafText agent. Infer the current state from the text observation.\n\n"
+        "USER:\n"
+        f"Your goal is to complete this task:\n**TASK:** {instruction}\n\n"
+        f"Observation:\n{observation_text}\n\n"
+        "Output exactly one action as ACTION: <ACTION_NAME>.\n\nResponse:\n"
+    )
+
+
 def convert_rows(rows: list[dict], source_image_dir: Path, destination: Path,
                  image_destination: Path, prompt_protocol: str,
                  histories: dict[tuple[int, int], list[str]], source_split: str,
-                 reasoning: dict[tuple[int, int], dict] | None = None) -> list[dict]:
+                 reasoning: dict[tuple[int, int], dict] | None = None,
+                 states: dict[tuple[int, int], str] | None = None) -> list[dict]:
     converted = []
     for row in rows:
         extra = row["extra_info"]
@@ -99,6 +113,11 @@ def convert_rows(rows: list[dict], source_image_dir: Path, destination: Path,
                                                  histories[(int(extra["episode_id"]), int(extra["step"]))])
         elif prompt_protocol == "vision_image_reasoning_v1":
             prompt = serialize_vision_image_only(str(extra["instruction"]), reasoning=True)
+        elif prompt_protocol == "text_state_v1":
+            observation = states.get((int(extra["episode_id"]), int(extra["step"])))
+            if observation is None:
+                raise ValueError(f"No replayed state at episode {extra['episode_id']} step {extra['step']}")
+            prompt = serialize_text_state(str(extra["instruction"]), observation)
         else:
             raise ValueError(f"Unknown prompt protocol: {prompt_protocol}")
         cot_target = f"ACTION: {action}"
@@ -178,8 +197,11 @@ def main() -> None:
     parser.add_argument("--input-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--prompt-protocol", choices=["source_chat_serialized_v1", "vision_image_only_v1", "vision_image_actions8_v1",
-                                                      "vision_image_reasoning_v1"],
+                                                      "vision_image_reasoning_v1", "text_state_v1"],
                         default="source_chat_serialized_v1")
+    parser.add_argument("--states", type=Path, default=None,
+                        help="states.jsonl from phase2_slm/reasoning/replay_teacher_states.py: its observation_text "
+                             "is the input of text_state_v1")
     parser.add_argument("--reasoning", type=Path, default=None,
                         help="reasoning.jsonl from phase2_slm/reasoning/label_reasoning.py: cot_target becomes "
                              "<reasoning>...</reasoning> + the action (use with vision_image_reasoning_v1)")
@@ -221,10 +243,16 @@ def main() -> None:
     if args.reasoning is not None:
         reasoning = {(int(r["episode_id"]), int(r["step"])): r
                      for r in map(json.loads, args.reasoning.read_text(encoding="utf-8").splitlines())}
+    if (args.states is not None) != (args.prompt_protocol == "text_state_v1"):
+        raise ValueError("--states goes with --prompt-protocol text_state_v1 and vice versa")
+    states = None
+    if args.states is not None:
+        states = {(int(r["episode_id"]), int(r["step"])): r["observation_text"]
+                  for r in map(json.loads, args.states.read_text(encoding="utf-8").splitlines())}
     train = convert_rows(train_rows, args.input_dir / "images", args.output_dir / "train.jsonl", image_destination,
-                         args.prompt_protocol, histories, train_label, reasoning)
+                         args.prompt_protocol, histories, train_label, reasoning, states)
     valid = convert_rows(valid_rows, args.input_dir / "images", args.output_dir / "valid.jsonl", image_destination,
-                         args.prompt_protocol, histories, valid_label, reasoning)
+                         args.prompt_protocol, histories, valid_label, reasoning, states)
     source_manifest = json.loads((args.input_dir / "manifest.json").read_text(encoding="utf-8"))
     manifest = {
         "schema_version": 1,
@@ -249,7 +277,8 @@ def main() -> None:
         "teacher_reasoning_in_input": False,
         "teacher_reasoning_target": reasoning is not None,
         "vision_observations": "copied current 63x63x3 float32 observations; image_path is relative to this dataset",
-        "state_in_text": args.prompt_protocol == "source_chat_serialized_v1",
+        "state_in_text": args.prompt_protocol in ("source_chat_serialized_v1", "text_state_v1"),
+        "states_source": str(args.states.resolve()) if args.states else None,
         "action_history_in_text": 8 if args.prompt_protocol == "vision_image_actions8_v1" else 0,
     }
     (args.output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

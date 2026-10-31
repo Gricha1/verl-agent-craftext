@@ -37,6 +37,8 @@ class VisionEncoder:
         self.visual_tokens = visual_tokens
 
     def __call__(self, images):
+        if self.visual_tokens == 0:  # text-only policy (text_state_v1): the frame is not used
+            return images.new_zeros((images.shape[0], 0, self.width))
         return self.module(images).view(images.shape[0], self.visual_tokens, self.width)
 
     def parameters(self):
