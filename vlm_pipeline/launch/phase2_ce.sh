@@ -13,8 +13,9 @@
 # <reasoning>LLM-teacher sentence</reasoning> + the action (prompt vision_image_reasoning_v1, --mode cot);
 # with TARGET=teacher_distribution: CE on the reasoning + distillation of the action given it.
 # TEXT_STATE=$RUNS/<reasoning run>/states.jsonl (replay_teacher_states.py): text policy, no image: the prompt
-# holds the replayed public state as text (text_state_v1), no visual tokens. The closed-loop eval has no
-# text-state env yet, so no checkpoint is materialised or evaluated by default.
+# holds the replayed public state as text (text_state_v1), no visual tokens. The trained checkpoint is a plain
+# causal LM, evaluated as is (no materialisation) by closed_loop_eval.py --text-state, which builds the same
+# text from the live Craftax state.
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 require_our_gpu
@@ -24,7 +25,7 @@ REASONING="${REASONING:-}"
 TEXT_STATE="${TEXT_STATE:-}"
 VISUAL_TOKENS=4
 if [ -n "${REASONING}" ]; then PROMPT=vision_image_reasoning_v1; MODE=cot; else PROMPT="${PROMPT:-vision_image_only_v1}"; MODE=action; fi
-if [ -n "${TEXT_STATE}" ]; then PROMPT=text_state_v1; VISUAL_TOKENS=0; CHECKPOINTS="${CHECKPOINTS:-none}"; fi
+if [ -n "${TEXT_STATE}" ]; then PROMPT=text_state_v1; VISUAL_TOKENS=0; fi
 EPOCHS="${EPOCHS:-48}"
 SEED="${SEED:-7101}"
 CHECKPOINTS="${CHECKPOINTS:-best_validation epoch_12 epoch_48}"
@@ -56,13 +57,15 @@ EOF
 HISTORY_FLAG=""
 [ "${PROMPT}" = vision_image_only_v1 ] && HISTORY_FLAG="--no-history"
 [ "${PROMPT}" = vision_image_reasoning_v1 ] && HISTORY_FLAG="--no-history --reasoning"
+EVAL_MODEL='materialized_$C'
+[ "${PROMPT}" = text_state_v1 ] && { HISTORY_FLAG="--text-state"; EVAL_MODEL='run_5m_vision_action/$C'; }
 cat > "${RUN_DIR}/eval.sh" <<EOF
 set -u
 cd ${R}/cache
 for C in ${CHECKPOINTS}; do
-  [ -f ${R}/materialized_\$C/config.json ] || continue
+  [ -f ${R}/${EVAL_MODEL}/config.json ] || continue
   python3 /workspace/repo/vlm_pipeline/phase2_slm/slm_ce/closed_loop_eval.py --mode teacher ${HISTORY_FLAG} \\
-    --model ${R}/materialized_\$C --settings ${SETTINGS} --seeds ${EVAL_SEEDS} --max-steps ${EVAL_MAX_STEPS} \\
+    --model ${R}/${EVAL_MODEL} --settings ${SETTINGS} --seeds ${EVAL_SEEDS} --max-steps ${EVAL_MAX_STEPS} \\
     --out ${R}/eval_\${C}_teacher.json > ${R}/eval_\${C}_teacher.log 2>&1
 done
 echo EVALDONE
@@ -73,7 +76,7 @@ chain() {
     -v "${CHECKOUT}:/workspace/repo:ro" -v "${RUNS}:/mnt/runs" "${TORCH_IMAGE}" "${R}/train.sh" > "${RUN_DIR}/ce.log" 2>&1
   echo "ce exit $? $(date)"
   for C in ${CHECKPOINTS}; do
-    [ -d "${RUN_DIR}/run_5m_vision_action/${C}" ] || continue
+    [ -z "${TEXT_STATE}" ] && [ -d "${RUN_DIR}/run_5m_vision_action/${C}" ] || continue
     mkdir -p "${RUN_DIR}/materialized_${C}" && chmod 777 "${RUN_DIR}/materialized_${C}"
     CUDA_VISIBLE_DEVICES="${GPU_ID}" docker run --rm --name "${RUN_NAME}_mat_${C}" -v "${CHECKOUT}:/workspace/repo:ro" \
       -v "${RUNS}:/mnt/runs" -w /workspace/repo/vlm_pipeline/phase3_verl/craftext_integration/slm_vision \

@@ -64,6 +64,42 @@ class Policy:
         return self.parse(text).action_name, text
 
 
+class TextStatePolicy:
+    """Text-state SLM (prompt text_state_v1, no visual tokens): the trained checkpoint dir itself is a plain
+    causal LM. The observation is the replayed public state, built from the live Craftax state by the same
+    describe()/observation_text() that wrote the training prompts, so train and eval prompts are identical."""
+
+    def __init__(self, model_path: str, repo: str):
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        sys.path.insert(0, repo)
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from craftext_integration.slm_vision.prompt import parse_slm_action
+        from reasoning.replay_teacher_states import describe, observation_text
+        from slm_ce.prepare_teacher_dataset import serialize_text_state
+        self.torch, self.parse = torch, parse_slm_action
+        self.text = lambda state: observation_text(describe(state.env_state))
+        self.prompt = serialize_text_state
+        self.tok = AutoTokenizer.from_pretrained(model_path)
+        self.model = AutoModelForCausalLM.from_pretrained(model_path).cuda().eval()
+        self.eos = int(self.tok.eos_token_id)
+
+    def act_state(self, state, task: str):
+        """Greedy, up to 8 tokens."""
+        torch = self.torch
+        x = torch.tensor([self.tok.encode(self.prompt(task, self.text(state)), add_special_tokens=False)], device="cuda")
+        out = []
+        with torch.no_grad():
+            for _ in range(8):
+                nxt = int(self.model(input_ids=x).logits[0, -1].argmax())
+                if nxt == self.eos:
+                    break
+                out.append(nxt)
+                x = torch.cat([x, torch.tensor([[nxt]], device="cuda")], 1)
+        text = self.tok.decode(out, skip_special_tokens=True)
+        return self.parse(text).action_name, text
+
+
 def run_offline(args, pol):
     import pyarrow.parquet as pq
     root = Path(args.corpus)
@@ -113,7 +149,8 @@ def run_teacher(args, pol):
             obs, state = env.reset(key, params, instruction_idx=task)
             hist, acts, ret, success, responses = [], collections.Counter(), 0.0, False, []
             for t in range(args.max_steps):
-                a, text = pol.act(np.asarray(obs), instrs[task], hist)
+                a, text = (pol.act_state(state, instrs[task]) if args.text_state
+                           else pol.act(np.asarray(obs), instrs[task], hist))
                 if len(responses) < 5:
                     responses.append(text)
                 acts[a] += 1
@@ -207,15 +244,21 @@ def main():
     p.add_argument("--offline-limit", type=int, default=600)
     p.add_argument("--no-history", action="store_true")
     p.add_argument("--reasoning", action="store_true", help="prompt protocol vision_image_reasoning_v1")
+    p.add_argument("--text-state", action="store_true",
+                   help="text-state SLM (prompt text_state_v1, --model = the trained checkpoint dir); teacher mode only")
     p.add_argument("--settings", default="achievements_wood", help="CrafText settings of the teacher / adapter env")
     p.add_argument("--out", required=True)
     args = p.parse_args()
     t0 = time.time()
-    pol = Policy(args.model, args.repo, args.no_history, args.reasoning)
+    if args.text_state and args.mode != "teacher":
+        raise ValueError("--text-state needs --mode teacher (the live Craftax state gives the text observation)")
+    pol = TextStatePolicy(args.model, args.repo) if args.text_state else Policy(args.model, args.repo, args.no_history,
+                                                                                 args.reasoning)
     result = {"offline": run_offline, "teacher": run_teacher, "adapter": run_adapter}[args.mode](args, pol)
     result["seconds"] = time.time() - t0
     result["no_history"] = args.no_history
     result["reasoning"] = args.reasoning
+    result["text_state"] = args.text_state
     Path(args.out).write_text(json.dumps(result, indent=1) + "\n")
     print(json.dumps({k: v for k, v in result.items() if k != "episodes"}), flush=True)
 
