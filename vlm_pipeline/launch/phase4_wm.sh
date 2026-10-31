@@ -6,10 +6,10 @@
 #
 # SPLIT_FROM: the phase-2 CE data whose validation episodes are reused, so the world model and B_ce share
 # one episode split. INIT: the untrained SLM (initial_random) whose tokenizer matches the text the model reads.
-# GPU6 is allowed here only: the user assigned the world-model runs to it (2026-11-01).
+# GPU6 and GPU7 are allowed here only: the user assigned the world-model runs to them (2026-11-01).
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
-case "${GPU_ID:-}" in 2|3|6) ;; *) echo "GPU_ID must be 2, 3 or 6 for phase 4, got '${GPU_ID:-}'" >&2; exit 1 ;; esac
+case "${GPU_ID:-}" in 2|3|6|7) ;; *) echo "GPU_ID must be 2, 3, 6 or 7 for phase 4, got '${GPU_ID:-}'" >&2; exit 1 ;; esac
 : "${CORPUS:?}" "${SPLIT_FROM:?}" "${INIT:?}" "${RUN_NAME:?}"
 H_SIZE="${H_SIZE:-512}"; H_TOKENS="${H_TOKENS:-30}"; HORIZON="${HORIZON:-16}"; EPOCHS="${EPOCHS:-300}"
 RUN_DIR="${RUNS}/${RUN_NAME}"
