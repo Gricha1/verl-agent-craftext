@@ -140,8 +140,9 @@ def main() -> None:
     from craftext.environment.craftext_wrapper import InstructionWrapper
 
     manifest = json.loads((args.collection_dir / "manifest.json").read_text())
-    if manifest["collector"] != "collect_flax_teacher_trajectories.py":
-        raise RuntimeError(f"replay mirrors collect_flax_teacher_trajectories.py, not {manifest['collector']}")
+    # both collectors: PRNGKey(seed), reset with the task index, one key split per step, same env
+    if manifest["collector"] not in ("collect_flax_teacher_trajectories.py", "collect_ppo_achievements_all_trajectories.py"):
+        raise RuntimeError(f"replay mirrors the wood / all teacher collectors, not {manifest['collector']}")
     rows = defaultdict(dict)
     for split in ("train", "val"):
         for row in pq.read_table(args.collection_dir / f"{split}.parquet").to_pylist():

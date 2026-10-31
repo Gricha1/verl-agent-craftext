@@ -33,7 +33,10 @@ The reasoning must check the CURRENT observation: name what is visible and how t
 progress on the task, e.g. "No wood yet and a tree is two cells left, so move left toward it."
 Moves are absolute map directions: UP toward the top row, DOWN, LEFT, RIGHT; moving also turns
 the agent to face that way. DO interacts with the faced cell: it chops a tree, mines, drinks
-water, attacks or eats. Crafting needs a crafting table nearby and enough wood.
+water, attacks or eats. Wood tools need a crafting table nearby and wood; stone tools also need
+stone; iron tools need a table and a furnace nearby, wood, coal and iron. Mining stone and coal
+needs a wood pickaxe, iron a stone pickaxe, diamond an iron pickaxe. A furnace needs stone and a
+table nearby; placing stone needs stone; a plant needs a sapling on grass.
 Do not mention the expert, hints, future moves or coordinates. Do not invent objects."""
 HINDSIGHT = 8
 INEFFECTIVE = ("Private note: this action leaves the world and inventory unchanged; explain it as "
@@ -56,6 +59,7 @@ def effective(row: dict, next_row: dict | None) -> bool:
 
 
 MOVES = {"LEFT": (0, -1), "RIGHT": (0, 1), "UP": (-1, 0), "DOWN": (1, 0)}
+MOBS = {"Z": "zombie", "C": "cow", "S": "skeleton"}
 WORDS = re.compile(r"(\d+) (left|right|up|down)")
 MOVE_CLAIM = re.compile(r"\b(?:move|moving|go|going|step|head|heading|walk|walking)\s+(?:one cell\s+|a cell\s+)?"
                         r"(left|right|up|down)\b", re.I)
@@ -84,6 +88,12 @@ def action_facts(row: dict, is_effective: bool, future: list[dict]) -> str:
             facts.append(f"The nearest {name} gets {'closer' if after < before else 'farther'} ({before} -> {after} cells).")
     elif action == "DO":
         facts.append(f"DO acts on the faced cell, which is {view['facing_block']}.")
+        # mobs are drawn over the grid; the agent "@" is at the centre of the 7 x 9 view
+        grid = [line.split() for line in view["grid"].splitlines()]
+        d_row, d_col = MOVES.get(view["facing"], (0, 0))
+        mob = MOBS.get(grid[len(grid) // 2 + d_row][len(grid[0]) // 2 + d_col])
+        if mob:
+            facts.append(f"A {mob} stands in the faced cell.")
     if not is_effective:
         facts.append("This action changes nothing in the world or the inventory.")
     gained = []
