@@ -73,6 +73,9 @@ class CraftextVectorAgentLoopWorker(AgentLoopWorker):
         self.visual_prompt_history = int(cfg.get("visual_prompt_history", VISUAL_SLM_ACTION_HISTORY))
         if self.visual_prompt_history not in (0, VISUAL_SLM_ACTION_HISTORY):
             raise ValueError(f"visual_prompt_history must be 0 or {VISUAL_SLM_ACTION_HISTORY}")
+        # True for checkpoints trained on vision_image_reasoning_v1: the prompt asks for
+        # <reasoning>...</reasoning> before ACTION:, and the whole answer is the PPO response.
+        self.reasoning_prompt = bool(cfg.get("reasoning_prompt", False))
         self.reward_mode = str(cfg.get("reward_mode", "immediate"))
         self.remaining_return_gamma = float(cfg.get("remaining_return_gamma", 1.0))
         # Mirrors legacy veRL's actor invalid-action penalty.  It is applied
@@ -169,6 +172,7 @@ class CraftextVectorAgentLoopWorker(AgentLoopWorker):
                     prompt_text = vision_image_only_prompt(
                         tasks[lane],
                         action_histories[lane][-self.visual_prompt_history :] if self.visual_prompt_history else None,
+                        reasoning=self.reasoning_prompt,
                     )
                     prompt_ids[lane] = self.visual_marker_ids + self.tokenizer.encode(
                         prompt_text, add_special_tokens=False

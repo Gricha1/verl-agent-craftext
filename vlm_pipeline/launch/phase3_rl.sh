@@ -21,6 +21,11 @@ export CRAFTEXT_LEGACY_ROOT="${CHECKOUT}"
 export CRAF_TEXT_ENV_CONFIG="${SETTINGS}"
 # Must match the phase-2 prompt protocol: 0 for vision_image_only_v1, 8 for vision_image_actions8_v1.
 export CRAF_TEXT_VISUAL_PROMPT_HISTORY="${CRAF_TEXT_VISUAL_PROMPT_HISTORY:-0}"
+# REASONING=1: checkpoint trained on vision_image_reasoning_v1; the model writes <reasoning>...</reasoning>
+# then ACTION:, and the whole answer (up to 70 tokens in the CE data) is one PPO response.
+if [ "${REASONING:-0}" = 1 ]; then
+  export CRAF_TEXT_REASONING_PROMPT=true PER_TURN_MAX_TOKENS="${PER_TURN_MAX_TOKENS:-128}" MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-128}"
+fi
 if [ "${SETTINGS}" = achievements_all ]; then export MAX_ENV_STEPS="${MAX_ENV_STEPS:-1000}"; else export MAX_ENV_STEPS="${MAX_ENV_STEPS:-400}"; fi
 export NUM_ENVS="${NUM_ENVS:-8}" TOTAL_EPOCHS="${TOTAL_EPOCHS:-20}" VAL_BEFORE_TRAIN="${VAL_BEFORE_TRAIN:-true}" TEST_FREQ="${TEST_FREQ:-5}"
 export MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-512}" MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-64}" PER_TURN_MAX_TOKENS="${PER_TURN_MAX_TOKENS:-64}"
