@@ -341,6 +341,8 @@ def main():
     parser.add_argument("--horizon", type=int, default=16)
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--grad-accum", type=int, default=1,
+                        help="split each batch into this many micro-batches (same objective, less memory)")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--free-nats", type=float, default=1.0)
     parser.add_argument("--kl-dyn", type=float, default=0.5)
@@ -387,12 +389,20 @@ def main():
     for epoch in range(1, args.epochs + 1):
         random.shuffle(train_chunks); model.train(); sums = defaultdict(float); batches = 0
         for offset in range(0, len(train_chunks), args.batch_size):
-            images, actions, rewards, continuation, goals, rs = batch_from_chunks(
-                args.raw_data, train_chunks[offset:offset + args.batch_size], device)
             optimizer.zero_grad(set_to_none=True)
-            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
-                loss, parts, _ = loss_for_batch(model, images, actions, rewards, continuation, goals, rs, args, device)
-            loss.backward()
+            batch_chunks = train_chunks[offset:offset + args.batch_size]
+            micro = -(-len(batch_chunks) // args.grad_accum)
+            parts = defaultdict(float)
+            for start in range(0, len(batch_chunks), micro):
+                part = batch_chunks[start:start + micro]
+                images, actions, rewards, continuation, goals, rs = batch_from_chunks(args.raw_data, part, device)
+                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
+                    loss, micro_parts, _ = loss_for_batch(model, images, actions, rewards, continuation, goals, rs,
+                                                          args, device)
+                # the losses are batch means: weight each micro-batch by its share of the batch
+                (loss * len(part) / len(batch_chunks)).backward()
+                for key, value in micro_parts.items():
+                    parts[key] += value * len(part) / len(batch_chunks)
             parts["grad_norm"] = float(torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0))
             optimizer.step()
             updates += 1; batches += 1
