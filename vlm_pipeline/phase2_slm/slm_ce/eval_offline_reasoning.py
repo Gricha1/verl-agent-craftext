@@ -59,6 +59,7 @@ def main() -> None:
     parser.add_argument("--data", required=True, type=Path)
     parser.add_argument("--states", type=Path, help="states.jsonl of the reasoning run (faced-cell check)")
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--dump", type=Path, help="jsonl with every row's answer (for mismatch inspection)")
     parser.add_argument("--max-new-tokens", type=int, default=96)
     parser.add_argument("--batch", type=int, default=64)
     parser.add_argument("--limit", type=int, default=0)
@@ -113,11 +114,19 @@ def main() -> None:
     per_task = defaultdict(Counter)
     r = dict(n=0, formatted=0, exact=0, rouge=0.0, cue_teacher=0, cue_any=0, self_consistent=0, faced_ok=0, checked=0)
     samples = []
+    dump = args.dump.open("w") if args.dump else None
     for row, answer in zip(rows, answers):
         parsed = parse_slm_action(answer)
         teacher = row["action"]
         task = row["prompt"].split("**TASK:** ")[1].split("\n")[0]
         ok = parsed.valid and parsed.action_name == teacher
+        if dump:
+            gold_text = REASONING.search(row.get("cot_target", ""))
+            dump.write(json.dumps(dict(episode_id=row["source_episode_id"], step=row["step"], task=task,
+                                       image_path=row["image_path"], teacher_action=teacher,
+                                       model_action=parsed.action_name if parsed.valid else None,
+                                       model_answer=answer, gemma=gold_text.group(1).strip() if gold_text else None,
+                                       teacher_effective=row.get("reasoning_effective_action"))) + "\n")
         hits += ok
         invalid += not parsed.valid
         per_task[task]["n"] += 1
@@ -143,6 +152,8 @@ def main() -> None:
         if len(samples) < 40:
             samples.append(dict(task=task, step=row["step"], teacher_action=teacher, model_answer=answer,
                                 gemma=gold.group(1).strip()))
+    if dump:
+        dump.close()
     result = dict(model=str(args.model), data=str(args.data), rows=total, seconds=round(time.time() - started, 1),
                   action_accuracy=hits / total, unparseable=invalid / total,
                   per_task={t: dict(n=c["n"], accuracy=c["hits"] / c["n"]) for t, c in per_task.items()})
