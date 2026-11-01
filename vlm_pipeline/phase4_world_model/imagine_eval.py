@@ -10,6 +10,7 @@ No later real frame enters the rollout.
 --context K (DreamerV3 video predictions use 5): h starts at 0 on x_{t-K+1} and is filtered through the real frames
 x_{t-K+1..t} (z = posterior mode, transitions with the dataset actions) before imagining from x_t; K = 1 is the
 single-frame start above. --min-start keeps the same starts t for every K (t >= min-start).
+--prior-z sample: z_{t+d} is sampled from the prior instead of its mode (--seed sets the sample).
 
 Compared per step d with
   copy-last : x^_{t+d} = x_t (nothing moves)
@@ -46,12 +47,15 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--context", type=int, default=1, help="real frames the state is filtered through, x_t last")
     parser.add_argument("--min-start", type=int, default=0, help="first start t (>= context - 1)")
+    parser.add_argument("--prior-z", choices=("mode", "sample"), default="mode",
+                        help="imagined z: prior mode (argmax / mean) or a sample from the prior, as DreamerV3 imagines")
     parser.add_argument("--examples", type=int, default=8, help="rollouts saved as images")
     parser.add_argument("--example-starts", default="", help="'<episode>_<t>,...': save these rollouts instead")
     parser.add_argument("--seed", type=int, default=7960)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     import torch
+    torch.manual_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     state = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     config = state["config"]
@@ -112,7 +116,7 @@ def main():
             for d in range(H):
                 rs = [r[d] for r in texts]
                 h, last = model.transition(goals, actions[:, d], rs, h, z, device)
-                z = model.mode(model.prior(h))
+                z = model.mode(model.prior(h)) if args.prior_z == "mode" else model.sample(model.prior(h))
                 preds.append(model.decode(h, z).float())
                 reward = (model.modules["reward_head"](last)[:, 0].float() / config["reward_target_scale"]).tolist()
                 reward_rows += [(d, reward[i], windows[i][d + 1]["reward"]) for i in range(B)]
@@ -145,7 +149,7 @@ def main():
         checkpoint=str(args.checkpoint), checkpoint_epoch=state["metrics"]["epoch"],
         checkpoint_validation_world_loss=state["metrics"]["validation_world_loss"],
         reasoning=bool(args.reasoning), horizon=H, training_horizon=config["horizon"], stride=args.stride,
-        context=args.context, min_start=args.min_start,
+        context=args.context, min_start=args.min_start, prior_z=args.prior_z, seed=args.seed,
         validation_episodes=len(valid), starts=n, change_threshold=CHANGE,
         mse_by_step={k: (v / n).round(6).tolist() for k, v in sq.items()},
         changed_pixel_fraction_by_step=(n_changed / (n * PIXELS)).round(5).tolist(),
