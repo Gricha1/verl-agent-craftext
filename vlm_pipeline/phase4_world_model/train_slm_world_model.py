@@ -368,7 +368,9 @@ class RSSMWorldModel(SLMWorldModel):
     def state_dict(self):
         return {"support": self.modules.state_dict(), "lm": {}}
 
-    def transition(self, goals, actions, reasoning, h, z, device):
+    def transition(self, goals, actions, reasoning, h, z, device, targets=None, states=None):
+        if targets is not None or states is not None:
+            raise ValueError("the GRU transition reads and writes no text")
         a = self._torch.nn.functional.one_hot(actions, len(ACTIONS)).to(z.dtype)
         h = self.modules["gru"](self.modules["gru_input"](self._torch.cat((z, a), dim=-1)), h)
         return h, h
