@@ -7,6 +7,10 @@ Only the real frame x_t is seen: h_t = 0 (as at the start of every training chun
 x^_{t+d} = decoder(h_{t+d}, z_{t+d}).
 No later real frame enters the rollout.
 
+--context K (DreamerV3 video predictions use 5): h starts at 0 on x_{t-K+1} and is filtered through the real frames
+x_{t-K+1..t} (z = posterior mode, transitions with the dataset actions) before imagining from x_t; K = 1 is the
+single-frame start above. --min-start keeps the same starts t for every K (t >= min-start).
+
 Compared per step d with
   copy-last : x^_{t+d} = x_t (nothing moves)
   mean frame: x^_{t+d} = mean training frame
@@ -40,7 +44,10 @@ def main():
     parser.add_argument("--horizon", type=int, default=32)
     parser.add_argument("--stride", type=int, default=4, help="distance between start steps t in an episode")
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--context", type=int, default=1, help="real frames the state is filtered through, x_t last")
+    parser.add_argument("--min-start", type=int, default=0, help="first start t (>= context - 1)")
     parser.add_argument("--examples", type=int, default=8, help="rollouts saved as images")
+    parser.add_argument("--example-starts", default="", help="'<episode>_<t>,...': save these rollouts instead")
     parser.add_argument("--seed", type=int, default=7960)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
@@ -61,16 +68,21 @@ def main():
     valid_ids = {json.loads(line)["source_episode_id"] for line in (args.split_from / "valid.jsonl").open()}
     train = [e for k, e in episodes.items() if k not in valid_ids]
     valid = {k: e for k, e in episodes.items() if k in valid_ids}
-    H = args.horizon
-    starts = [(k, t) for k, e in sorted(valid.items()) for t in range(0, len(e) - H, args.stride)]
+    H, C = args.horizon, args.context - 1  # C: context frames before x_t
+    if args.min_start < C:
+        parser.error("--min-start must be >= context - 1")
+    starts = [(k, t) for k, e in sorted(valid.items()) for t in range(0, len(e) - H, args.stride) if t >= args.min_start]
     rng = random.Random(args.seed)
     mean_frame = np.mean([read_image(args.raw_data, item["image"])
                           for item in rng.sample([i for e in train for i in e], 2000)], axis=0)
     mean_frame_t = torch.from_numpy(mean_frame).to(device)
     # examples: half with a reward inside the window, half random
     with_reward = [s for s in starts if any(i["reward"] > 0 for i in valid[s[0]][s[1] + 1:s[1] + H + 1])]
-    examples = rng.sample(with_reward, min(len(with_reward), args.examples // 2))
-    examples += rng.sample([s for s in starts if s not in examples], args.examples - len(examples))
+    if args.example_starts:
+        examples = [tuple(map(int, s.split("_"))) for s in args.example_starts.split(",")]
+    else:
+        examples = rng.sample(with_reward, min(len(with_reward), args.examples // 2))
+        examples += rng.sample([s for s in starts if s not in examples], args.examples - len(examples))
 
     keys = ("model", "copy_last", "mean_frame", "recon")
     sq = {k: np.zeros(H) for k in keys}                 # summed per-pixel MSE per step
@@ -82,14 +94,19 @@ def main():
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
         for offset in range(0, len(starts), args.batch_size):
             batch = starts[offset:offset + args.batch_size]
-            windows = [valid[k][t:t + H + 1] for k, t in batch]
-            images = torch.from_numpy(np.stack([[read_image(args.raw_data, i["image"]) for i in w] for w in windows])).to(device)
-            actions = torch.tensor([[i["action"] for i in w[:-1]] for w in windows], device=device)
-            texts = [[i["reasoning"] for i in w[:-1]] for w in windows]
-            goals = [w[0]["instruction"] for w in windows]
+            full = [valid[k][t - C:t + H + 1] for k, t in batch]
+            images = torch.from_numpy(np.stack([[read_image(args.raw_data, i["image"]) for i in w] for w in full])).to(device)
+            actions = torch.tensor([[i["action"] for i in w[:-1]] for w in full], device=device)
+            texts = [[i["reasoning"] for i in w[:-1]] for w in full]
+            goals = [w[0]["instruction"] for w in full]
             B = len(batch)
             h = torch.zeros(B, model.h_size, device=device)
-            z = model.mode(model.posterior(images[:, 0], h))  # the only real frame used
+            z = model.mode(model.posterior(images[:, 0], h))
+            for j in range(C):  # context: filter h through the real frames x_{t-C..t}
+                h, _ = model.transition(goals, actions[:, j], [r[j] for r in texts], h, z, device)
+                z = model.mode(model.posterior(images[:, j + 1], h))
+            # from here on the window starts at x_t, the last real frame used
+            images, actions, texts, windows = images[:, C:], actions[:, C:], [r[C:] for r in texts], [w[C:] for w in full]
             hf, zf = h, z                                     # filtered (autoencoder bound) branch
             preds, recons = [], []
             for d in range(H):
@@ -128,6 +145,7 @@ def main():
         checkpoint=str(args.checkpoint), checkpoint_epoch=state["metrics"]["epoch"],
         checkpoint_validation_world_loss=state["metrics"]["validation_world_loss"],
         reasoning=bool(args.reasoning), horizon=H, training_horizon=config["horizon"], stride=args.stride,
+        context=args.context, min_start=args.min_start,
         validation_episodes=len(valid), starts=n, change_threshold=CHANGE,
         mse_by_step={k: (v / n).round(6).tolist() for k, v in sq.items()},
         changed_pixel_fraction_by_step=(n_changed / (n * PIXELS)).round(5).tolist(),
