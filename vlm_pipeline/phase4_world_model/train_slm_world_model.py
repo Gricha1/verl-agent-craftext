@@ -178,7 +178,7 @@ class SLMWorldModel:
     """Support modules around one trainable decoder-only SLM transition."""
 
     def __init__(self, lm, tokenizer, h_size, z_size, h_tokens, z_tokens, z_kind="gaussian", z_classes=32,
-                 image_net="small"):
+                 image_net="small", decoder_input="hz", posterior_input="hx"):
         import torch
         import torch.nn as nn
         self.lm, self.tok, self._torch = lm, tokenizer, torch
@@ -189,6 +189,10 @@ class SLMWorldModel:
         z_dim = z_size if z_kind == "gaussian" else z_size * z_classes
         z_raw = 2 * z_size if z_kind == "gaussian" else z_size * z_classes
         self.z_dim = z_dim
+        # decoder_input "z" / posterior_input "x": the decoder reads only z / the posterior only the frame, so z is a
+        # full code of the frame and h serves only the prior and the heads (tokenizer + dynamics, as STORM / IRIS)
+        self.decoder_input, self.posterior_input = decoder_input, posterior_input
+        dec_size = z_dim if decoder_input == "z" else h_size + z_dim
         if image_net == "small":
             cnn, embed = nn.Sequential(
                 nn.Conv2d(3, 32, 5, padding=2), nn.ReLU(), nn.MaxPool2d(2),
@@ -197,13 +201,13 @@ class SLMWorldModel:
                 nn.Flatten(), nn.Linear(32 * 7 * 7, 256), nn.LayerNorm(256), nn.Tanh(),
             ), 256
             decoder = nn.Sequential(
-                nn.Linear(h_size + z_dim, 32 * 7 * 7), nn.GELU(), nn.Unflatten(1, (32, 7, 7)),
+                nn.Linear(dec_size, 32 * 7 * 7), nn.GELU(), nn.Unflatten(1, (32, 7, 7)),
                 nn.Upsample(size=(63, 63), mode="bilinear", align_corners=False),
                 nn.Conv2d(32, 32, 5, padding=2), nn.GELU(), nn.Conv2d(32, 3, 3, padding=1), nn.Sigmoid(),
             )
         else:  # "dreamer"
             cnn, embed = dreamer_encoder(nn), 256 * 4 * 4
-            decoder = dreamer_decoder(nn, h_size + z_dim)
+            decoder = dreamer_decoder(nn, dec_size)
         if lm is None:  # DreamerV3 recurrent core: h_{t+1} = GRU(h_t, MLP([z_t; one-hot a_t]))
             core = {"gru_input": nn.Sequential(nn.Linear(z_dim + len(ACTIONS), h_size), nn.LayerNorm(h_size), nn.SiLU()),
                     "gru": nn.GRUCell(h_size, h_size)}
@@ -213,7 +217,8 @@ class SLMWorldModel:
                     "h_transition": nn.Sequential(nn.Linear(self.width, h_size), nn.GELU(), nn.Linear(h_size, h_size))}
         self.modules = nn.ModuleDict({
             "cnn": cnn,
-            "posterior": nn.Sequential(nn.Linear(h_size + embed, h_size), nn.GELU(), nn.Linear(h_size, z_raw)),
+            "posterior": nn.Sequential(nn.Linear((0 if posterior_input == "x" else h_size) + embed, h_size), nn.GELU(),
+                                       nn.Linear(h_size, z_raw)),
             **core,
             "z_prior":nn.Sequential(nn.Linear(h_size, h_size), nn.GELU(), nn.Linear(h_size, z_raw)),
             "reward_head": nn.Sequential(nn.Linear(self.width, h_size), nn.GELU(), nn.Linear(h_size, 1)),
@@ -246,7 +251,8 @@ class SLMWorldModel:
         return normal(raw) if self.z_kind == "gaussian" else categorical(raw, self.z_size, self.z_classes)
 
     def posterior(self, image, h):
-        return self._dist(self.modules["posterior"](self._torch.cat((h, self.modules["cnn"](image)), dim=-1)))
+        embed = self.modules["cnn"](image)
+        return self._dist(self.modules["posterior"](embed if self.posterior_input == "x" else self._torch.cat((h, embed), dim=-1)))
 
     def prior(self, h):
         return self._dist(self.modules["z_prior"](h))
@@ -292,15 +298,16 @@ class SLMWorldModel:
         return self.modules["h_transition"](last), last
 
     def decode(self, h, z):
-        return self.modules["pixel_decoder"](self._torch.cat((h, z), dim=-1))
+        return self.modules["pixel_decoder"](z if self.decoder_input == "z" else self._torch.cat((h, z), dim=-1))
 
 
 class RSSMWorldModel(SLMWorldModel):
     """Baseline without the SLM (--transition gru): DreamerV3 GRU core, action only (no task / reasoning text).
     Latent, image nets, prior / posterior, heads and losses are those of SLMWorldModel; the heads read h_{t+1}."""
 
-    def __init__(self, h_size, z_size, z_kind="gaussian", z_classes=32, image_net="small"):
-        super().__init__(None, None, h_size, z_size, 0, 0, z_kind, z_classes, image_net)
+    def __init__(self, h_size, z_size, z_kind="gaussian", z_classes=32, image_net="small", decoder_input="hz",
+                 posterior_input="hx"):
+        super().__init__(None, None, h_size, z_size, 0, 0, z_kind, z_classes, image_net, decoder_input, posterior_input)
 
     def to(self, device):
         self.modules.to(device); return self
@@ -322,7 +329,8 @@ class RSSMWorldModel(SLMWorldModel):
 
 def build_model(config, init_checkpoint, device):
     """The world model described by a run config (experiment.json / checkpoint config), untrained."""
-    z = (config["z_size"], config.get("z_kind", "gaussian"), config.get("z_classes", 32), config.get("image_net", "small"))
+    z = (config["z_size"], config.get("z_kind", "gaussian"), config.get("z_classes", 32), config.get("image_net", "small"),
+         config.get("decoder_input", "hz"), config.get("posterior_input", "hx"))
     if config.get("transition", "slm") == "gru":
         return RSSMWorldModel(config["h_size"], *z).to(device)
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -474,6 +482,8 @@ def main():
     parser.add_argument("--z-classes", type=int, default=32, help="classes per categorical (--z-kind categorical)")
     parser.add_argument("--image-net", choices=("small", "dreamer"), default="small",
                         help="small: 3-conv CNN + 7x7 bilinear decoder; dreamer: DreamerV3 stride-2 CNN / transposed-conv decoder")
+    parser.add_argument("--decoder-input", choices=("hz", "z"), default="hz", help="z: the decoder reads only z")
+    parser.add_argument("--posterior-input", choices=("hx", "x"), default="hx", help="x: the posterior reads only the frame")
     parser.add_argument("--h-tokens", type=int, default=30)
     parser.add_argument("--z-tokens", type=int, default=5)
     parser.add_argument("--horizon", type=int, default=16)
