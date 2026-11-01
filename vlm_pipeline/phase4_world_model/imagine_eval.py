@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Imagination test of a trained SLM world model (train_slm_world_model.py best.pt) on validation episodes.
 
-Only the real frame x_t is seen: h_t = 0 (as at the start of every training chunk), z_t = posterior mean
-from x_t. Then, for d = 1..H, h_{t+d} = SLM transition(h, z, a_{t+d-1} [, reasoning_{t+d-1}]) with actions
-(and reasoning text) from the dataset, z_{t+d} = prior mean, x^_{t+d} = decoder(h_{t+d}, z_{t+d}).
+Only the real frame x_t is seen: h_t = 0 (as at the start of every training chunk), z_t = posterior mode
+(gaussian mean / categorical argmax) from x_t. Then, for d = 1..H, h_{t+d} = SLM transition(h, z, a_{t+d-1}
+[, reasoning_{t+d-1}]) with actions (and reasoning text) from the dataset, z_{t+d} = prior mode,
+x^_{t+d} = decoder(h_{t+d}, z_{t+d}).
 No later real frame enters the rollout.
 
 Compared per step d with
@@ -50,7 +51,8 @@ def main():
     config = state["config"]
     tokenizer = AutoTokenizer.from_pretrained(args.init_checkpoint)
     lm = AutoModelForCausalLM.from_pretrained(args.init_checkpoint)
-    model = SLMWorldModel(lm, tokenizer, config["h_size"], config["z_size"], config["h_tokens"], config["z_tokens"])
+    model = SLMWorldModel(lm, tokenizer, config["h_size"], config["z_size"], config["h_tokens"], config["z_tokens"],
+                          config.get("z_kind", "gaussian"), config.get("z_classes", 32), config.get("image_net", "small"))
     model.lm.load_state_dict(state["model"]["lm"]); model.modules.load_state_dict(state["model"]["support"])
     model.to(device).eval()
 
@@ -89,18 +91,18 @@ def main():
             goals = [w[0]["instruction"] for w in windows]
             B = len(batch)
             h = torch.zeros(B, model.h_size, device=device)
-            z = model.posterior(images[:, 0], h)[0]          # the only real frame used
+            z = model.mode(model.posterior(images[:, 0], h))  # the only real frame used
             hf, zf = h, z                                     # filtered (autoencoder bound) branch
             preds, recons = [], []
             for d in range(H):
                 rs = [r[d] for r in texts]
                 h, last = model.transition(goals, actions[:, d], rs, h, z, device)
-                z = model.prior(h)[0]
+                z = model.mode(model.prior(h))
                 preds.append(model.decode(h, z).float())
                 reward = (model.modules["reward_head"](last)[:, 0].float() / config["reward_target_scale"]).tolist()
                 reward_rows += [(d, reward[i], windows[i][d + 1]["reward"]) for i in range(B)]
                 hf, _ = model.transition(goals, actions[:, d], rs, hf, zf, device)
-                zf = model.posterior(images[:, d + 1], hf)[0]
+                zf = model.mode(model.posterior(images[:, d + 1], hf))
                 recons.append(model.decode(hf, zf).float())
             pred, recon = torch.stack(preds, 1), torch.stack(recons, 1)    # [B, H, 3, 63, 63]
             target, first = images[:, 1:].float(), images[:, :1].float()

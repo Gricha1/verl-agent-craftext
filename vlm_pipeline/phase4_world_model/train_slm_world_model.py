@@ -17,6 +17,11 @@ E("ACTION: a" or "<reasoning>r</reasoning>\nACTION: a"); E(eos)] -> SLM final hi
 h_{t+1} = MLP(o_t); reward / continuation heads read o_t; decoder reads [h_{t+1}; z_{t+1}].
 Every parameter is trained (the SLM included).
 
+--z-kind categorical --z-size 32 --z-classes 32 --image-net dreamer: DreamerV3 latent (32 categoricals of 32
+classes, 1% unimix, straight-through one-hot samples, KL per categorical) and DreamerV3 image nets (stride-2
+CNN to 4x4x256; transposed-conv decoder 4x4 -> 64x64 cropped to 63x63) instead of the 48-dim gaussian and the
+7x7 bilinear decoder, which blur every frame (even the autoencoder recon). Imagination uses the mode (argmax).
+
 Per epoch on validation: world losses, KL per z dimension and the number of active dimensions, the
 posterior's dependence on the frame (real vs shuffled frames), reconstruction with z from the prior mean
 instead of the posterior, and an open-loop prior rollout decoded and compared with the real frames.
@@ -117,40 +122,84 @@ def normal(raw):
     return mu, F.softplus(s) + 1e-4
 
 
+def categorical(raw, groups, classes, unimix=0.01):
+    """DreamerV3: `groups` categoricals of `classes` classes, 1% uniform mix; returns (probs [B, groups, classes],)."""
+    probs = raw.float().view(len(raw), groups, classes).softmax(-1)
+    return ((1 - unimix) * probs + unimix / classes,)
+
+
 def gaussian_kl_dims(q_mu, q_std, p_mu, p_std):
     """KL(q || p) per latent dimension, shape [batch, z]."""
     import torch
     return torch.log(p_std / q_std) + (q_std.square() + (q_mu - p_mu).square()) / (2 * p_std.square()) - .5
 
 
+def categorical_kl_dims(q_probs, p_probs):
+    """KL(q || p) per categorical variable, shape [batch, groups]."""
+    return (q_probs * (q_probs.log() - p_probs.log())).sum(-1)
+
+
+def dreamer_encoder(nn):
+    """DreamerV3 CNN: 64x64 (63x63 padded) -> stride-2 convs 32/64/128/256 -> 4x4x256 -> flat 4096."""
+    layers, channels = [nn.ZeroPad2d((0, 1, 0, 1))], 3
+    for out in (32, 64, 128, 256):
+        layers += [nn.Conv2d(channels, out, 4, stride=2, padding=1), nn.GroupNorm(1, out), nn.SiLU()]
+        channels = out
+    return nn.Sequential(*layers, nn.Flatten())
+
+
+def dreamer_decoder(nn, size):
+    """DreamerV3 CNN decoder: [h; z] -> 4x4x256 -> transposed convs 128/64/32/3 -> 64x64, cropped to 63x63."""
+    layers = [nn.Linear(size, 256 * 4 * 4), nn.Unflatten(1, (256, 4, 4))]
+    channels = 256
+    for out in (128, 64, 32):
+        layers += [nn.ConvTranspose2d(channels, out, 4, stride=2, padding=1), nn.GroupNorm(1, out), nn.SiLU()]
+        channels = out
+    # negative padding crops the 64x64 output back to the 63x63 frame
+    layers += [nn.ConvTranspose2d(channels, 3, 4, stride=2, padding=1), nn.ZeroPad2d((0, -1, 0, -1)), nn.Sigmoid()]
+    return nn.Sequential(*layers)
+
+
 class SLMWorldModel:
     """Support modules around one trainable decoder-only SLM transition."""
 
-    def __init__(self, lm, tokenizer, h_size, z_size, h_tokens, z_tokens):
+    def __init__(self, lm, tokenizer, h_size, z_size, h_tokens, z_tokens, z_kind="gaussian", z_classes=32,
+                 image_net="small"):
         import torch
         import torch.nn as nn
         self.lm, self.tok, self._torch = lm, tokenizer, torch
         self.width = lm.config.hidden_size
         self.h_size, self.z_size, self.h_tokens, self.z_tokens = h_size, z_size, h_tokens, z_tokens
-        self.modules = nn.ModuleDict({
-            "cnn": nn.Sequential(
+        # gaussian: z = z_size reals; categorical: z = z_size one-hot variables of z_classes classes (flattened)
+        self.z_kind, self.z_classes = z_kind, z_classes
+        z_dim = z_size if z_kind == "gaussian" else z_size * z_classes
+        z_raw = 2 * z_size if z_kind == "gaussian" else z_size * z_classes
+        self.z_dim = z_dim
+        if image_net == "small":
+            cnn, embed = nn.Sequential(
                 nn.Conv2d(3, 32, 5, padding=2), nn.ReLU(), nn.MaxPool2d(2),
                 nn.Conv2d(32, 32, 5, padding=2), nn.ReLU(), nn.MaxPool2d(2),
                 nn.Conv2d(32, 32, 5, padding=2), nn.ReLU(), nn.MaxPool2d(2),
                 nn.Flatten(), nn.Linear(32 * 7 * 7, 256), nn.LayerNorm(256), nn.Tanh(),
-            ),
-            "posterior": nn.Sequential(nn.Linear(h_size + 256, h_size), nn.GELU(), nn.Linear(h_size, 2 * z_size)),
-            "h_prefix": nn.Sequential(nn.Linear(h_size, h_size), nn.GELU(), nn.Linear(h_size, h_tokens * self.width)),
-            "z_prefix": nn.Sequential(nn.Linear(z_size, z_size), nn.GELU(), nn.Linear(z_size, z_tokens * self.width)),
-            "h_transition": nn.Sequential(nn.Linear(self.width, h_size), nn.GELU(), nn.Linear(h_size, h_size)),
-            "z_prior": nn.Sequential(nn.Linear(h_size, h_size), nn.GELU(), nn.Linear(h_size, 2 * z_size)),
-            "reward_head": nn.Sequential(nn.Linear(self.width, h_size), nn.GELU(), nn.Linear(h_size, 1)),
-            "continue_head": nn.Sequential(nn.Linear(self.width, h_size), nn.GELU(), nn.Linear(h_size, 1)),
-            "pixel_decoder": nn.Sequential(
-                nn.Linear(h_size + z_size, 32 * 7 * 7), nn.GELU(), nn.Unflatten(1, (32, 7, 7)),
+            ), 256
+            decoder = nn.Sequential(
+                nn.Linear(h_size + z_dim, 32 * 7 * 7), nn.GELU(), nn.Unflatten(1, (32, 7, 7)),
                 nn.Upsample(size=(63, 63), mode="bilinear", align_corners=False),
                 nn.Conv2d(32, 32, 5, padding=2), nn.GELU(), nn.Conv2d(32, 3, 3, padding=1), nn.Sigmoid(),
-            ),
+            )
+        else:  # "dreamer"
+            cnn, embed = dreamer_encoder(nn), 256 * 4 * 4
+            decoder = dreamer_decoder(nn, h_size + z_dim)
+        self.modules = nn.ModuleDict({
+            "cnn": cnn,
+            "posterior": nn.Sequential(nn.Linear(h_size + embed, h_size), nn.GELU(), nn.Linear(h_size, z_raw)),
+            "h_prefix": nn.Sequential(nn.Linear(h_size, h_size), nn.GELU(), nn.Linear(h_size, h_tokens * self.width)),
+            "z_prefix": nn.Sequential(nn.Linear(z_dim, z_dim), nn.GELU(), nn.Linear(z_dim, z_tokens * self.width)),
+            "h_transition": nn.Sequential(nn.Linear(self.width, h_size), nn.GELU(), nn.Linear(h_size, h_size)),
+            "z_prior": nn.Sequential(nn.Linear(h_size, h_size), nn.GELU(), nn.Linear(h_size, z_raw)),
+            "reward_head": nn.Sequential(nn.Linear(self.width, h_size), nn.GELU(), nn.Linear(h_size, 1)),
+            "continue_head": nn.Sequential(nn.Linear(self.width, h_size), nn.GELU(), nn.Linear(h_size, 1)),
+            "pixel_decoder": decoder,
         })
         self._text_cache = {}
 
@@ -174,11 +223,35 @@ class SLMWorldModel:
             self._text_cache[text] = self.tok(text, add_special_tokens=False)["input_ids"]
         return self._text_cache[text]
 
+    def _dist(self, raw):
+        return normal(raw) if self.z_kind == "gaussian" else categorical(raw, self.z_size, self.z_classes)
+
     def posterior(self, image, h):
-        return normal(self.modules["posterior"](self._torch.cat((h, self.modules["cnn"](image)), dim=-1)))
+        return self._dist(self.modules["posterior"](self._torch.cat((h, self.modules["cnn"](image)), dim=-1)))
 
     def prior(self, h):
-        return normal(self.modules["z_prior"](h))
+        return self._dist(self.modules["z_prior"](h))
+
+    def sample(self, dist):
+        """Reparameterised (gaussian) or straight-through one-hot (categorical) sample, flat [B, z_dim]."""
+        torch = self._torch
+        if self.z_kind == "gaussian":
+            return dist[0] + dist[1] * torch.randn_like(dist[1])
+        probs = dist[0]
+        index = torch.multinomial(probs.flatten(0, 1), 1).view(probs.shape[:-1])
+        onehot = torch.nn.functional.one_hot(index, self.z_classes).to(probs.dtype)
+        return (onehot + probs - probs.detach()).flatten(1)
+
+    def mode(self, dist):
+        """Gaussian mean / categorical argmax one-hot, flat [B, z_dim]."""
+        if self.z_kind == "gaussian":
+            return dist[0]
+        probs = dist[0]
+        return self._torch.nn.functional.one_hot(probs.argmax(-1), self.z_classes).to(probs.dtype).flatten(1)
+
+    def kl_dims(self, q, p):
+        """KL(q || p) per gaussian dimension / per categorical variable."""
+        return gaussian_kl_dims(*q, *p) if self.z_kind == "gaussian" else categorical_kl_dims(q[0], p[0])
 
     def transition(self, goals, actions, reasoning, h, z, device):
         """Run the SLM; h[t+1] and the heads read only its final (EOS) hidden state."""
@@ -203,10 +276,14 @@ class SLMWorldModel:
         return self.modules["pixel_decoder"](self._torch.cat((h, z), dim=-1))
 
 
-def balanced_kl(q, p, free, dyn_scale, rep_scale):
+def detach(dist):
+    return tuple(t.detach() for t in dist)
+
+
+def balanced_kl(model, q, p, free, dyn_scale, rep_scale):
     """DreamerV3: free bits per sample on each side; returns (loss, raw KL per sample, KL per dim)."""
-    dims_dyn = gaussian_kl_dims(q[0].detach(), q[1].detach(), p[0], p[1])
-    dims_rep = gaussian_kl_dims(q[0], q[1], p[0].detach(), p[1].detach())
+    dims_dyn = model.kl_dims(detach(q), p)
+    dims_rep = model.kl_dims(q, detach(p))
     dyn, rep = dims_dyn.sum(-1), dims_rep.sum(-1)
     loss = dyn_scale * dyn.clamp_min(free).mean() + rep_scale * rep.clamp_min(free).mean()
     return loss, dyn.detach(), dims_dyn.detach()
@@ -219,9 +296,9 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
     zeros = torch.zeros(batch, model.h_size, device=device)
     h = zeros
     q = model.posterior(images[:, 0], h)
-    z = q[0] + q[1] * torch.randn_like(q[1])
+    z = model.sample(q)
     # z_0 is regularised like every other z: against p(z_0 | h_0 = 0)
-    kl_loss, kl_raw, kl_dims = balanced_kl(q, model.prior(h), args.free_nats, args.kl_dyn, args.kl_rep)
+    kl_loss, kl_raw, kl_dims = balanced_kl(model, q, model.prior(h), args.free_nats, args.kl_dyn, args.kl_rep)
     kl_raws, kl_dims_all = [kl_raw], [kl_dims]
     h_states, q_states = [h], [q]
     recon = torch.zeros((), device=device)
@@ -232,14 +309,14 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
         h, last = model.transition(goals, actions[:, t], rs, h, z, device)
         p = model.prior(h)
         q = model.posterior(images[:, t + 1], h)
-        z = q[0] + q[1] * torch.randn_like(q[1])
+        z = model.sample(q)
         # Gaussian log-likelihood with unit variance: 1/2 squared error summed over the frame's pixels
         recon = recon + .5 * (model.decode(h, z).float() - images[:, t + 1]).square().flatten(1).sum(-1).mean()
         reward_loss = reward_loss + F.mse_loss(model.modules["reward_head"](last).squeeze(-1).float(),
                                                rewards[:, t] * args.reward_target_scale)
         continue_loss = continue_loss + F.binary_cross_entropy_with_logits(
             model.modules["continue_head"](last).squeeze(-1).float(), continuation[:, t])
-        step_kl, step_raw, step_dims = balanced_kl(q, p, args.free_nats, args.kl_dyn, args.kl_rep)
+        step_kl, step_raw, step_dims = balanced_kl(model, q, p, args.free_nats, args.kl_dyn, args.kl_rep)
         kl_loss = kl_loss + step_kl
         kl_raws.append(step_raw); kl_dims_all.append(step_dims)
         h_states.append(h); q_states.append(q)
@@ -248,17 +325,16 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
     overshoot, terms = torch.zeros((), device=device), 0
     if args.horizon > 1:
         for anchor in range(steps):
-            h_roll, z_roll = h_states[anchor], q_states[anchor][0]
+            h_roll, z_roll = h_states[anchor], model.mode(q_states[anchor])
             for distance in range(1, min(args.horizon, steps - anchor) + 1):
                 rs = [r[anchor + distance - 1] for r in reasoning]
                 h_roll, _ = model.transition(goals, actions[:, anchor + distance - 1], rs, h_roll, z_roll, device)
                 p_roll = model.prior(h_roll)
                 if distance > 1:
-                    target = q_states[anchor + distance]
-                    raw = gaussian_kl_dims(target[0].detach(), target[1].detach(), p_roll[0], p_roll[1]).sum(-1)
+                    raw = model.kl_dims(detach(q_states[anchor + distance]), p_roll).sum(-1)
                     overshoot = overshoot + args.kl_dyn * raw.clamp_min(args.free_nats).mean()
                     terms += 1
-                z_roll = p_roll[0]
+                z_roll = model.mode(p_roll)
         overshoot = overshoot / max(terms, 1)
     loss = recon + kl_loss + overshoot + args.reward_loss_scale * reward_loss + args.continue_loss_scale * continue_loss
     kl_raw_all = torch.cat(kl_raws)
@@ -285,23 +361,23 @@ def diagnose(model, images, actions, goals, reasoning, extra, args, device):
     h1, q1 = extra["h_states"][1], extra["q_states"][1]
     shuffled = images[torch.roll(torch.arange(batch, device=device), 1), 1]
     q_shuf = model.posterior(shuffled, h1)
-    out["posterior_real_vs_shuffled_kl"] = float(gaussian_kl_dims(q1[0], q1[1], q_shuf[0], q_shuf[1]).sum(-1).mean())
-    out["posterior_real_vs_shuffled_mu_l2"] = float((q1[0] - q_shuf[0]).norm(dim=-1).mean())
+    out["posterior_real_vs_shuffled_kl"] = float(model.kl_dims(q1, q_shuf).sum(-1).mean())
+    out["posterior_real_vs_shuffled_mu_l2"] = float((q1[0] - q_shuf[0]).flatten(1).norm(dim=-1).mean())
     # reconstruction of every target frame with z from the posterior vs from the prior mean
     post, prior = [], []
     for t in range(steps):
         h, q = extra["h_states"][t + 1], extra["q_states"][t + 1]
         target = images[:, t + 1]
-        post.append((model.decode(h, q[0]) - target).square().mean())
-        prior.append((model.decode(h, model.prior(h)[0]) - target).square().mean())
+        post.append((model.decode(h, model.mode(q)) - target).square().mean())
+        prior.append((model.decode(h, model.mode(model.prior(h))) - target).square().mean())
     out["recon_mse_posterior_z"] = float(torch.stack(post).mean())
     out["recon_mse_prior_mean_z"] = float(torch.stack(prior).mean())
     # open loop from the first frame: prior means only, no further frames
-    h, z = extra["h_states"][0], extra["q_states"][0][0]
+    h, z = extra["h_states"][0], model.mode(extra["q_states"][0])
     rollout = []
     for t in range(steps):
         h, _ = model.transition(goals, actions[:, t], [r[t] for r in reasoning], h, z, device)
-        z = model.prior(h)[0]
+        z = model.mode(model.prior(h))
         rollout.append(float((model.decode(h, z) - images[:, t + 1]).square().mean()))
     out["open_loop_mse_by_step"] = [round(v, 5) for v in rollout]
     return out
@@ -335,7 +411,11 @@ def main():
     parser.add_argument("--reasoning", type=Path, help="reasoning.jsonl: the action text gets its LLM reasoning")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--h-size", type=int, default=512)
-    parser.add_argument("--z-size", type=int, default=48)
+    parser.add_argument("--z-size", type=int, default=48, help="gaussian dims, or number of categoricals")
+    parser.add_argument("--z-kind", choices=("gaussian", "categorical"), default="gaussian")
+    parser.add_argument("--z-classes", type=int, default=32, help="classes per categorical (--z-kind categorical)")
+    parser.add_argument("--image-net", choices=("small", "dreamer"), default="small",
+                        help="small: 3-conv CNN + 7x7 bilinear decoder; dreamer: DreamerV3 stride-2 CNN / transposed-conv decoder")
     parser.add_argument("--h-tokens", type=int, default=30)
     parser.add_argument("--z-tokens", type=int, default=5)
     parser.add_argument("--horizon", type=int, default=16)
@@ -361,7 +441,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tokenizer = AutoTokenizer.from_pretrained(args.init_checkpoint)
     lm = AutoModelForCausalLM.from_pretrained(args.init_checkpoint).to(device)
-    model = SLMWorldModel(lm, tokenizer, args.h_size, args.z_size, args.h_tokens, args.z_tokens).to(device)
+    model = SLMWorldModel(lm, tokenizer, args.h_size, args.z_size, args.h_tokens, args.z_tokens, args.z_kind,
+                          args.z_classes, args.image_net).to(device)
     reasoning = None
     if args.reasoning:
         reasoning = {(int(r["episode_id"]), int(r["step"])): r for r in map(json.loads, args.reasoning.open())}
@@ -377,6 +458,8 @@ def main():
     config = dict(vars(args), architecture="slm_transition_rssm_v2", trainable="all (SLM + support modules)",
                   reconstruction="0.5 * sum over pixels of squared error (unit-variance Gaussian)",
                   kl="kl_dyn * max(free_nats, KL(sg q || p)) + kl_rep * max(free_nats, KL(q || sg p)), z_0 included",
+                  z=(f"{args.z_size} gaussian dims" if args.z_kind == "gaussian" else
+                     f"{args.z_size} x {args.z_classes} categorical, 1% unimix, straight-through samples"),
                   train_episodes=len(train_episodes), validation_episodes=len(valid_episodes),
                   train_transitions=sum(len(e) for e in train_episodes.values()),
                   validation_transitions=sum(len(e) for e in valid_episodes.values()),
