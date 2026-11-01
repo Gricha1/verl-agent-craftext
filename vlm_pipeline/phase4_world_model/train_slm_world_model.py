@@ -22,6 +22,9 @@ classes, 1% unimix, straight-through one-hot samples, KL per categorical) and Dr
 CNN to 4x4x256; transposed-conv decoder 4x4 -> 64x64 cropped to 63x63) instead of the 48-dim gaussian and the
 7x7 bilinear decoder, which blur every frame (even the autoencoder recon). Imagination uses the mode (argmax).
 
+--transition gru: RSSM baseline without the SLM, h_{t+1} = GRU(h_t, MLP([z_t; one-hot a_t])) as in DreamerV3
+(action only), with everything else unchanged; the SLM's quality is measured against it.
+
 Per epoch on validation: world losses, KL per z dimension and the number of active dimensions, the
 posterior's dependence on the frame (real vs shuffled frames), reconstruction with z from the prior mean
 instead of the posterior, and an open-loop prior rollout decoded and compared with the real frames.
@@ -103,9 +106,20 @@ def make_chunks(episodes, length: int):
     return chunks
 
 
+IMAGE_CACHE = None  # --cache-images: name -> uint8 frame (the GRU baseline is otherwise bound by frame loading)
+
+
+def cached_image(root: Path, name: str) -> np.ndarray:
+    if IMAGE_CACHE is None:
+        return read_image(root, name)
+    if name not in IMAGE_CACHE:
+        IMAGE_CACHE[name] = (read_image(root, name) * 255).round().astype(np.uint8)
+    return IMAGE_CACHE[name].astype(np.float32) / 255
+
+
 def batch_from_chunks(root, chunks, device):
     import torch
-    images = np.stack([[read_image(root, item["image"]) for item in chunk] for chunk in chunks])
+    images = np.stack([[cached_image(root, item["image"]) for item in chunk] for chunk in chunks])
     actions = np.asarray([[item["action"] for item in chunk[:-1]] for chunk in chunks], dtype=np.int64)
     rewards = np.asarray([[item["reward"] for item in chunk[1:]] for chunk in chunks], dtype=np.float32)
     continuation = np.asarray([[0.0 if item["terminal"] else 1.0 for item in chunk[1:]] for chunk in chunks],
@@ -168,7 +182,7 @@ class SLMWorldModel:
         import torch
         import torch.nn as nn
         self.lm, self.tok, self._torch = lm, tokenizer, torch
-        self.width = lm.config.hidden_size
+        self.width = h_size if lm is None else lm.config.hidden_size  # lm None: RSSMWorldModel (GRU core)
         self.h_size, self.z_size, self.h_tokens, self.z_tokens = h_size, z_size, h_tokens, z_tokens
         # gaussian: z = z_size reals; categorical: z = z_size one-hot variables of z_classes classes (flattened)
         self.z_kind, self.z_classes = z_kind, z_classes
@@ -190,13 +204,18 @@ class SLMWorldModel:
         else:  # "dreamer"
             cnn, embed = dreamer_encoder(nn), 256 * 4 * 4
             decoder = dreamer_decoder(nn, h_size + z_dim)
+        if lm is None:  # DreamerV3 recurrent core: h_{t+1} = GRU(h_t, MLP([z_t; one-hot a_t]))
+            core = {"gru_input": nn.Sequential(nn.Linear(z_dim + len(ACTIONS), h_size), nn.LayerNorm(h_size), nn.SiLU()),
+                    "gru": nn.GRUCell(h_size, h_size)}
+        else:
+            core = {"h_prefix": nn.Sequential(nn.Linear(h_size, h_size), nn.GELU(), nn.Linear(h_size, h_tokens * self.width)),
+                    "z_prefix": nn.Sequential(nn.Linear(z_dim, z_dim), nn.GELU(), nn.Linear(z_dim, z_tokens * self.width)),
+                    "h_transition": nn.Sequential(nn.Linear(self.width, h_size), nn.GELU(), nn.Linear(h_size, h_size))}
         self.modules = nn.ModuleDict({
             "cnn": cnn,
             "posterior": nn.Sequential(nn.Linear(h_size + embed, h_size), nn.GELU(), nn.Linear(h_size, z_raw)),
-            "h_prefix": nn.Sequential(nn.Linear(h_size, h_size), nn.GELU(), nn.Linear(h_size, h_tokens * self.width)),
-            "z_prefix": nn.Sequential(nn.Linear(z_dim, z_dim), nn.GELU(), nn.Linear(z_dim, z_tokens * self.width)),
-            "h_transition": nn.Sequential(nn.Linear(self.width, h_size), nn.GELU(), nn.Linear(h_size, h_size)),
-            "z_prior": nn.Sequential(nn.Linear(h_size, h_size), nn.GELU(), nn.Linear(h_size, z_raw)),
+            **core,
+            "z_prior":nn.Sequential(nn.Linear(h_size, h_size), nn.GELU(), nn.Linear(h_size, z_raw)),
             "reward_head": nn.Sequential(nn.Linear(self.width, h_size), nn.GELU(), nn.Linear(h_size, 1)),
             "continue_head": nn.Sequential(nn.Linear(self.width, h_size), nn.GELU(), nn.Linear(h_size, 1)),
             "pixel_decoder": decoder,
@@ -274,6 +293,42 @@ class SLMWorldModel:
 
     def decode(self, h, z):
         return self.modules["pixel_decoder"](self._torch.cat((h, z), dim=-1))
+
+
+class RSSMWorldModel(SLMWorldModel):
+    """Baseline without the SLM (--transition gru): DreamerV3 GRU core, action only (no task / reasoning text).
+    Latent, image nets, prior / posterior, heads and losses are those of SLMWorldModel; the heads read h_{t+1}."""
+
+    def __init__(self, h_size, z_size, z_kind="gaussian", z_classes=32, image_net="small"):
+        super().__init__(None, None, h_size, z_size, 0, 0, z_kind, z_classes, image_net)
+
+    def to(self, device):
+        self.modules.to(device); return self
+
+    def train(self, mode=True):
+        self.modules.train(mode); return self
+
+    def parameters(self):
+        return list(self.modules.parameters())
+
+    def state_dict(self):
+        return {"support": self.modules.state_dict(), "lm": {}}
+
+    def transition(self, goals, actions, reasoning, h, z, device):
+        a = self._torch.nn.functional.one_hot(actions, len(ACTIONS)).to(z.dtype)
+        h = self.modules["gru"](self.modules["gru_input"](self._torch.cat((z, a), dim=-1)), h)
+        return h, h
+
+
+def build_model(config, init_checkpoint, device):
+    """The world model described by a run config (experiment.json / checkpoint config), untrained."""
+    z = (config["z_size"], config.get("z_kind", "gaussian"), config.get("z_classes", 32), config.get("image_net", "small"))
+    if config.get("transition", "slm") == "gru":
+        return RSSMWorldModel(config["h_size"], *z).to(device)
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(init_checkpoint)
+    lm = AutoModelForCausalLM.from_pretrained(init_checkpoint).to(device)
+    return SLMWorldModel(lm, tokenizer, config["h_size"], z[0], config["h_tokens"], config["z_tokens"], *z[1:]).to(device)
 
 
 def detach(dist):
@@ -407,7 +462,10 @@ def main():
     parser.add_argument("--raw-data", type=Path, required=True, help="teacher collection (train/val.parquet, images/)")
     parser.add_argument("--split-from", type=Path, required=True,
                         help="phase-2 CE data dir: its valid.jsonl episodes are the validation episodes")
-    parser.add_argument("--init-checkpoint", type=Path, required=True, help="initial_random of a phase-2 run")
+    parser.add_argument("--init-checkpoint", type=Path, help="initial_random of a phase-2 run (--transition slm)")
+    parser.add_argument("--transition", choices=("slm", "gru"), default="slm",
+                        help="gru: DreamerV3 RSSM baseline, GRU core instead of the SLM, action only")
+    parser.add_argument("--cache-images", action="store_true", help="keep the frames in memory as uint8")
     parser.add_argument("--reasoning", type=Path, help="reasoning.jsonl: the action text gets its LLM reasoning")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--h-size", type=int, default=512)
@@ -434,15 +492,19 @@ def main():
     parser.add_argument("--max-updates", type=int, default=0, help="smoke: stop after this many updates")
     parser.add_argument("--seed", type=int, default=7950)
     args = parser.parse_args()
+    if args.transition == "slm" and args.init_checkpoint is None:
+        parser.error("--transition slm needs --init-checkpoint")
+    if args.transition == "gru" and args.reasoning:
+        parser.error("--transition gru reads no text: drop --reasoning")
     import torch
     from torch.utils.tensorboard import SummaryWriter
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    global IMAGE_CACHE
+    if args.cache_images:
+        IMAGE_CACHE = {}
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    tokenizer = AutoTokenizer.from_pretrained(args.init_checkpoint)
-    lm = AutoModelForCausalLM.from_pretrained(args.init_checkpoint).to(device)
-    model = SLMWorldModel(lm, tokenizer, args.h_size, args.z_size, args.h_tokens, args.z_tokens, args.z_kind,
-                          args.z_classes, args.image_net).to(device)
+    model = build_model(vars(args), args.init_checkpoint, device)
+    lm = model.lm
     reasoning = None
     if args.reasoning:
         reasoning = {(int(r["episode_id"]), int(r["step"])): r for r in map(json.loads, args.reasoning.open())}
@@ -455,7 +517,8 @@ def main():
         raise FileExistsError(args.out)
     args.out.mkdir(parents=True, exist_ok=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=.01)
-    config = dict(vars(args), architecture="slm_transition_rssm_v2", trainable="all (SLM + support modules)",
+    config = dict(vars(args), architecture="slm_transition_rssm_v2" if lm is not None else "gru_transition_rssm",
+                  trainable="all (SLM + support modules)" if lm is not None else "all (GRU core + support modules)",
                   reconstruction="0.5 * sum over pixels of squared error (unit-variance Gaussian)",
                   kl="kl_dyn * max(free_nats, KL(sg q || p)) + kl_rep * max(free_nats, KL(q || sg p)), z_0 included",
                   z=(f"{args.z_size} gaussian dims" if args.z_kind == "gaussian" else
@@ -464,7 +527,7 @@ def main():
                   train_transitions=sum(len(e) for e in train_episodes.values()),
                   validation_transitions=sum(len(e) for e in valid_episodes.values()),
                   train_chunks=len(train_chunks), validation_chunks=len(valid_chunks),
-                  lm_parameters=sum(p.numel() for p in lm.parameters()),
+                  lm_parameters=0 if lm is None else sum(p.numel() for p in lm.parameters()),
                   support_parameters=sum(p.numel() for p in model.modules.parameters()), started_at=time.time())
     save_json(args.out / "experiment.json", {k: str(v) if isinstance(v, Path) else v for k, v in config.items()})
     writer = SummaryWriter(str(args.out / "tensorboard"))

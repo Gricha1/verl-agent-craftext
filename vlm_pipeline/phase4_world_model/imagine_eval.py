@@ -25,7 +25,7 @@ from pathlib import Path
 
 import numpy as np
 
-from train_slm_world_model import (PIXELS, SLMWorldModel, load_episodes, read_image, save_json)
+from train_slm_world_model import (PIXELS, build_model, load_episodes, read_image, save_json)
 
 CHANGE = 0.05  # a pixel "changed" when some channel differs from x_t by more than this
 
@@ -35,7 +35,7 @@ def main():
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--raw-data", type=Path, required=True)
     parser.add_argument("--split-from", type=Path, required=True)
-    parser.add_argument("--init-checkpoint", type=Path, required=True)
+    parser.add_argument("--init-checkpoint", type=Path, help="SLM world models: initial_random of the phase-2 run")
     parser.add_argument("--reasoning", type=Path)
     parser.add_argument("--horizon", type=int, default=32)
     parser.add_argument("--stride", type=int, default=4, help="distance between start steps t in an episode")
@@ -45,16 +45,14 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     state = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     config = state["config"]
-    tokenizer = AutoTokenizer.from_pretrained(args.init_checkpoint)
-    lm = AutoModelForCausalLM.from_pretrained(args.init_checkpoint)
-    model = SLMWorldModel(lm, tokenizer, config["h_size"], config["z_size"], config["h_tokens"], config["z_tokens"],
-                          config.get("z_kind", "gaussian"), config.get("z_classes", 32), config.get("image_net", "small"))
-    model.lm.load_state_dict(state["model"]["lm"]); model.modules.load_state_dict(state["model"]["support"])
-    model.to(device).eval()
+    model = build_model(config, args.init_checkpoint, device)
+    if model.lm is not None:
+        model.lm.load_state_dict(state["model"]["lm"])
+    model.modules.load_state_dict(state["model"]["support"])
+    model.eval()
 
     reasoning = None
     if args.reasoning:
