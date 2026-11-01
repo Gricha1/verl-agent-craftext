@@ -75,6 +75,10 @@ chain() {
   CUDA_VISIBLE_DEVICES="${GPU_ID}" docker run --rm --name "${RUN_NAME}" --network host --entrypoint bash \
     -v "${CHECKOUT}:/workspace/repo:ro" -v "${RUNS}:/mnt/runs" "${TORCH_IMAGE}" "${R}/train.sh" > "${RUN_DIR}/ce.log" 2>&1
   echo "ce exit $? $(date)"
+  # the trainer (root, squashed to nobody on NFS) writes model.safetensors 0600; the eval below runs as 1007
+  # and reads text-state checkpoints directly, so make them world-readable from a root container
+  [ -n "${TEXT_STATE}" ] && docker run --rm --entrypoint chmod -v "${RUNS}:/mnt/runs" "${TORCH_IMAGE}" \
+    -R a+rX "${R}/run_5m_vision_action"
   for C in ${CHECKPOINTS}; do
     [ -z "${TEXT_STATE}" ] && [ -d "${RUN_DIR}/run_5m_vision_action/${C}" ] || continue
     mkdir -p "${RUN_DIR}/materialized_${C}" && chmod 777 "${RUN_DIR}/materialized_${C}"
