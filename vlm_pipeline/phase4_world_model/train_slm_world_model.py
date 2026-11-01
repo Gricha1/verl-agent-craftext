@@ -490,6 +490,8 @@ def main():
     parser.add_argument("--reward-target-scale", type=float, default=50.0)
     parser.add_argument("--active-threshold", type=float, default=0.01, help="nats; a z dim above it is active")
     parser.add_argument("--max-updates", type=int, default=0, help="smoke: stop after this many updates")
+    parser.add_argument("--save-every", type=int, default=0,
+                        help="also keep epoch_<N>.pt every N epochs (best.pt follows the validation world loss only)")
     parser.add_argument("--seed", type=int, default=7950)
     args = parser.parse_args()
     if args.transition == "slm" and args.init_checkpoint is None:
@@ -572,6 +574,8 @@ def main():
         if valid["world_loss"] < best:
             best = valid["world_loss"]
             torch.save(dict(model=model.state_dict(), config=config, metrics=metrics), args.out / "best.pt")
+        if args.save_every and epoch % args.save_every == 0:
+            torch.save(dict(model=model.state_dict(), config=config, metrics=metrics), args.out / f"epoch_{epoch:03d}.pt")
         if args.max_updates and updates >= args.max_updates:
             break
     save_json(args.out / "complete.json", dict(best_validation_world_loss=best, updates=updates))
