@@ -112,6 +112,7 @@ def main():
             # from here on the window starts at x_t, the last real frame used
             images, actions, texts, windows = images[:, C:], actions[:, C:], [r[C:] for r in texts], [w[C:] for w in full]
             hf, zf = h, z                                     # filtered (autoencoder bound) branch
+            start_recon = model.decode(h, z).float()          # x_t itself: reconstruction, the rollout starts here
             preds, recons = [], []
             for d in range(H):
                 rs = [r[d] for r in texts]
@@ -138,7 +139,7 @@ def main():
             for i, s in enumerate(batch):
                 if s in examples:
                     saved[f"{s[0]}_{s[1]}"] = dict(real=images[i].float().cpu().numpy(), model=pred[i].cpu().numpy(),
-                                                    recon=recon[i].cpu().numpy(),
+                                                    recon=recon[i].cpu().numpy(), start_recon=start_recon[i].cpu().numpy(),
                                                     actions=[valid[s[0]][s[1] + d]["action"] for d in range(H)],
                                                     rewards=[valid[s[0]][s[1] + d + 1]["reward"] for d in range(H)],
                                                     reasoning=texts[i], goal=goals[i])
@@ -165,7 +166,7 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     save_json(args.out / "imagine_metrics.json", result)
     np.savez_compressed(args.out / "imagine_examples.npz",
-                        **{f"{k}__{part}": np.asarray(v[part]) for k, v in saved.items() for part in ("real", "model", "recon", "actions", "rewards")})
+                        **{f"{k}__{part}": np.asarray(v[part]) for k, v in saved.items() for part in ("real", "model", "recon", "start_recon", "actions", "rewards")})
     save_json(args.out / "imagine_examples_text.json", {k: dict(goal=v["goal"], reasoning=v["reasoning"]) for k, v in saved.items()})
     print(json.dumps({k: result[k] for k in ("checkpoint_epoch", "starts", "reward")}), flush=True)
 
