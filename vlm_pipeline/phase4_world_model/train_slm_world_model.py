@@ -22,6 +22,11 @@ classes, 1% unimix, straight-through one-hot samples, KL per categorical) and Dr
 CNN to 4x4x256; transposed-conv decoder 4x4 -> 64x64 cropped to 63x63) instead of the 48-dim gaussian and the
 7x7 bilinear decoder, which blur every frame (even the autoencoder recon). Imagination uses the mode (argmax).
 
+--descriptions state_descriptions.jsonl: the SLM also WRITES the text of the next state. After the EOS of the
+transition input it continues with "Next state: <description of x_{t+1}><eos>" (teacher forcing); the summed token
+NLL is added to the loss (x --description-loss-scale). Attention is causal, so h_{t+1} and the heads (EOS state)
+never see the target, while the EOS state must carry what the text needs. In imagination the SLM can generate it.
+
 --transition gru: RSSM baseline without the SLM, h_{t+1} = GRU(h_t, MLP([z_t; one-hot a_t])) as in DreamerV3
 (action only), with everything else unchanged; the SLM's quality is measured against it.
 
@@ -68,7 +73,7 @@ def read_image(root: Path, name: str) -> np.ndarray:
     return np.moveaxis(image, -1, 0)
 
 
-def load_episodes(root: Path, reasoning: dict | None):
+def load_episodes(root: Path, reasoning: dict | None, descriptions: dict | None = None):
     import pyarrow.parquet as pq
     rows = pq.read_table(root / "train.parquet").to_pylist() + pq.read_table(root / "val.parquet").to_pylist()
     episodes = defaultdict(list)
@@ -81,7 +86,13 @@ def load_episodes(root: Path, reasoning: dict | None):
             if label is None or label["action"] != extra["teacher_action"]:
                 raise ValueError(f"no reasoning for the teacher action at episode {key[0]} step {key[1]}")
             text = label["reasoning"]
+        description = None
+        if descriptions is not None:
+            if key not in descriptions:
+                raise ValueError(f"no state description at episode {key[0]} step {key[1]}")
+            description = descriptions[key]
         episodes[key[0]].append(dict(step=key[1], action=ACTION_ID[str(extra["teacher_action"])], reasoning=text,
+                                     description=description,
                                      image=Path(str(extra["observation_path"])).name,
                                      instruction=str(extra["instruction"]), reward=float(extra["reward"]),
                                      terminal=bool(extra["done"])))
@@ -115,6 +126,11 @@ def cached_image(root: Path, name: str) -> np.ndarray:
     if name not in IMAGE_CACHE:
         IMAGE_CACHE[name] = (read_image(root, name) * 255).round().astype(np.uint8)
     return IMAGE_CACHE[name].astype(np.float32) / 255
+
+
+def next_descriptions(chunks):
+    """Description of the state AFTER each transition (the text target of --descriptions), [chunk][step]."""
+    return [[item["description"] for item in chunk[1:]] for chunk in chunks]
 
 
 def batch_from_chunks(root, chunks, device):
@@ -278,24 +294,44 @@ class SLMWorldModel:
         """KL(q || p) per gaussian dimension / per categorical variable."""
         return gaussian_kl_dims(*q, *p) if self.z_kind == "gaussian" else categorical_kl_dims(q[0], p[0])
 
-    def transition(self, goals, actions, reasoning, h, z, device):
-        """Run the SLM; h[t+1] and the heads read only its final (EOS) hidden state."""
+    def transition(self, goals, actions, reasoning, h, z, device, targets=None):
+        """Run the SLM; h[t+1] and the heads read only its final (EOS) hidden state.
+
+        targets (--descriptions): text of the NEXT state per sample, appended after the EOS and scored as language
+        modelling (teacher forcing). Attention is causal, so the EOS state (h[t+1], heads) never sees it. Then also
+        returns the summed negative log-likelihood of each target, shape [B]."""
         torch = self._torch
         embed = self.lm.get_input_embeddings()
+        eos = int(self.tok.eos_token_id)
         hs = self.modules["h_prefix"](h).view(len(h), self.h_tokens, self.width)
         zs = self.modules["z_prefix"](z).view(len(z), self.z_tokens, self.width)
-        pieces = []
+        pieces, ends, target_ids = [], [], []
         for index, (goal, action, text) in enumerate(zip(goals, actions.tolist(), reasoning)):
             answer = f"ACTION: {ACTIONS[int(action)]}" if text is None else f"<reasoning>{text}</reasoning>\nACTION: {ACTIONS[int(action)]}"
             head = embed(torch.tensor(self.ids(f"Task:\n{goal}\n\nPredict next environment state after action:\n"), device=device))
-            tail = embed(torch.tensor(self.ids(answer) + [int(self.tok.eos_token_id)], device=device))
-            pieces.append(torch.cat((head, hs[index].to(head.dtype), zs[index].to(head.dtype), tail), dim=0))
+            tail = embed(torch.tensor(self.ids(answer) + [eos], device=device))
+            parts = [head, hs[index].to(head.dtype), zs[index].to(head.dtype), tail]
+            ends.append(sum(part.shape[0] for part in parts) - 1)
+            if targets is not None:
+                ids = self.ids(f"Next state: {targets[index]}") + [eos]
+                target_ids.append(ids)
+                parts.append(embed(torch.tensor(ids, device=device)))
+            pieces.append(torch.cat(parts, dim=0))
         maximum = max(piece.shape[0] for piece in pieces)
         padded = torch.stack([torch.cat((piece, piece.new_zeros(maximum - piece.shape[0], self.width))) for piece in pieces])
         mask = torch.tensor([[1] * piece.shape[0] + [0] * (maximum - piece.shape[0]) for piece in pieces], device=device)
         output = self.lm(inputs_embeds=padded, attention_mask=mask, output_hidden_states=True, use_cache=False)
-        last = output.hidden_states[-1][torch.arange(len(pieces), device=device), mask.sum(dim=1) - 1].float()
-        return self.modules["h_transition"](last), last
+        rows = torch.arange(len(pieces), device=device)
+        last = output.hidden_states[-1][rows, torch.tensor(ends, device=device)].float()
+        if targets is None:
+            return self.modules["h_transition"](last), last
+        nll = []
+        for index, (end, ids) in enumerate(zip(ends, target_ids)):
+            # the logits at position p predict the token at p + 1: the EOS predicts the first target token
+            logits = output.logits[index, end:end + len(ids)].float()
+            nll.append(torch.nn.functional.cross_entropy(logits, torch.tensor(ids, device=device), reduction="sum"))
+        lengths = torch.tensor([len(ids) for ids in target_ids], device=device, dtype=torch.float32)
+        return self.modules["h_transition"](last), last, torch.stack(nll), lengths
 
     def decode(self, h, z):
         return self.modules["pixel_decoder"](z if self.decoder_input == "z" else self._torch.cat((h, z), dim=-1))
@@ -352,10 +388,13 @@ def balanced_kl(model, q, p, free, dyn_scale, rep_scale):
     return loss, dyn.detach(), dims_dyn.detach()
 
 
-def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoning, args, device, diagnostics=False):
+def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoning, args, device, diagnostics=False,
+                   descriptions=None):
+    """descriptions: [chunk][step] text of the state after each transition (--descriptions), scored by the SLM."""
     import torch
     import torch.nn.functional as F
     batch, steps = actions.shape
+    text_nll, text_tokens = torch.zeros((), device=device), torch.zeros((), device=device)
     zeros = torch.zeros(batch, model.h_size, device=device)
     h = zeros
     q = model.posterior(images[:, 0], h)
@@ -369,7 +408,12 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
     continue_loss = torch.zeros((), device=device)
     for t in range(steps):
         rs = [r[t] for r in reasoning]
-        h, last = model.transition(goals, actions[:, t], rs, h, z, device)
+        if descriptions is None:
+            h, last = model.transition(goals, actions[:, t], rs, h, z, device)
+        else:
+            h, last, nll, lengths = model.transition(goals, actions[:, t], rs, h, z, device,
+                                                     targets=[d[t] for d in descriptions])
+            text_nll, text_tokens = text_nll + nll.mean(), text_tokens + lengths.mean()
         p = model.prior(h)
         q = model.posterior(images[:, t + 1], h)
         z = model.sample(q)
@@ -406,6 +450,12 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
                  kl_loss=float(kl_loss.detach()), kl_raw=float(kl_raw_all.mean()),
                  overshooting_kl=float(overshoot.detach()), reward_loss=float(reward_loss.detach()),
                  continue_loss=float(continue_loss.detach()))
+    if descriptions is not None:
+        # log-likelihood of the next-state text, summed over its tokens (like the pixel term), mean over transitions
+        text_nll, text_tokens = text_nll / steps, text_tokens / steps
+        loss = loss + args.description_loss_scale * text_nll
+        parts.update(world_loss=float(loss.detach()), description_nll=float(text_nll.detach()),
+                     description_nll_per_token=float(text_nll.detach() / text_tokens))
     extra = None
     if diagnostics:
         extra = dict(kl_dims=torch.cat(kl_dims_all).mean(0), h_states=h_states, q_states=q_states)
@@ -452,11 +502,12 @@ def evaluate(model, root, chunks, args, device):
     model.eval()
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
         for offset in range(0, len(chunks), args.batch_size):
-            images, actions, rewards, continuation, goals, reasoning = batch_from_chunks(
-                root, chunks[offset:offset + args.batch_size], device)
+            part = chunks[offset:offset + args.batch_size]
+            images, actions, rewards, continuation, goals, reasoning = batch_from_chunks(root, part, device)
             want = diag is None and len(goals) == args.batch_size
             _, parts, extra = loss_for_batch(model, images, actions, rewards, continuation, goals, reasoning, args,
-                                             device, diagnostics=want)
+                                             device, diagnostics=want,
+                                             descriptions=next_descriptions(part) if args.descriptions else None)
             if want:
                 diag = diagnose(model, images, actions, goals, reasoning, extra, args, device)
             count += 1
@@ -475,6 +526,10 @@ def main():
                         help="gru: DreamerV3 RSSM baseline, GRU core instead of the SLM, action only")
     parser.add_argument("--cache-images", action="store_true", help="keep the frames in memory as uint8")
     parser.add_argument("--reasoning", type=Path, help="reasoning.jsonl: the action text gets its LLM reasoning")
+    parser.add_argument("--descriptions", type=Path,
+                        help="state_descriptions.jsonl: the SLM also writes the description of the next state")
+    parser.add_argument("--description-loss-scale", type=float, default=1.0,
+                        help="weight of the next-state text NLL (summed over its tokens)")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--h-size", type=int, default=512)
     parser.add_argument("--z-size", type=int, default=48, help="gaussian dims, or number of categoricals")
@@ -506,8 +561,8 @@ def main():
     args = parser.parse_args()
     if args.transition == "slm" and args.init_checkpoint is None:
         parser.error("--transition slm needs --init-checkpoint")
-    if args.transition == "gru" and args.reasoning:
-        parser.error("--transition gru reads no text: drop --reasoning")
+    if args.transition == "gru" and (args.reasoning or args.descriptions):
+        parser.error("--transition gru reads and writes no text: drop --reasoning / --descriptions")
     import torch
     from torch.utils.tensorboard import SummaryWriter
     global IMAGE_CACHE
@@ -520,8 +575,12 @@ def main():
     reasoning = None
     if args.reasoning:
         reasoning = {(int(r["episode_id"]), int(r["step"])): r for r in map(json.loads, args.reasoning.open())}
-    episodes = load_episodes(args.raw_data, reasoning)
-    valid_ids = {json.loads(line)["source_episode_id"] for line in (args.split_from / "valid.jsonl").open()}
+    descriptions = None
+    if args.descriptions:
+        descriptions = {(int(r["episode_id"]), int(r["step"])): r["state_description"]
+                        for r in map(json.loads, args.descriptions.open())}
+    episodes = load_episodes(args.raw_data, reasoning, descriptions)
+    valid_ids ={json.loads(line)["source_episode_id"] for line in (args.split_from / "valid.jsonl").open()}
     train_episodes = {k: v for k, v in episodes.items() if k not in valid_ids}
     valid_episodes = {k: v for k, v in episodes.items() if k in valid_ids}
     train_chunks, valid_chunks = make_chunks(train_episodes, args.horizon), make_chunks(valid_episodes, args.horizon)
@@ -555,8 +614,9 @@ def main():
                 part = batch_chunks[start:start + micro]
                 images, actions, rewards, continuation, goals, rs = batch_from_chunks(args.raw_data, part, device)
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
-                    loss, micro_parts, _ = loss_for_batch(model, images, actions, rewards, continuation, goals, rs,
-                                                          args, device)
+                    loss, micro_parts, _ = loss_for_batch(
+                        model, images, actions, rewards, continuation, goals, rs, args, device,
+                        descriptions=next_descriptions(part) if args.descriptions else None)
                 # the losses are batch means: weight each micro-batch by its share of the batch
                 (loss * len(part) / len(batch_chunks)).backward()
                 for key, value in micro_parts.items():
