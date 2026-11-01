@@ -68,6 +68,10 @@ def main() -> None:
     parser.add_argument("--task-indices", default="all", help="all or comma-separated indices")
     parser.add_argument("--max-steps", type=int, default=1000)
     parser.add_argument("--data-source", default="craftext_ppo_flax_teacher")
+    parser.add_argument("--jit", action="store_true",
+                        help="jax.jit the teacher and env.step (unjitted: ~0.4 steps/s, dispatch-bound)")
+    parser.add_argument("--episode-id-offset", type=int, default=0,
+                        help="first episode_id: shards with disjoint ids merge by concatenation")
     args = parser.parse_args()
     if args.max_steps <= 0:
         raise ValueError("--max-steps must be positive")
@@ -115,9 +119,13 @@ def main() -> None:
         raise FileExistsError(f"Refusing to overwrite existing output directory: {output}")
     images.mkdir(parents=True)
 
+    policy, env_step = network.apply, env.step
+    if args.jit:
+        policy, env_step = jax.jit(network.apply), jax.jit(env.step)
+
     rows: list[dict] = []
     trajectories: list[dict] = []
-    episode_id = 0
+    episode_id = args.episode_id_offset
     for task_index in task_indices:
         instruction = str(instructions[task_index])
         for seed in seeds:
@@ -126,12 +134,12 @@ def main() -> None:
             success = False
             done_flag = False
             for step in range(args.max_steps):
-                pi, _ = network.apply(params, obs[None, ...], state.instruction[None, ...])
+                pi, _ = policy(params, obs[None, ...], state.instruction[None, ...])
                 logits = np.asarray(pi.logits[0], dtype=np.float32)
                 probabilities = np.asarray(jax.nn.softmax(pi.logits[0]), dtype=np.float32)
                 action = int(pi.mode()[0])
                 key, step_key = jax.random.split(key)
-                next_obs, next_state, reward, done, _ = env.step(step_key, state, jnp.int32(action), env_params)
+                next_obs, next_state, reward, done, _ = env_step(step_key, state, jnp.int32(action), env_params)
                 done_flag = bool(done)
                 success = bool(next_state.instruction_done)
                 image_path = images / f"episode_{episode_id:04d}_state_{step:04d}.npz"
