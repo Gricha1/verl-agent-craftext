@@ -26,6 +26,8 @@ CNN to 4x4x256; transposed-conv decoder 4x4 -> 64x64 cropped to 63x63) instead o
 transition input it continues with "Next state: <description of x_{t+1}><eos>" (teacher forcing); the summed token
 NLL is added to the loss (x --description-loss-scale). Attention is causal, so h_{t+1} and the heads (EOS state)
 never see the target, while the EOS state must carry what the text needs. In imagination the SLM can generate it.
+--description-input: the transition also reads "State: <description of x_t>" before the action (dataset text in
+training, teacher forcing; in imagination the SLM's own description from the previous step).
 
 --transition gru: RSSM baseline without the SLM, h_{t+1} = GRU(h_t, MLP([z_t; one-hot a_t])) as in DreamerV3
 (action only), with everything else unchanged; the SLM's quality is measured against it.
@@ -131,6 +133,11 @@ def cached_image(root: Path, name: str) -> np.ndarray:
 def next_descriptions(chunks):
     """Description of the state AFTER each transition (the text target of --descriptions), [chunk][step]."""
     return [[item["description"] for item in chunk[1:]] for chunk in chunks]
+
+
+def current_descriptions(chunks):
+    """Description of the state BEFORE each transition (the text input of --description-input), [chunk][step]."""
+    return [[item["description"] for item in chunk[:-1]] for chunk in chunks]
 
 
 def batch_from_chunks(root, chunks, device):
@@ -294,8 +301,10 @@ class SLMWorldModel:
         """KL(q || p) per gaussian dimension / per categorical variable."""
         return gaussian_kl_dims(*q, *p) if self.z_kind == "gaussian" else categorical_kl_dims(q[0], p[0])
 
-    def transition(self, goals, actions, reasoning, h, z, device, targets=None):
+    def transition(self, goals, actions, reasoning, h, z, device, targets=None, states=None):
         """Run the SLM; h[t+1] and the heads read only its final (EOS) hidden state.
+
+        states (--description-input): text of the CURRENT state per sample, put before the action as "State: ...".
 
         targets (--descriptions): text of the NEXT state per sample, appended after the EOS and scored as language
         modelling (teacher forcing). Attention is causal, so the EOS state (h[t+1], heads) never sees it. Then also
@@ -308,6 +317,8 @@ class SLMWorldModel:
         pieces, ends, target_ids = [], [], []
         for index, (goal, action, text) in enumerate(zip(goals, actions.tolist(), reasoning)):
             answer = f"ACTION: {ACTIONS[int(action)]}" if text is None else f"<reasoning>{text}</reasoning>\nACTION: {ACTIONS[int(action)]}"
+            if states is not None:
+                answer = f"State: {states[index]}\n{answer}"
             head = embed(torch.tensor(self.ids(f"Task:\n{goal}\n\nPredict next environment state after action:\n"), device=device))
             tail = embed(torch.tensor(self.ids(answer) + [eos], device=device))
             parts = [head, hs[index].to(head.dtype), zs[index].to(head.dtype), tail]
@@ -389,8 +400,11 @@ def balanced_kl(model, q, p, free, dyn_scale, rep_scale):
 
 
 def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoning, args, device, diagnostics=False,
-                   descriptions=None):
-    """descriptions: [chunk][step] text of the state after each transition (--descriptions), scored by the SLM."""
+                   descriptions=None, states=None):
+    """descriptions: [chunk][step] text of the state after each transition (--descriptions), scored by the SLM.
+    states: [chunk][step] text of the state before each transition (--description-input), fed to the SLM; like the
+    reasoning text it comes from the dataset also in the overshooting rollouts."""
+    state_at = (lambda t: None) if states is None else (lambda t: [s[t] for s in states])
     import torch
     import torch.nn.functional as F
     batch, steps = actions.shape
@@ -409,10 +423,10 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
     for t in range(steps):
         rs = [r[t] for r in reasoning]
         if descriptions is None:
-            h, last = model.transition(goals, actions[:, t], rs, h, z, device)
+            h, last = model.transition(goals, actions[:, t], rs, h, z, device, states=state_at(t))
         else:
             h, last, nll, lengths = model.transition(goals, actions[:, t], rs, h, z, device,
-                                                     targets=[d[t] for d in descriptions])
+                                                     targets=[d[t] for d in descriptions], states=state_at(t))
             text_nll, text_tokens = text_nll + nll.mean(), text_tokens + lengths.mean()
         p = model.prior(h)
         q = model.posterior(images[:, t + 1], h)
@@ -435,7 +449,8 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
             h_roll, z_roll = h_states[anchor], model.mode(q_states[anchor])
             for distance in range(1, min(args.horizon, steps - anchor) + 1):
                 rs = [r[anchor + distance - 1] for r in reasoning]
-                h_roll, _ = model.transition(goals, actions[:, anchor + distance - 1], rs, h_roll, z_roll, device)
+                h_roll, _ = model.transition(goals, actions[:, anchor + distance - 1], rs, h_roll, z_roll, device,
+                                             states=state_at(anchor + distance - 1))
                 p_roll = model.prior(h_roll)
                 if distance > 1:
                     raw = model.kl_dims(detach(q_states[anchor + distance]), p_roll).sum(-1)
@@ -458,7 +473,7 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
                      description_nll_per_token=float(text_nll.detach() / text_tokens))
     extra = None
     if diagnostics:
-        extra = dict(kl_dims=torch.cat(kl_dims_all).mean(0), h_states=h_states, q_states=q_states)
+        extra = dict(kl_dims=torch.cat(kl_dims_all).mean(0), h_states=h_states, q_states=q_states, state_at=state_at)
     return loss, parts, extra
 
 
@@ -489,7 +504,7 @@ def diagnose(model, images, actions, goals, reasoning, extra, args, device):
     h, z = extra["h_states"][0], model.mode(extra["q_states"][0])
     rollout = []
     for t in range(steps):
-        h, _ = model.transition(goals, actions[:, t], [r[t] for r in reasoning], h, z, device)
+        h, _ = model.transition(goals, actions[:, t], [r[t] for r in reasoning], h, z, device, states=extra["state_at"](t))
         z = model.mode(model.prior(h))
         rollout.append(float((model.decode(h, z) - images[:, t + 1]).square().mean()))
     out["open_loop_mse_by_step"] = [round(v, 5) for v in rollout]
@@ -507,7 +522,8 @@ def evaluate(model, root, chunks, args, device):
             want = diag is None and len(goals) == args.batch_size
             _, parts, extra = loss_for_batch(model, images, actions, rewards, continuation, goals, reasoning, args,
                                              device, diagnostics=want,
-                                             descriptions=next_descriptions(part) if args.descriptions else None)
+                                             descriptions=next_descriptions(part) if args.descriptions else None,
+                                             states=current_descriptions(part) if args.description_input else None)
             if want:
                 diag = diagnose(model, images, actions, goals, reasoning, extra, args, device)
             count += 1
@@ -530,6 +546,9 @@ def main():
                         help="state_descriptions.jsonl: the SLM also writes the description of the next state")
     parser.add_argument("--description-loss-scale", type=float, default=1.0,
                         help="weight of the next-state text NLL (summed over its tokens)")
+    parser.add_argument("--description-input", action="store_true",
+                        help="also feed the description of the current state (\"State: ...\" before the action); "
+                             "training uses the dataset text, imagination the SLM's own previous description")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--h-size", type=int, default=512)
     parser.add_argument("--z-size", type=int, default=48, help="gaussian dims, or number of categoricals")
@@ -561,6 +580,8 @@ def main():
     args = parser.parse_args()
     if args.transition == "slm" and args.init_checkpoint is None:
         parser.error("--transition slm needs --init-checkpoint")
+    if args.description_input and not args.descriptions:
+        parser.error("--description-input needs --descriptions")
     if args.transition == "gru" and (args.reasoning or args.descriptions):
         parser.error("--transition gru reads and writes no text: drop --reasoning / --descriptions")
     import torch
@@ -616,7 +637,8 @@ def main():
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
                     loss, micro_parts, _ = loss_for_batch(
                         model, images, actions, rewards, continuation, goals, rs, args, device,
-                        descriptions=next_descriptions(part) if args.descriptions else None)
+                        descriptions=next_descriptions(part) if args.descriptions else None,
+                        states=current_descriptions(part) if args.description_input else None)
                 # the losses are batch means: weight each micro-batch by its share of the batch
                 (loss * len(part) / len(batch_chunks)).backward()
                 for key, value in micro_parts.items():
