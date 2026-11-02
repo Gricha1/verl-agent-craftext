@@ -176,20 +176,22 @@ def categorical_kl_dims(q_probs, p_probs):
     return (q_probs * (q_probs.log() - p_probs.log())).sum(-1)
 
 
-def dreamer_encoder(nn):
-    """DreamerV3 CNN: 64x64 (63x63 padded) -> stride-2 convs 32/64/128/256 -> 4x4x256 -> flat 4096."""
+def dreamer_encoder(nn, depth=32):
+    """DreamerV3 CNN: 64x64 (63x63 padded) -> stride-2 convs depth x 1/2/4/8 -> 4x4x(8 depth) -> flat 128 depth
+    (depth 32: 32/64/128/256 -> 4096)."""
     layers, channels = [nn.ZeroPad2d((0, 1, 0, 1))], 3
-    for out in (32, 64, 128, 256):
+    for out in (depth, 2 * depth, 4 * depth, 8 * depth):
         layers += [nn.Conv2d(channels, out, 4, stride=2, padding=1), nn.GroupNorm(1, out), nn.SiLU()]
         channels = out
     return nn.Sequential(*layers, nn.Flatten())
 
 
-def dreamer_decoder(nn, size):
-    """DreamerV3 CNN decoder: [h; z] -> 4x4x256 -> transposed convs 128/64/32/3 -> 64x64, cropped to 63x63."""
-    layers = [nn.Linear(size, 256 * 4 * 4), nn.Unflatten(1, (256, 4, 4))]
-    channels = 256
-    for out in (128, 64, 32):
+def dreamer_decoder(nn, size, depth=32):
+    """DreamerV3 CNN decoder: [h; z] -> 4x4x(8 depth) -> transposed convs depth x 4/2/1, then 3 -> 64x64, cropped
+    to 63x63 (depth 32: 256 -> 128/64/32/3)."""
+    layers = [nn.Linear(size, 8 * depth * 4 * 4), nn.Unflatten(1, (8 * depth, 4, 4))]
+    channels = 8 * depth
+    for out in (4 * depth, 2 * depth, depth):
         layers += [nn.ConvTranspose2d(channels, out, 4, stride=2, padding=1), nn.GroupNorm(1, out), nn.SiLU()]
         channels = out
     # negative padding crops the 64x64 output back to the 63x63 frame
@@ -197,11 +199,20 @@ def dreamer_decoder(nn, size):
     return nn.Sequential(*layers)
 
 
+def mlp(nn, size, units, layers, out):
+    """layers x (Linear, GELU), then Linear to out."""
+    modules = []
+    for _ in range(layers):
+        modules += [nn.Linear(size, units), nn.GELU()]
+        size = units
+    return nn.Sequential(*modules, nn.Linear(size, out))
+
+
 class SLMWorldModel:
     """Support modules around one trainable decoder-only SLM transition."""
 
     def __init__(self, lm, tokenizer, h_size, z_size, h_tokens, z_tokens, z_kind="gaussian", z_classes=32,
-                 image_net="small", decoder_input="hz", posterior_input="hx"):
+                 image_net="small", decoder_input="hz", posterior_input="hx", cnn_depth=32, mlp_units=None, mlp_layers=1):
         import torch
         import torch.nn as nn
         self.lm, self.tok, self._torch = lm, tokenizer, torch
@@ -229,23 +240,25 @@ class SLMWorldModel:
                 nn.Conv2d(32, 32, 5, padding=2), nn.GELU(), nn.Conv2d(32, 3, 3, padding=1), nn.Sigmoid(),
             )
         else:  # "dreamer"
-            cnn, embed = dreamer_encoder(nn), 256 * 4 * 4
-            decoder = dreamer_decoder(nn, dec_size)
+            cnn, embed = dreamer_encoder(nn, cnn_depth), 8 * cnn_depth * 4 * 4
+            decoder = dreamer_decoder(nn, dec_size, cnn_depth)
+        # DreamerV3 sizes: hidden width of the GRU input, prior, posterior and heads (default h_size); the heads get
+        # mlp_layers hidden layers, prior / posterior keep one as in DreamerV3
+        units = mlp_units or h_size
         if lm is None:  # DreamerV3 recurrent core: h_{t+1} = GRU(h_t, MLP([z_t; one-hot a_t]))
-            core = {"gru_input": nn.Sequential(nn.Linear(z_dim + len(ACTIONS), h_size), nn.LayerNorm(h_size), nn.SiLU()),
-                    "gru": nn.GRUCell(h_size, h_size)}
+            core = {"gru_input": nn.Sequential(nn.Linear(z_dim + len(ACTIONS), units), nn.LayerNorm(units), nn.SiLU()),
+                    "gru": nn.GRUCell(units, h_size)}
         else:
             core = {"h_prefix": nn.Sequential(nn.Linear(h_size, h_size), nn.GELU(), nn.Linear(h_size, h_tokens * self.width)),
                     "z_prefix": nn.Sequential(nn.Linear(z_dim, z_dim), nn.GELU(), nn.Linear(z_dim, z_tokens * self.width)),
                     "h_transition": nn.Sequential(nn.Linear(self.width, h_size), nn.GELU(), nn.Linear(h_size, h_size))}
         self.modules = nn.ModuleDict({
             "cnn": cnn,
-            "posterior": nn.Sequential(nn.Linear((0 if posterior_input == "x" else h_size) + embed, h_size), nn.GELU(),
-                                       nn.Linear(h_size, z_raw)),
+            "posterior": mlp(nn, (0 if posterior_input == "x" else h_size) + embed, units, 1, z_raw),
             **core,
-            "z_prior":nn.Sequential(nn.Linear(h_size, h_size), nn.GELU(), nn.Linear(h_size, z_raw)),
-            "reward_head": nn.Sequential(nn.Linear(self.width, h_size), nn.GELU(), nn.Linear(h_size, 1)),
-            "continue_head": nn.Sequential(nn.Linear(self.width, h_size), nn.GELU(), nn.Linear(h_size, 1)),
+            "z_prior": mlp(nn, h_size, units, 1, z_raw),
+            "reward_head": mlp(nn, self.width, units, mlp_layers, 1),
+            "continue_head": mlp(nn, self.width, units, mlp_layers, 1),
             "pixel_decoder": decoder,
         })
         self._text_cache = {}
@@ -353,8 +366,9 @@ class RSSMWorldModel(SLMWorldModel):
     Latent, image nets, prior / posterior, heads and losses are those of SLMWorldModel; the heads read h_{t+1}."""
 
     def __init__(self, h_size, z_size, z_kind="gaussian", z_classes=32, image_net="small", decoder_input="hz",
-                 posterior_input="hx"):
-        super().__init__(None, None, h_size, z_size, 0, 0, z_kind, z_classes, image_net, decoder_input, posterior_input)
+                 posterior_input="hx", cnn_depth=32, mlp_units=None, mlp_layers=1):
+        super().__init__(None, None, h_size, z_size, 0, 0, z_kind, z_classes, image_net, decoder_input, posterior_input,
+                         cnn_depth, mlp_units, mlp_layers)
 
     def to(self, device):
         self.modules.to(device); return self
@@ -379,7 +393,8 @@ class RSSMWorldModel(SLMWorldModel):
 def build_model(config, init_checkpoint, device):
     """The world model described by a run config (experiment.json / checkpoint config), untrained."""
     z = (config["z_size"], config.get("z_kind", "gaussian"), config.get("z_classes", 32), config.get("image_net", "small"),
-         config.get("decoder_input", "hz"), config.get("posterior_input", "hx"))
+         config.get("decoder_input", "hz"), config.get("posterior_input", "hx"), config.get("cnn_depth", 32),
+         config.get("mlp_units"), config.get("mlp_layers", 1))
     if config.get("transition", "slm") == "gru":
         return RSSMWorldModel(config["h_size"], *z).to(device)
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -558,6 +573,12 @@ def main():
     parser.add_argument("--z-classes", type=int, default=32, help="classes per categorical (--z-kind categorical)")
     parser.add_argument("--image-net", choices=("small", "dreamer"), default="small",
                         help="small: 3-conv CNN + 7x7 bilinear decoder; dreamer: DreamerV3 stride-2 CNN / transposed-conv decoder")
+    parser.add_argument("--cnn-depth", type=int, default=32,
+                        help="--image-net dreamer: channels depth x 1/2/4/8 (DreamerV3 small 32, medium 48)")
+    parser.add_argument("--mlp-units", type=int, help="hidden width of GRU input / prior / posterior / heads "
+                                                      "(default h-size; DreamerV3 medium 640)")
+    parser.add_argument("--mlp-layers", type=int, default=1,
+                        help="hidden layers of the reward / continue heads (DreamerV3 medium 3)")
     parser.add_argument("--decoder-input", choices=("hz", "z"), default="hz", help="z: the decoder reads only z")
     parser.add_argument("--posterior-input", choices=("hx", "x"), default="hx", help="x: the posterior reads only the frame")
     parser.add_argument("--h-tokens", type=int, default=30)
