@@ -461,10 +461,11 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
     recon, reward_loss, continue_loss = recon / steps, reward_loss / steps, continue_loss / steps
     kl_loss = kl_loss / (steps + 1)
     overshoot, terms = torch.zeros((), device=device), 0
-    if args.horizon > 1:
+    depth = args.overshoot_depth or args.horizon
+    if depth > 1:
         for anchor in range(steps):
             h_roll, z_roll = h_states[anchor], model.mode(q_states[anchor])
-            for distance in range(1, min(args.horizon, steps - anchor) + 1):
+            for distance in range(1, min(depth, steps - anchor) + 1):
                 rs = [r[anchor + distance - 1] for r in reasoning]
                 h_roll, _ = model.transition(goals, actions[:, anchor + distance - 1], rs, h_roll, z_roll, device,
                                              states=state_at(anchor + distance - 1))
@@ -584,6 +585,9 @@ def main():
     parser.add_argument("--h-tokens", type=int, default=30)
     parser.add_argument("--z-tokens", type=int, default=5)
     parser.add_argument("--horizon", type=int, default=16)
+    parser.add_argument("--overshoot-depth", type=int,
+                        help="latent overshooting rolls the prior up to this many steps (default --horizon); "
+                             "e.g. --horizon 64 --overshoot-depth 16 keeps the K=16 objective on longer chunks")
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--grad-accum", type=int, default=1,
