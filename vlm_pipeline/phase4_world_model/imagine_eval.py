@@ -17,6 +17,9 @@ Compared per step d with
   mean frame: x^_{t+d} = mean training frame
   recon     : decoder output with z from the posterior on the REAL x_{t+d} (filtered h) - an autoencoder
               bound that sees every real frame, shown only to tell decoder blur from imagination error.
+Tile metric (what is drawn where, not pixel MSE): each 7x7 map tile of a frame is assigned the class of its nearest
+Craftax-Classic texture prototype (grass, tree, water, sand, stone, player, cow, ...; tile_prototypes); accuracy =
+share of tiles whose guessed class equals the real one, also on tiles whose class changed since x_t.
 
   python imagine_eval.py --checkpoint <run>/best.pt --raw-data <collection> --split-from <CE data dir> \
     --init-checkpoint <initial_random> [--reasoning reasoning.jsonl] --horizon 32 --out <dir>/<name>
@@ -33,6 +36,60 @@ import numpy as np
 from train_slm_world_model import (PIXELS, build_model, load_episodes, read_image, save_json)
 
 CHANGE = 0.05  # a pixel "changed" when some channel differs from x_t by more than this
+ASSETS = Path(__file__).resolve().parents[2] / "caged_craftext/Craftax/craftax/craftax_classic/assets"
+TILE, ROWS, COLS = 7, 7, 9  # the map view: 7 x 9 blocks of 7 x 7 pixels above the two inventory rows
+BLOCKS = dict(grass="grass.png", water="water.png", stone="stone.png", tree="tree.png", wood="wood.png", path="path.png",
+              coal="coal.png", iron="iron.png", diamond="diamond.png", table="table.png", furnace="furnace.png",
+              sand="sand.png", lava="lava.png", plant="plant_on_grass.png", ripe_plant="ripe_plant_on_grass.png")
+OVERLAYS = dict(player=("player-left.png", "player-right.png", "player-up.png", "player-down.png", "player-sleep.png"),
+                cow=("cow.png",), zombie=("zombie.png",))
+DAYLIGHT = (1.0, 0.8, 0.65, 0.5)  # light levels rendered without the night static (it is drawn only below 0.5)
+TILE_RELIABLE = 0.003  # a real tile is "explained" when its per-pixel MSE to the nearest prototype is below this
+
+
+def tile_prototypes(assets: Path = ASSETS):
+    """7x7 tile prototypes of the Craftax-Classic renderer: every block texture, the player / cow / zombie drawn over
+    grass, sand and path, each at the DAYLIGHT levels (night blend of the renderer: desaturate, tint (0, 16, 64)).
+    Returns (prototypes [K, 3, 7, 7] in [0, 1], class index [K], class names)."""
+    from PIL import Image
+
+    def texture(name):
+        image = Image.open(assets / name).convert("RGBA").resize((TILE, TILE), Image.NEAREST)
+        rgba = np.asarray(image, dtype=np.float32) / 255
+        return rgba[..., :3], rgba[..., 3:]
+
+    names, tiles = [], []
+    for name, file in BLOCKS.items():
+        names.append(name); tiles.append(texture(file)[0])
+    names.append("out_of_bounds"); tiles.append(np.full((TILE, TILE, 3), 128 / 255, np.float32))
+    for name, files in OVERLAYS.items():
+        for file in files:
+            rgb, alpha = texture(file)
+            for ground in ("grass", "sand", "path"):
+                names.append(name); tiles.append(texture(BLOCKS[ground])[0] * (1 - alpha) + rgb * alpha)
+    classes = sorted(set(names), key=names.index)
+    protos, index = [], []
+    tint = np.array([0, 16, 64], np.float32) / 255
+    for name, tile in zip(names, tiles):
+        lum = (tile @ np.array([0.299, 0.587, 0.114], np.float32))[..., None]
+        night = 0.5 * (0.4 * tile + 0.6 * lum) + 0.5 * tint
+        for light in DAYLIGHT:
+            protos.append(light * tile + (1 - light) * night); index.append(classes.index(name))
+    return np.moveaxis(np.stack(protos), -1, 1), np.asarray(index), classes
+
+
+def classify_tiles(frames, protos, index):
+    """frames [..., 3, 63, 63] -> (class [..., 7, 9], per-pixel MSE to the nearest prototype [..., 7, 9])."""
+    lead, n = frames.shape[:-3], frames.dim() - 3
+    tiles = frames[..., :ROWS * TILE, :].unflatten(-2, (ROWS, TILE)).unflatten(-1, (COLS, TILE))  # [..., 3, R, 7, C, 7]
+    tiles = tiles.permute(*range(n), n + 1, n + 3, n, n + 2, n + 4)                               # [..., R, C, 3, 7, 7]
+    import torch
+    flat = tiles.reshape(-1, 3 * TILE * TILE).float()
+    p = protos.reshape(len(protos), -1).float()
+    with torch.autocast(frames.device.type, enabled=False):  # bf16 would blur the distances
+        dist = flat.square().sum(1, keepdim=True) - 2 * flat @ p.T + p.square().sum(1)[None]
+    best, arg = dist.min(1)
+    return index[arg].reshape(*lead, ROWS, COLS), (best.clamp_min(0) / p.shape[1]).reshape(*lead, ROWS, COLS)
 
 
 def main():
@@ -93,6 +150,15 @@ def main():
     sq_changed = {k: np.zeros(H) for k in keys}         # summed squared error over changed pixels
     n_changed = np.zeros(H)
     beats_copy = np.zeros(H)
+    # tile metric: every 7x7 map tile -> nearest Craftax texture class; a guess is right when its class is the real one
+    protos, proto_class, tile_classes = tile_prototypes()
+    protos, proto_class = torch.from_numpy(protos).to(device), torch.from_numpy(proto_class).to(device)
+    tile_keys = ("model", "copy_last", "recon")
+    tile_right = {k: np.zeros(H) for k in tile_keys}            # all map tiles
+    tile_right_changed = {k: np.zeros(H) for k in tile_keys}    # tiles whose real class differs from x_t's
+    tile_right_reliable = {k: np.zeros(H) for k in tile_keys}   # tiles the prototypes explain (real MSE < TILE_RELIABLE)
+    n_tiles_changed, n_tiles_reliable = np.zeros(H), np.zeros(H)
+    class_total, class_right = np.zeros(len(tile_classes)), np.zeros(len(tile_classes))  # model, over all steps
     reward_rows = []
     saved = {}
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
@@ -136,6 +202,21 @@ def main():
                 sq_changed[key] += (err * changed).sum(dim=(0, 2, 3, 4)).cpu().numpy()
             beats_copy += (((pred - target).square().mean(dim=(2, 3, 4))
                             < (first - target).square().mean(dim=(2, 3, 4))).float().sum(0).cpu().numpy())
+            real_class, real_err = classify_tiles(target, protos, proto_class)           # [B, H, 7, 9]
+            first_class = classify_tiles(first, protos, proto_class)[0]                 # [B, 1, 7, 9]
+            moved, reliable = real_class != first_class, real_err < TILE_RELIABLE
+            n_tiles_changed += moved.sum(dim=(0, 2, 3)).cpu().numpy()
+            n_tiles_reliable += reliable.sum(dim=(0, 2, 3)).cpu().numpy()
+            for key in tile_keys:
+                guess_class = first_class.expand_as(real_class) if key == "copy_last" else \
+                    classify_tiles(guesses[key], protos, proto_class)[0]
+                right = guess_class == real_class
+                tile_right[key] += right.sum(dim=(0, 2, 3)).cpu().numpy()
+                tile_right_changed[key] += (right & moved).sum(dim=(0, 2, 3)).cpu().numpy()
+                tile_right_reliable[key] += (right & reliable).sum(dim=(0, 2, 3)).cpu().numpy()
+                if key == "model":
+                    class_total += torch.bincount(real_class.flatten(), minlength=len(tile_classes)).cpu().numpy()
+                    class_right += torch.bincount(real_class[right], minlength=len(tile_classes)).cpu().numpy()
             for i, s in enumerate(batch):
                 if s in examples:
                     saved[f"{s[0]}_{s[1]}"] = dict(real=images[i].float().cpu().numpy(), model=pred[i].cpu().numpy(),
@@ -156,6 +237,15 @@ def main():
         changed_pixel_fraction_by_step=(n_changed / (n * PIXELS)).round(5).tolist(),
         mse_on_changed_pixels_by_step={k: (v / np.maximum(n_changed, 1)).round(6).tolist() for k, v in sq_changed.items()},
         model_beats_copy_last_fraction_by_step=(beats_copy / n).round(4).tolist(),
+        tile_accuracy_by_step={k: (v / (n * ROWS * COLS)).round(4).tolist() for k, v in tile_right.items()},
+        tile_accuracy_on_changed_by_step={k: (v / np.maximum(n_tiles_changed, 1)).round(4).tolist()
+                                          for k, v in tile_right_changed.items()},
+        tile_accuracy_on_reliable_by_step={k: (v / np.maximum(n_tiles_reliable, 1)).round(4).tolist()
+                                           for k, v in tile_right_reliable.items()},
+        tile_changed_fraction_by_step=(n_tiles_changed / (n * ROWS * COLS)).round(4).tolist(),
+        tile_reliable_fraction_by_step=(n_tiles_reliable / (n * ROWS * COLS)).round(4).tolist(),
+        tile_class_recall={c: dict(tiles=int(class_total[i]), recall=round(float(class_right[i] / class_total[i]), 4))
+                           for i, c in enumerate(tile_classes) if class_total[i] > 0},
         reward=dict(steps_with_reward=int(events.sum()), steps=len(reward_rows),
                     mean_prediction_on_reward_steps=float(reward_rows[events, 1].mean()) if events.any() else None,
                     mean_prediction_on_other_steps=float(reward_rows[~events, 1].mean()),
