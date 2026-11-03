@@ -314,6 +314,56 @@ class SLMWorldModel:
         """KL(q || p) per gaussian dimension / per categorical variable."""
         return gaussian_kl_dims(*q, *p) if self.z_kind == "gaussian" else categorical_kl_dims(q[0], p[0])
 
+    def _transition_parts(self, goals, actions, reasoning, h, z, device, states=None):
+        """Embeddings of one transition input per sample, up to its EOS: task, h tokens, z tokens, action text."""
+        torch = self._torch
+        embed = self.lm.get_input_embeddings()
+        eos = int(self.tok.eos_token_id)
+        hs = self.modules["h_prefix"](h).view(len(h), self.h_tokens, self.width)
+        zs = self.modules["z_prefix"](z).view(len(z), self.z_tokens, self.width)
+        samples = []
+        for index, (goal, action, text) in enumerate(zip(goals, actions.tolist(), reasoning)):
+            answer = f"ACTION: {ACTIONS[int(action)]}" if text is None else f"<reasoning>{text}</reasoning>\nACTION: {ACTIONS[int(action)]}"
+            if states is not None:
+                answer = f"State: {states[index]}\n{answer}"
+            head = embed(torch.tensor(self.ids(f"Task:\n{goal}\n\nPredict next environment state after action:\n"), device=device))
+            tail = embed(torch.tensor(self.ids(answer) + [eos], device=device))
+            samples.append([head, hs[index].to(head.dtype), zs[index].to(head.dtype), tail])
+        return samples
+
+    def _run_lm(self, pieces, device, **kwargs):
+        """The SLM on embedded sequences of different lengths, padded on the right."""
+        torch = self._torch
+        maximum = max(piece.shape[0] for piece in pieces)
+        padded = torch.stack([torch.cat((piece, piece.new_zeros(maximum - piece.shape[0], self.width))) for piece in pieces])
+        mask = torch.tensor([[1] * piece.shape[0] + [0] * (maximum - piece.shape[0]) for piece in pieces], device=device)
+        return self.lm(inputs_embeds=padded, attention_mask=mask, use_cache=False, **kwargs)
+
+    def describe(self, goals, actions, reasoning, h, z, device, states=None, max_tokens=200):
+        """Greedy text of the next state from the inputs of a transition: what --descriptions trains the SLM to write
+        after the EOS. Full forward per token (the prompts differ in length). Returns a string per sample."""
+        torch = self._torch
+        embed = self.lm.get_input_embeddings()
+        eos = int(self.tok.eos_token_id)
+        start = torch.tensor(self.ids("Next state:"), device=device)
+        pieces = [torch.cat(parts + [embed(start)], dim=0)
+                  for parts in self._transition_parts(goals, actions, reasoning, h, z, device, states)]
+        written = [[] for _ in pieces]
+        active = list(range(len(pieces)))
+        for _ in range(max_tokens):
+            logits = self._run_lm([pieces[i] for i in active], device).logits
+            rows = torch.arange(len(active), device=device)
+            ends = torch.tensor([pieces[i].shape[0] - 1 for i in active], device=device)
+            tokens = logits[rows, ends].float().argmax(-1).tolist()
+            for i, token in zip(active, tokens):
+                if token != eos:
+                    written[i].append(token)
+                    pieces[i] = torch.cat((pieces[i], embed(torch.tensor([token], device=device))), dim=0)
+            active = [i for i, token in zip(active, tokens) if token != eos]
+            if not active:
+                break
+        return [self.tok.decode(ids, skip_special_tokens=True).strip() for ids in written]
+
     def transition(self, goals, actions, reasoning, h, z, device, targets=None, states=None):
         """Run the SLM; h[t+1] and the heads read only its final (EOS) hidden state.
 
@@ -325,26 +375,15 @@ class SLMWorldModel:
         torch = self._torch
         embed = self.lm.get_input_embeddings()
         eos = int(self.tok.eos_token_id)
-        hs = self.modules["h_prefix"](h).view(len(h), self.h_tokens, self.width)
-        zs = self.modules["z_prefix"](z).view(len(z), self.z_tokens, self.width)
         pieces, ends, target_ids = [], [], []
-        for index, (goal, action, text) in enumerate(zip(goals, actions.tolist(), reasoning)):
-            answer = f"ACTION: {ACTIONS[int(action)]}" if text is None else f"<reasoning>{text}</reasoning>\nACTION: {ACTIONS[int(action)]}"
-            if states is not None:
-                answer = f"State: {states[index]}\n{answer}"
-            head = embed(torch.tensor(self.ids(f"Task:\n{goal}\n\nPredict next environment state after action:\n"), device=device))
-            tail = embed(torch.tensor(self.ids(answer) + [eos], device=device))
-            parts = [head, hs[index].to(head.dtype), zs[index].to(head.dtype), tail]
+        for index, parts in enumerate(self._transition_parts(goals, actions, reasoning, h, z, device, states)):
             ends.append(sum(part.shape[0] for part in parts) - 1)
             if targets is not None:
                 ids = self.ids(f"Next state: {targets[index]}") + [eos]
                 target_ids.append(ids)
                 parts.append(embed(torch.tensor(ids, device=device)))
             pieces.append(torch.cat(parts, dim=0))
-        maximum = max(piece.shape[0] for piece in pieces)
-        padded = torch.stack([torch.cat((piece, piece.new_zeros(maximum - piece.shape[0], self.width))) for piece in pieces])
-        mask = torch.tensor([[1] * piece.shape[0] + [0] * (maximum - piece.shape[0]) for piece in pieces], device=device)
-        output = self.lm(inputs_embeds=padded, attention_mask=mask, output_hidden_states=True, use_cache=False)
+        output = self._run_lm(pieces, device, output_hidden_states=True)
         rows = torch.arange(len(pieces), device=device)
         last = output.hidden_states[-1][rows, torch.tensor(ends, device=device)].float()
         if targets is None:

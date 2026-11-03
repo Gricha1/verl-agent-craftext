@@ -21,6 +21,11 @@ Tile metric (what is drawn where, not pixel MSE): each 7x7 map tile of a frame i
 Craftax-Classic texture prototype (grass, tree, water, sand, stone, player, cow, ...; tile_prototypes); accuracy =
 share of tiles whose guessed class equals the real one, also on tiles whose class changed since x_t.
 
+--descriptions state_descriptions.jsonl (models trained with --descriptions): at the steps --description-steps the SLM
+writes the text of x_{t+d} from the inputs of the transition into it, on the imagined branch (model) and on the filtered
+one, which saw the real x_{t+d-1} (filtered). Compared with Gemma's description of the real x_{t+d} by the facts of
+description_facts.py, next to copy_last (Gemma's description of x_t). Every --description-every-th start, as text is slow.
+
   python imagine_eval.py --checkpoint <run>/best.pt --raw-data <collection> --split-from <CE data dir> \
     --init-checkpoint <initial_random> [--reasoning reasoning.jsonl] --horizon 32 --out <dir>/<name>
 """
@@ -33,6 +38,7 @@ from pathlib import Path
 
 import numpy as np
 
+from description_facts import FactScore
 from train_slm_world_model import (PIXELS, build_model, load_episodes, read_image, save_json)
 
 CHANGE = 0.05  # a pixel "changed" when some channel differs from x_t by more than this
@@ -99,6 +105,9 @@ def main():
     parser.add_argument("--split-from", type=Path, required=True)
     parser.add_argument("--init-checkpoint", type=Path, help="SLM world models: initial_random of the phase-2 run")
     parser.add_argument("--reasoning", type=Path)
+    parser.add_argument("--descriptions", type=Path, help="state_descriptions.jsonl: also score the text the SLM writes")
+    parser.add_argument("--description-steps", default="1,4,8,16", help="imagined steps d at which the SLM writes text")
+    parser.add_argument("--description-every", type=int, default=4, help="write text at every n-th start")
     parser.add_argument("--horizon", type=int, default=32)
     parser.add_argument("--stride", type=int, default=4, help="distance between start steps t in an episode")
     parser.add_argument("--batch-size", type=int, default=32)
@@ -125,7 +134,16 @@ def main():
     reasoning = None
     if args.reasoning:
         reasoning = {(int(r["episode_id"]), int(r["step"])): r for r in map(json.loads, args.reasoning.open())}
-    episodes = load_episodes(args.raw_data, reasoning)
+    descriptions = None
+    if args.descriptions:
+        if model.lm is None or not config.get("descriptions"):
+            parser.error("--descriptions needs a model trained with --descriptions")
+        descriptions = {(int(r["episode_id"]), int(r["step"])): r["state_description"]
+                        for r in map(json.loads, args.descriptions.open())}
+    text_steps = [int(d) for d in args.description_steps.split(",")] if descriptions else []
+    text_scores = {d: {k: FactScore() for k in ("model", "filtered", "copy_last")} for d in text_steps}
+    text_rows = []
+    episodes = load_episodes(args.raw_data, reasoning, descriptions)
     valid_ids = {json.loads(line)["source_episode_id"] for line in (args.split_from / "valid.jsonl").open()}
     train = [e for k, e in episodes.items() if k not in valid_ids]
     valid = {k: e for k, e in episodes.items() if k in valid_ids}
@@ -180,8 +198,20 @@ def main():
             hf, zf = h, z                                     # filtered (autoencoder bound) branch
             start_recon = model.decode(h, z).float()          # x_t itself: reconstruction, the rollout starts here
             preds, recons = [], []
+            keep = [i for i in range(B) if (offset + i) % args.description_every == 0]
             for d in range(H):
                 rs = [r[d] for r in texts]
+                if d + 1 in text_steps and keep:  # the text of x_{t+d+1} comes from the inputs of the transition into it
+                    guess = {key: model.describe([goals[i] for i in keep], actions[keep, d], [rs[i] for i in keep],
+                                                 hi[keep], zi[keep], device)
+                             for key, hi, zi in (("model", h, z), ("filtered", hf, zf))}
+                    for n, i in enumerate(keep):
+                        real, first = windows[i][d + 1]["description"], windows[i][0]["description"]
+                        text_scores[d + 1]["model"].add(guess["model"][n], real, first)
+                        text_scores[d + 1]["filtered"].add(guess["filtered"][n], real, first)
+                        text_scores[d + 1]["copy_last"].add(first, real, first)
+                        text_rows.append(dict(episode=batch[i][0], t=batch[i][1], d=d + 1, goal=goals[i], real=real, first=first,
+                                              model=guess["model"][n], filtered=guess["filtered"][n]))
                 h, last = model.transition(goals, actions[:, d], rs, h, z, device)
                 z = model.mode(model.prior(h)) if args.prior_z == "mode" else model.sample(model.prior(h))
                 preds.append(model.decode(h, z).float())
@@ -253,8 +283,14 @@ def main():
                     mse_zero_baseline=float(np.mean(reward_rows[:, 2] ** 2))),
         examples=list(saved),
     )
+    if descriptions:
+        result["description_facts_by_step"] = {str(d): {k: v.result() for k, v in scores.items()}
+                                               for d, scores in text_scores.items()}
     args.out.mkdir(parents=True, exist_ok=True)
     save_json(args.out / "imagine_metrics.json", result)
+    if descriptions:
+        with (args.out / "imagine_descriptions.jsonl").open("w") as out:
+            out.writelines(json.dumps(row) + "\n" for row in text_rows)
     np.savez_compressed(args.out / "imagine_examples.npz",
                         **{f"{k}__{part}": np.asarray(v[part]) for k, v in saved.items() for part in ("real", "model", "recon", "start_recon", "actions", "rewards")})
     save_json(args.out / "imagine_examples_text.json", {k: dict(goal=v["goal"], reasoning=v["reasoning"]) for k, v in saved.items()})
