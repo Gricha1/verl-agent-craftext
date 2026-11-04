@@ -202,7 +202,8 @@ def main():
             loss.backward()
             grad_sum += float(torch.nn.utils.clip_grad_norm_(parameters, 1.0))
             optimizer.step()
-            nll_sum, token_sum, updates, batches = nll_sum + float(sums.sum()), token_sum + float(lengths.sum()), updates + 1, batches + 1
+            nll_sum, token_sum = nll_sum + float(sums.detach().sum()), token_sum + float(lengths.sum())
+            updates, batches = updates + 1, batches + 1
             if args.max_updates and updates >= args.max_updates:
                 break
         model.eval()
