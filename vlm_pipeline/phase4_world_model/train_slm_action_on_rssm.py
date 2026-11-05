@@ -140,7 +140,8 @@ class Policy:
         first = torch.tensor(starts, device=self.device) - 1
         for j in range(size):
             mask = torch.tensor([j < len(t) for t in targets], device=self.device)
-            total = total + logits[rows, first + j, ids[:, j]] * mask
+            # a row whose own target has ended can point past the padded length; its mask is 0
+            total = total + logits[rows, (first + j).clamp_max(logits.shape[1] - 1), ids[:, j]] * mask
         return total.view(len(goals), count)
 
     def act(self, goal, h, z, max_tokens):
