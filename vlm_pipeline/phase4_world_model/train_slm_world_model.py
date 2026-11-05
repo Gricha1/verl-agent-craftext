@@ -175,6 +175,12 @@ def value_targets(chunks, device):
     return rows[..., 0], rows[..., 1]
 
 
+def tile_targets(model, images):
+    """Class of every map tile, by the nearest texture prototype of the frame itself: [chunk][state][7][9]."""
+    from imagine_eval import classify_tiles
+    return classify_tiles(images, *model.tile_tables)[0]
+
+
 def normal(raw):
     import torch.nn.functional as F
     mu, s = raw.float().chunk(2, dim=-1)  # KL and sampling in fp32 under bf16 autocast
@@ -462,6 +468,14 @@ class RSSMWorldModel(SLMWorldModel):
         tasks = torch.tensor([self.value_tasks[goal] for goal in goals], device=h.device)
         return self.modules["value_head"](torch.cat((h, z, self.modules["value_task"](tasks)), dim=-1)).squeeze(-1).float()
 
+    def add_tiles(self, classes):
+        """Tile class head of --tile-loss-scale: the class of each of the 7 x 9 map tiles from h, z."""
+        self.tile_shape = (7, 9, len(classes))
+        self.modules["tile_head"] = mlp(self._torch.nn, self.h_size + self.z_dim, self.h_size, 2, 7 * 9 * len(classes))
+
+    def tile_logits(self, h, z):
+        return self.modules["tile_head"](self._torch.cat((h, z), dim=-1)).float().view(-1, *self.tile_shape)
+
 
 def build_model(config, init_checkpoint, device):
     """The world model described by a run config (experiment.json / checkpoint config), untrained."""
@@ -472,6 +486,8 @@ def build_model(config, init_checkpoint, device):
         model = RSSMWorldModel(config["h_size"], *z)
         if config.get("value_tasks"):
             model.add_value(config["value_tasks"])
+        if config.get("tile_classes"):
+            model.add_tiles(config["tile_classes"])
         return model.to(device)
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(init_checkpoint)
@@ -493,11 +509,11 @@ def balanced_kl(model, q, p, free, dyn_scale, rep_scale):
 
 
 def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoning, args, device, diagnostics=False,
-                   descriptions=None, states=None, values=None):
+                   descriptions=None, states=None, values=None, tiles=None):
     """descriptions: [chunk][step] text of the state after each transition (--descriptions), scored by the SLM.
     states: [chunk][step] text of the state before each transition (--description-input), fed to the SLM; like the
     reasoning text it comes from the dataset also in the overshooting rollouts.
-    values: (G_t, mask) of value_targets (--value-loss-scale)."""
+    values: (G_t, mask) of value_targets (--value-loss-scale). tiles: tile_targets (--tile-loss-scale)."""
     state_at = (lambda t: None) if states is None else (lambda t: [s[t] for s in states])
     import torch
     import torch.nn.functional as F
@@ -514,6 +530,8 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
     recon = torch.zeros((), device=device)
     reward_loss = torch.zeros((), device=device)
     continue_loss = torch.zeros((), device=device)
+    tile_loss, tile_right = torch.zeros((), device=device), 0.0
+    focus = getattr(args, "recon_focus", 0.0)
     for t in range(steps):
         rs = [r[t] for r in reasoning]
         if descriptions is None:
@@ -526,7 +544,18 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
         q = model.posterior(images[:, t + 1], h)
         z = model.sample(q)
         # Gaussian log-likelihood with unit variance: 1/2 squared error summed over the frame's pixels
-        recon = recon + .5 * (model.decode(h, z).float() - images[:, t + 1]).square().flatten(1).sum(-1).mean()
+        error = (model.decode(h, z).float() - images[:, t + 1]).square()
+        if focus:  # the pixels of a tile weigh (its error / the frame's mean error) ** focus, mean weight 1 per frame
+            cells = F.avg_pool2d(error.detach().mean(1, keepdim=True), 7)
+            weights = (cells / cells.mean((1, 2, 3), keepdim=True).clamp_min(1e-8)) ** focus
+            weights = weights / weights.mean((1, 2, 3), keepdim=True).clamp_min(1e-8)
+            error = error * F.interpolate(weights, scale_factor=7, mode="nearest")
+        recon = recon + .5 * error.flatten(1).sum(-1).mean()
+        if tiles is not None:
+            logits = model.tile_logits(h, z)
+            tile_loss = tile_loss + F.cross_entropy(logits.flatten(0, 2), tiles[:, t + 1].flatten(), weight=model.tile_weight,
+                                                    reduction="none").view(batch, -1).sum(-1).mean()
+            tile_right = tile_right + float((logits.detach().argmax(-1) == tiles[:, t + 1]).float().mean())
         reward_loss = reward_loss + F.mse_loss(model.modules["reward_head"](last).squeeze(-1).float(),
                                                rewards[:, t] * args.reward_target_scale)
         continue_loss = continue_loss + F.binary_cross_entropy_with_logits(
@@ -536,6 +565,7 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
         kl_raws.append(step_raw); kl_dims_all.append(step_dims)
         h_states.append(h); q_states.append(q); z_states.append(z)
     recon, reward_loss, continue_loss = recon / steps, reward_loss / steps, continue_loss / steps
+    tile_loss = tile_loss / steps
     value_loss = torch.zeros((), device=device)
     value_parts = {}
     if values is not None:
@@ -567,9 +597,13 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
                     terms += 1
                 z_roll = model.mode(p_roll)
         overshoot = overshoot / max(terms, 1)
-    loss = recon + kl_loss + overshoot + args.reward_loss_scale * reward_loss + args.continue_loss_scale * continue_loss
+    loss = (getattr(args, "recon_scale", 1.0) * recon + kl_loss + overshoot + args.reward_loss_scale * reward_loss
+            + args.continue_loss_scale * continue_loss)
     if values is not None:
         loss = loss + args.value_loss_scale * value_loss
+    if tiles is not None:
+        loss = loss + args.tile_loss_scale * tile_loss
+        value_parts.update(tile_loss=float(tile_loss.detach()), tile_accuracy=tile_right / steps)
     kl_raw_all = torch.cat(kl_raws)
     parts = dict(world_loss=float(loss.detach()), reconstruction=float(recon.detach()),
                  reconstruction_mse_per_pixel=float(recon.detach()) * 2 / PIXELS,
@@ -635,7 +669,8 @@ def evaluate(model, root, chunks, args, device):
                                              device, diagnostics=want,
                                              descriptions=next_descriptions(part) if args.descriptions else None,
                                              states=current_descriptions(part) if args.description_input else None,
-                                             values=value_targets(part, device) if args.value_loss_scale else None)
+                                             values=value_targets(part, device) if args.value_loss_scale else None,
+                                             tiles=tile_targets(model, images) if args.tile_loss_scale else None)
             if want:
                 diag = diagnose(model, images, actions, goals, reasoning, extra, args, device)
             count += 1
@@ -703,6 +738,11 @@ def main():
     parser.add_argument("--value-burn-in", type=int, default=7, help="chunk states before this one get no value loss")
     parser.add_argument("--value-stop-gradient", action="store_true",
                         help="train only the head; by default the value loss also trains the RSSM, as the reward head")
+    parser.add_argument("--recon-scale", type=float, default=1.0, help="weight of the reconstruction term against the KL")
+    parser.add_argument("--recon-focus", type=float, default=0.0,
+                        help="> 0: tiles with a larger reconstruction error weigh more, (error / mean error) ** focus")
+    parser.add_argument("--tile-loss-scale", type=float, default=0.0,
+                        help="--transition gru: > 0 adds the tile class head, frequency-weighted cross-entropy summed over tiles")
     parser.add_argument("--seed", type=int, default=7950)
     args = parser.parse_args()
     if args.transition == "slm" and args.init_checkpoint is None:
@@ -711,8 +751,8 @@ def main():
         parser.error("--description-input needs --descriptions")
     if args.transition == "gru" and (args.reasoning or args.descriptions):
         parser.error("--transition gru reads and writes no text: drop --reasoning / --descriptions")
-    if args.value_loss_scale and args.transition != "gru":
-        parser.error("--value-loss-scale needs --transition gru")
+    if (args.value_loss_scale or args.tile_loss_scale) and args.transition != "gru":
+        parser.error("--value-loss-scale and --tile-loss-scale need --transition gru")
     import torch
     from torch.utils.tensorboard import SummaryWriter
     global IMAGE_CACHE
@@ -739,6 +779,25 @@ def main():
     train_episodes = {k: v for k, v in episodes.items() if k not in valid_ids}
     valid_episodes = {k: v for k, v in episodes.items() if k in valid_ids}
     train_chunks, valid_chunks = make_chunks(train_episodes, args.horizon), make_chunks(valid_episodes, args.horizon)
+    if args.tile_loss_scale:
+        from imagine_eval import classify_tiles, tile_prototypes
+        protos, index, names = tile_prototypes()
+        model.tile_tables = (torch.from_numpy(protos).to(device), torch.from_numpy(index).to(device))
+        args.tile_classes = list(names)
+        chooser = random.Random(args.seed)
+        frames = [item["image"] for episode in train_episodes.values() for item in episode]
+        counts = torch.zeros(len(names), device=device)
+        sample = chooser.sample(frames, min(4096, len(frames)))
+        for offset in range(0, len(sample), 256):
+            batch = np.stack([read_image(args.raw_data, name) for name in sample[offset:offset + 256]])
+            counts += classify_tiles(torch.from_numpy(batch).to(device), *model.tile_tables)[0].flatten().bincount(minlength=len(names))
+        share = counts / counts.sum()
+        model.add_tiles(args.tile_classes)
+        model.to(device)
+        # inverse frequency over the classes seen, capped: a tile of a very rare class weighs at most 100
+        model.tile_weight = (1 / share.clamp_min(1e-4) / (share > 0).sum()).clamp_max(100.0)
+        print(json.dumps({"tile_share": {n: round(float(v), 5) for n, v in zip(names, share)},
+                          "tile_weight": {n: round(float(v), 2) for n, v in zip(names, model.tile_weight)}}), flush=True)
     if args.out.exists() and any(args.out.iterdir()):
         raise FileExistsError(args.out)
     args.out.mkdir(parents=True, exist_ok=True)
@@ -773,7 +832,8 @@ def main():
                         model, images, actions, rewards, continuation, goals, rs, args, device,
                         descriptions=next_descriptions(part) if args.descriptions else None,
                         states=current_descriptions(part) if args.description_input else None,
-                        values=value_targets(part, device) if args.value_loss_scale else None)
+                        values=value_targets(part, device) if args.value_loss_scale else None,
+                        tiles=tile_targets(model, images) if args.tile_loss_scale else None)
                 # the losses are batch means: weight each micro-batch by its share of the batch
                 (loss * len(part) / len(batch_chunks)).backward()
                 for key, value in micro_parts.items():
