@@ -161,7 +161,7 @@ class CraftextVectorAgentLoopWorker(AgentLoopWorker):
             if self.rssm_socket:
                 # A training rollout also feeds the RSSM buffer; validation only reads the state.
                 rssm = await asyncio.to_thread(RssmClient, self.rssm_socket, learn=not validate)
-                latents = await asyncio.to_thread(rssm.first, frames)
+                latents = await asyncio.to_thread(rssm.first, env.float_frames)
             tasks = [str(info.get("instruction", "Complete the CrafText task safely.")) for info in infos]
             action_histories: list[list[str]] = [[] for _ in range(num_envs)]
             reasoning_histories: list[list[str]] = [[] for _ in range(num_envs)]
@@ -245,7 +245,7 @@ class CraftextVectorAgentLoopWorker(AgentLoopWorker):
                         [actions[lane].action_name for lane in lanes],
                         [float(rewards[lane]) for lane in lanes],
                         [bool(dones[lane]) or turn + 1 >= self.max_env_steps for lane in lanes],
-                        [next_frames[lane] for lane in lanes],
+                        [env.float_frames[lane] for lane in lanes],
                     )
                 for lane in lanes:
                     reward, done = float(rewards[lane]), bool(dones[lane])

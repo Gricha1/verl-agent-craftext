@@ -225,7 +225,8 @@ class Service:
         torch, device, rssm = self.torch, self.device, self.acting
         learn, h, z, lanes_of, new = False, None, None, None, []
         latents = lambda: torch.cat((h.float(), z.float()), dim=-1).cpu().numpy()
-        frames_of = lambda frames: torch.from_numpy(np.moveaxis(frames, -1, 1).copy()).to(device).float() / 255
+        frames_of = lambda frames: torch.from_numpy(np.moveaxis(frames, -1, 1).copy()).to(device)  # float 0..1
+        byte = lambda frame: (frame * 255).round().astype(np.uint8)  # the buffer, like --cache-images of the RSSM run
         while True:
             try:
                 message = connection.recv()
@@ -239,7 +240,7 @@ class Service:
                     connection.send(None)
                 elif name == "first":
                     frames = rest[0]
-                    lanes_of = [dict(frames=[f], actions=[], rewards=[], terminals=[]) for f in frames]
+                    lanes_of = [dict(frames=[byte(f)], actions=[], rewards=[], terminals=[]) for f in frames]
                     with torch.inference_mode(), self.autocast():
                         h = torch.zeros(len(frames), rssm.h_size, device=device)
                         z = rssm.mode(rssm.posterior(frames_of(frames), h))
@@ -262,7 +263,7 @@ class Service:
                             new.append((np.moveaxis(np.stack(episode["frames"]), -1, 1), np.array(episode["actions"], dtype=np.int64),
                                         np.array(episode["rewards"], dtype=np.float32), np.array(episode["terminals"], dtype=bool)))
                         else:
-                            episode["frames"].append(frames[i])
+                            episode["frames"].append(byte(frames[i]))
                     connection.send(latents())
                 else:
                     raise ValueError(f"unknown message {name}")

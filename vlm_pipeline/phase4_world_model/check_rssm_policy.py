@@ -55,23 +55,11 @@ def main() -> None:
         threading.Thread(target=Service(options).serve, daemon=True).start()
         while not (options.out / "ready").exists():
             time.sleep(.1)
-        import train_slm_action_on_rssm as bc
-        exact = torch.cat((hs, zs), dim=-1)
-        # veRL's frames are uint8, so the table to match is BC's code on rounded frames
-        as_float = bc.read_image
-        bc.read_image = lambda root, name: (as_float(root, name) * 255).round() / 255
-        rounded_h, rounded_z, _ = episode_latents(rssm, args.raw_data, chosen, device)
-        bc.read_image = as_float
-        rounded = torch.cat((rounded_h, rounded_z), dim=-1)
-        size = rssm.h_size
-        print(json.dumps(dict(rounding_h_mean_abs=float((exact - rounded)[:, :size].abs().mean()),
-                              rounding_codes_changed=float((exact[:, size:] != rounded[:, size:]).any(-1).float().mean()),
-                              rounding_bits_changed=float((exact[:, size:] != rounded[:, size:]).float().sum(-1).mean() / 2))), flush=True)
         worst = 0.0
         for key, episode in chosen.items():
             connection = Client(str(socket), family="AF_UNIX", authkey=b"rssm")
             connection.send(("begin", False)); connection.recv()
-            frames = [np.moveaxis((read_image(args.raw_data, item["image"]) * 255).round().astype(np.uint8), 0, -1) for item in episode]
+            frames = [np.moveaxis(read_image(args.raw_data, item["image"]), 0, -1) for item in episode]
             connection.send(("first", frames[0][None]))
             states = [connection.recv()[0]]
             for t in range(len(frames) - 1):
@@ -79,9 +67,9 @@ def main() -> None:
                 states.append(connection.recv()[0])
             connection.close()
             served = torch.from_numpy(np.stack(states))
-            table = rounded[offset[key]:offset[key] + len(frames)]
+            table = torch.cat((hs, zs), dim=-1)[offset[key]:offset[key] + len(frames)]
             worst = max(worst, float((served - table).abs().max()))
-        print(json.dumps(dict(state_max_abs_difference=worst, frames_as_uint8=True)), flush=True)
+        print(json.dumps(dict(state_max_abs_difference=worst)), flush=True)
 
     # logits: one state, the prompt, a target
     from transformers import AutoModelForCausalLM, AutoTokenizer

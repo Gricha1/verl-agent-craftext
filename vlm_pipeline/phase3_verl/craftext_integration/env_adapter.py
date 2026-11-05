@@ -123,10 +123,17 @@ class CraftextJaxVectorEnv:
             frames.append(frame.astype(np.uint8, copy=False))
         return frames
 
+    def _keep_float_frames(self, observations: list[Any]) -> None:
+        """Frames in 0..1 before rounding, what the RSSM states of phase 4 BC were computed from.
+
+        One step of 1/255 is small for a CNN, but it changes about 3 of the 32 z codes of the RSSM posterior mode."""
+        self.float_frames = [np.asarray(observation, dtype=np.float32) / 255.0 for observation in observations]
+
     def reset(self):
         observations, infos = self._env.reset()
         text = self._observations(infos)
         if self.use_pixel_obs:
+            self._keep_float_frames(observations)
             return text, self._frames(observations), infos
         return text, infos
 
@@ -138,6 +145,7 @@ class CraftextJaxVectorEnv:
         observations, rewards, dones, infos = self._env.step([action.action_id for action in actions])
         text = self._observations(infos)
         if self.use_pixel_obs:
+            self._keep_float_frames(observations)
             return text, self._frames(observations), rewards, dones, infos
         return text, rewards, dones, infos
 
