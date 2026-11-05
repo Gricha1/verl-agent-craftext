@@ -99,7 +99,12 @@ class _CrafterVisionMixin:
         self.crafter_visual_tokens = visual_tokens
         self.crafter_input_shape = front_end_input(config)
         if getattr(config, "crafter_freeze_front_end", False):
-            self.vision.requires_grad_(False)
+            # Buffers, not requires_grad=False: from_pretrained makes loaded parameters trainable again, and FSDP with
+            # use_orig_params=False refuses a mix of frozen and trainable tensors. The checkpoint keys stay the same.
+            for module in self.vision.modules():
+                for name, parameter in list(module.named_parameters(recurse=False)):
+                    del module._parameters[name]
+                    module.register_buffer(name, parameter.data)
 
     def _has_visual_ids(self, input_ids: Optional[torch.LongTensor]) -> bool:
         return input_ids is not None and any(
