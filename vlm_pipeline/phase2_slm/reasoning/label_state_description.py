@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import http.client
 import json
 import threading
 import time
@@ -62,18 +63,31 @@ def main() -> None:
 
     lock = threading.Lock()
     url = args.url.rstrip("/") + "/chat/completions"
-    totals = dict(requests=0, prompt_tokens=0, output_tokens=0, retries=0)
+    totals = dict(requests=0, prompt_tokens=0, output_tokens=0, retries=0, dropped=0)
     started = time.monotonic()
+
+    def post(body: dict) -> dict:
+        """Resend when the server drops the connection or restarts; only an outage of about half an hour stops the run."""
+        for attempt in range(40):
+            request = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                             headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(request, timeout=300) as response:
+                    return json.load(response)
+            except (OSError, http.client.HTTPException) as error:  # OSError: URLError, resets, timeouts
+                with lock:
+                    totals["dropped"] += 1
+                if attempt == 39:
+                    raise
+                print(json.dumps(dict(dropped=repr(error), attempt=attempt)), flush=True)
+                time.sleep(min(60, 2 ** attempt))
 
     def label(row: dict) -> dict:
         body = dict(model=args.model, messages=messages(row), temperature=0.0, top_p=1.0, max_tokens=args.max_tokens,
                     response_format=dict(type="json_schema",
                                          json_schema=dict(name="state_description", strict=True, schema=SCHEMA)))
         for attempt in range(3):
-            request = urllib.request.Request(url, data=json.dumps(body).encode(),
-                                             headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(request, timeout=300) as response:
-                result = json.load(response)
+            result = post(body)
             choice = result["choices"][0]
             try:
                 text = " ".join(json.loads(choice["message"]["content"])["description"].split())
