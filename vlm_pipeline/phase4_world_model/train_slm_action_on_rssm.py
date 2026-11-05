@@ -175,7 +175,9 @@ def train(args):
     h, z, offset = episode_latents(rssm, args.raw_data, episodes, device)
     index = lambda rows: torch.tensor([offset[r["key"][0]] + r["key"][1] for r in rows])
     args.out.mkdir(parents=True, exist_ok=True)
-    parameters = list(model.lm.parameters()) + [p for k in ADAPTERS for p in model.modules[k].parameters()]
+    for key in ADAPTERS:
+        model.modules[key].requires_grad_(not args.freeze_adapters)
+    parameters = list(model.lm.parameters()) + ([] if args.freeze_adapters else [p for k in ADAPTERS for p in model.modules[k].parameters()])
     optimizer = torch.optim.AdamW(parameters, lr=args.lr, weight_decay=.01)
     save_json(args.out / "experiment.json", {**{k: str(v) for k, v in vars(args).items()}, "train_rows": len(train_rows),
                                             "valid_rows": len(valid_rows), "latents_seconds": time.time() - started})
@@ -315,6 +317,7 @@ def main():
     run.add_argument("--lr", type=float, default=1e-4)
     run.add_argument("--save-every", type=int, default=4)
     run.add_argument("--valid-stride", type=int, default=8)
+    run.add_argument("--freeze-adapters", action="store_true", help="train only the SLM; h_prefix and z_prefix stay as the description model left them")
     run.add_argument("--max-updates", type=int, default=0)
     check = commands.choices["eval"]
     check.add_argument("--checkpoint", type=Path, required=True)
