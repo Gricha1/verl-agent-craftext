@@ -45,8 +45,9 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -60,6 +61,9 @@ ACTIONS = (
 ACTION_ID = {name: i for i, name in enumerate(ACTIONS)}
 PIXELS = 63 * 63 * 3
 VALUE_TASK_SIZE, VALUE_UNITS, VALUE_LAYERS = 64, 256, 3  # task embedding, MLP of the value head
+WORD_SIZE = 1024  # at most this many words per word head, the most frequent of the train text
+WORD_NORM = 25.0  # about the words of a description: keeps the summed word loss near a few nats
+IMAGINED_WORDS = (1, 2, 4, 8, 16)  # imagined steps scored by the word head
 
 
 def save_json(path: Path, value: dict) -> None:
@@ -179,6 +183,32 @@ def tile_targets(model, images):
     """Class of every map tile, by the nearest texture prototype of the frame itself: [chunk][state][7][9]."""
     from imagine_eval import classify_tiles
     return classify_tiles(images, *model.tile_tables)[0]
+
+
+def words_of(text: str) -> set:
+    return set(re.findall(r"[a-z]+", text.lower()))
+
+
+def word_vocabulary(texts) -> tuple:
+    """The WORD_SIZE most frequent words of the text, with their share of texts."""
+    counts = Counter(word for text in texts for word in words_of(text))
+    top = counts.most_common(WORD_SIZE)
+    return [word for word, _ in top], [count / max(len(texts), 1) for _, count in top]
+
+
+def word_targets(chunks, key, size, device):
+    """Multi-hot words, [chunk][state][word]."""
+    import torch
+    out = np.zeros((len(chunks), len(chunks[0]), size), dtype=np.float32)
+    for c, chunk in enumerate(chunks):
+        for t, item in enumerate(chunk):
+            out[c, t, item[key]] = 1.0
+    return torch.from_numpy(out).to(device)
+
+
+def word_bce(logits, targets, weight):
+    import torch.nn.functional as F
+    return F.binary_cross_entropy_with_logits(logits.float(), targets, pos_weight=weight, reduction="none").sum(-1).mean() / WORD_NORM
 
 
 def normal(raw):
@@ -468,6 +498,13 @@ class RSSMWorldModel(SLMWorldModel):
         tasks = torch.tensor([self.value_tasks[goal] for goal in goals], device=h.device)
         return self.modules["value_head"](torch.cat((h, z, self.modules["value_task"](tasks)), dim=-1)).squeeze(-1).float()
 
+    def add_words(self, name, size):
+        """Word heads (--word-descriptions, --word-stories): which words the text of a state has, from h, z."""
+        self.modules[name] = mlp(self._torch.nn, self.h_size + self.z_dim, self.h_size, 2, size)
+
+    def words(self, name, h, z):
+        return self.modules[name](self._torch.cat((h, z), dim=-1))
+
     def add_tiles(self, classes):
         """Tile class head of --tile-loss-scale: the class of each of the 7 x 9 map tiles from h, z."""
         self.tile_shape = (7, 9, len(classes))
@@ -488,6 +525,10 @@ def build_model(config, init_checkpoint, device):
             model.add_value(config["value_tasks"])
         if config.get("tile_classes"):
             model.add_tiles(config["tile_classes"])
+        if config.get("word_vocabulary"):
+            model.add_words("word_head", len(config["word_vocabulary"]))
+        if config.get("story_vocabulary"):
+            model.add_words("story_head", len(config["story_vocabulary"]))
         return model.to(device)
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(init_checkpoint)
@@ -509,11 +550,12 @@ def balanced_kl(model, q, p, free, dyn_scale, rep_scale):
 
 
 def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoning, args, device, diagnostics=False,
-                   descriptions=None, states=None, values=None, tiles=None):
+                   descriptions=None, states=None, values=None, tiles=None, words=None, stories=None):
     """descriptions: [chunk][step] text of the state after each transition (--descriptions), scored by the SLM.
     states: [chunk][step] text of the state before each transition (--description-input), fed to the SLM; like the
     reasoning text it comes from the dataset also in the overshooting rollouts.
-    values: (G_t, mask) of value_targets (--value-loss-scale). tiles: tile_targets (--tile-loss-scale)."""
+    values: (G_t, mask) of value_targets (--value-loss-scale). tiles: tile_targets (--tile-loss-scale).
+    words, stories: word_targets of the text of each state and of the story after it."""
     state_at = (lambda t: None) if states is None else (lambda t: [s[t] for s in states])
     import torch
     import torch.nn.functional as F
@@ -531,6 +573,7 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
     reward_loss = torch.zeros((), device=device)
     continue_loss = torch.zeros((), device=device)
     tile_loss, tile_right = torch.zeros((), device=device), 0.0
+    word_loss, story_loss, imagined_loss, imagined_terms = [torch.zeros((), device=device) for _ in range(3)] + [0]
     focus = getattr(args, "recon_focus", 0.0)
     for t in range(steps):
         rs = [r[t] for r in reasoning]
@@ -556,6 +599,10 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
             tile_loss = tile_loss + F.cross_entropy(logits.flatten(0, 2), tiles[:, t + 1].flatten(), weight=model.tile_weight,
                                                     reduction="none").view(batch, -1).sum(-1).mean()
             tile_right = tile_right + float((logits.detach().argmax(-1) == tiles[:, t + 1]).float().mean())
+        if words is not None:
+            word_loss = word_loss + word_bce(model.words("word_head", h, z), words[:, t + 1], model.word_weight)
+        if stories is not None:
+            story_loss = story_loss + word_bce(model.words("story_head", h, z), stories[:, t + 1], model.story_weight)
         reward_loss = reward_loss + F.mse_loss(model.modules["reward_head"](last).squeeze(-1).float(),
                                                rewards[:, t] * args.reward_target_scale)
         continue_loss = continue_loss + F.binary_cross_entropy_with_logits(
@@ -566,6 +613,7 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
         h_states.append(h); q_states.append(q); z_states.append(z)
     recon, reward_loss, continue_loss = recon / steps, reward_loss / steps, continue_loss / steps
     tile_loss = tile_loss / steps
+    word_loss, story_loss = word_loss / steps, story_loss / steps
     value_loss = torch.zeros((), device=device)
     value_parts = {}
     if values is not None:
@@ -591,6 +639,10 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
                 h_roll, _ = model.transition(goals, actions[:, anchor + distance - 1], rs, h_roll, z_roll, device,
                                              states=state_at(anchor + distance - 1))
                 p_roll = model.prior(h_roll)
+                if words is not None and distance in IMAGINED_WORDS:
+                    imagined_loss = imagined_loss + word_bce(model.words("word_head", h_roll, model.sample(p_roll)),
+                                                             words[:, anchor + distance], model.word_weight)
+                    imagined_terms += 1
                 if distance > 1:
                     raw = model.kl_dims(detach(q_states[anchor + distance]), p_roll).sum(-1)
                     overshoot = overshoot + args.kl_dyn * raw.clamp_min(args.free_nats).mean()
@@ -601,6 +653,13 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
             + args.continue_loss_scale * continue_loss)
     if values is not None:
         loss = loss + args.value_loss_scale * value_loss
+    if words is not None:
+        imagined_loss = imagined_loss / max(imagined_terms, 1)
+        loss = loss + args.word_loss_scale * (word_loss + imagined_loss)
+        value_parts.update(word_loss=float(word_loss.detach()), word_imagined_loss=float(imagined_loss.detach()))
+    if stories is not None:
+        loss = loss + args.word_loss_scale * story_loss
+        value_parts.update(story_word_loss=float(story_loss.detach()))
     if tiles is not None:
         loss = loss + args.tile_loss_scale * tile_loss
         value_parts.update(tile_loss=float(tile_loss.detach()), tile_accuracy=tile_right / steps)
@@ -670,7 +729,9 @@ def evaluate(model, root, chunks, args, device):
                                              descriptions=next_descriptions(part) if args.descriptions else None,
                                              states=current_descriptions(part) if args.description_input else None,
                                              values=value_targets(part, device) if args.value_loss_scale else None,
-                                             tiles=tile_targets(model, images) if args.tile_loss_scale else None)
+                                             tiles=tile_targets(model, images) if args.tile_loss_scale else None,
+                                             words=word_targets(part, "word_ids", len(args.word_vocabulary), device) if args.word_descriptions else None,
+                                             stories=word_targets(part, "story_ids", len(args.story_vocabulary), device) if args.word_stories else None)
             if want:
                 diag = diagnose(model, images, actions, goals, reasoning, extra, args, device)
             count += 1
@@ -738,6 +799,11 @@ def main():
     parser.add_argument("--value-burn-in", type=int, default=7, help="chunk states before this one get no value loss")
     parser.add_argument("--value-stop-gradient", action="store_true",
                         help="train only the head; by default the value loss also trains the RSSM, as the reward head")
+    parser.add_argument("--word-descriptions", type=Path,
+                        help="--transition gru: state_descriptions.jsonl; a head finds the words of each state's text, also on imagined states")
+    parser.add_argument("--word-stories", type=Path,
+                        help="segment_stories.jsonl (needs --word-descriptions): another head finds the words of the story of the next segment")
+    parser.add_argument("--word-loss-scale", type=float, default=1.0)
     parser.add_argument("--recon-scale", type=float, default=1.0, help="weight of the reconstruction term against the KL")
     parser.add_argument("--recon-focus", type=float, default=0.0,
                         help="> 0: tiles with a larger reconstruction error weigh more, (error / mean error) ** focus")
@@ -751,8 +817,10 @@ def main():
         parser.error("--description-input needs --descriptions")
     if args.transition == "gru" and (args.reasoning or args.descriptions):
         parser.error("--transition gru reads and writes no text: drop --reasoning / --descriptions")
-    if (args.value_loss_scale or args.tile_loss_scale) and args.transition != "gru":
-        parser.error("--value-loss-scale and --tile-loss-scale need --transition gru")
+    if (args.value_loss_scale or args.tile_loss_scale or args.word_descriptions) and args.transition != "gru":
+        parser.error("--value-loss-scale, --tile-loss-scale and --word-descriptions need --transition gru")
+    if args.word_stories and not args.word_descriptions:
+        parser.error("--word-stories needs --word-descriptions")
     import torch
     from torch.utils.tensorboard import SummaryWriter
     global IMAGE_CACHE
@@ -778,6 +846,34 @@ def main():
     valid_ids ={json.loads(line)["source_episode_id"] for line in (args.split_from / "valid.jsonl").open()}
     train_episodes = {k: v for k, v in episodes.items() if k not in valid_ids}
     valid_episodes = {k: v for k, v in episodes.items() if k in valid_ids}
+    if args.word_descriptions:
+        text = {(int(r["episode_id"]), int(r["step"])): r["state_description"] for r in map(json.loads, args.word_descriptions.open())}
+        args.word_vocabulary, share = word_vocabulary([text[k, item["step"]] for k, e in train_episodes.items() for item in e])
+        index = {word: i for i, word in enumerate(args.word_vocabulary)}
+        for key, episode in episodes.items():
+            for item in episode:
+                item["word_ids"] = [index[w] for w in words_of(text[key, item["step"]]) if w in index]
+        share = torch.tensor(share, device=device).clamp(1e-4, 1 - 1e-4)
+        model.word_weight = ((1 - share) / share).sqrt().clamp_max(20.0)
+        model.add_words("word_head", len(args.word_vocabulary))
+        if args.word_stories:
+            stories = [json.loads(line) for line in args.word_stories.open()]
+            story_text = {(r["episode_id"], r["first"]): r["what_happened"] + " " + " ".join(r["events"]).replace("_", " ") for r in stories}
+            starts = defaultdict(list)
+            for episode_id, first in sorted(story_text):
+                starts[episode_id].append(first)
+            args.story_vocabulary, share = word_vocabulary([v for (k, _), v in story_text.items() if k in train_episodes])
+            index = {word: i for i, word in enumerate(args.story_vocabulary)}
+            for key, episode in episodes.items():
+                for item in episode:  # the story of the segment that holds the next step
+                    following = [f for f in starts[key] if f <= item["step"] + 1][-1]
+                    item["story_ids"] = [index[w] for w in words_of(story_text[key, following]) if w in index]
+            share = torch.tensor(share, device=device).clamp(1e-4, 1 - 1e-4)
+            model.story_weight = ((1 - share) / share).sqrt().clamp_max(20.0)
+            model.add_words("story_head", len(args.story_vocabulary))
+        model.to(device)
+        print(json.dumps({"words": len(args.word_vocabulary), "zombie_in_vocabulary": "zombie" in args.word_vocabulary,
+                          "cow_in_vocabulary": "cow" in args.word_vocabulary}), flush=True)
     train_chunks, valid_chunks = make_chunks(train_episodes, args.horizon), make_chunks(valid_episodes, args.horizon)
     if args.tile_loss_scale:
         from imagine_eval import classify_tiles, tile_prototypes
@@ -833,7 +929,9 @@ def main():
                         descriptions=next_descriptions(part) if args.descriptions else None,
                         states=current_descriptions(part) if args.description_input else None,
                         values=value_targets(part, device) if args.value_loss_scale else None,
-                        tiles=tile_targets(model, images) if args.tile_loss_scale else None)
+                        tiles=tile_targets(model, images) if args.tile_loss_scale else None,
+                        words=word_targets(part, "word_ids", len(args.word_vocabulary), device) if args.word_descriptions else None,
+                        stories=word_targets(part, "story_ids", len(args.story_vocabulary), device) if args.word_stories else None)
                 # the losses are batch means: weight each micro-batch by its share of the batch
                 (loss * len(part) / len(batch_chunks)).backward()
                 for key, value in micro_parts.items():
