@@ -59,6 +59,7 @@ ACTIONS = (
 )
 ACTION_ID = {name: i for i, name in enumerate(ACTIONS)}
 PIXELS = 63 * 63 * 3
+VALUE_TASK_SIZE, VALUE_UNITS, VALUE_LAYERS = 64, 256, 3  # task embedding, MLP of the value head
 
 
 def save_json(path: Path, value: dict) -> None:
@@ -97,13 +98,26 @@ def load_episodes(root: Path, reasoning: dict | None, descriptions: dict | None 
                                      description=description,
                                      image=Path(str(extra["observation_path"])).name,
                                      instruction=str(extra["instruction"]), reward=float(extra["reward"]),
-                                     terminal=bool(extra["done"])))
+                                     terminal=bool(extra["done"]), done=bool(extra["done"]),
+                                     success=bool(extra["success"])))
     for episode_id, episode in episodes.items():
         episode.sort(key=lambda r: r["step"])
         if [r["step"] for r in episode] != list(range(len(episode))):
             raise ValueError(f"non-contiguous episode {episode_id}")
         episode[-1]["terminal"] = True  # a collection cutoff also ends the rollout
     return dict(episodes)
+
+
+def add_value_targets(episodes, gamma: float):
+    """Return of the task, not of the Craftax reward (which pays any achievement): G_t = gamma^(T-1-t) when the
+    instruction is completed on arriving at the last state T, else 0. The last state and episodes cut by the
+    collection (no done) have no target."""
+    for episode in episodes.values():
+        last = len(episode) - 1
+        success, ended = episode[-1]["success"], episode[-1]["done"]
+        for t, item in enumerate(episode):
+            item["value"] = float(success) * gamma ** (last - 1 - t) if t < last else 0.0
+            item["value_mask"] = float(ended and t < last)
 
 
 def make_chunks(episodes, length: int):
@@ -151,6 +165,14 @@ def batch_from_chunks(root, chunks, device):
     goals = [chunk[0]["instruction"] for chunk in chunks]
     return (torch.from_numpy(images).to(device), torch.from_numpy(actions).to(device),
             torch.from_numpy(rewards).to(device), torch.from_numpy(continuation).to(device), goals, reasoning)
+
+
+def value_targets(chunks, device):
+    """(G_t, mask), [chunk][state], states 0..horizon."""
+    import torch
+    rows = torch.tensor([[(item["value"], item["value_mask"]) for item in chunk] for chunk in chunks],
+                        dtype=torch.float32, device=device)
+    return rows[..., 0], rows[..., 1]
 
 
 def normal(raw):
@@ -428,6 +450,18 @@ class RSSMWorldModel(SLMWorldModel):
         h = self.modules["gru"](self.modules["gru_input"](self._torch.cat((z, a), dim=-1)), h)
         return h, h
 
+    def add_value(self, tasks):
+        """Value head of --value-loss-scale: V(h_t, z_t, g), the RSSM itself has no task."""
+        nn = self._torch.nn
+        self.value_tasks = {task: index for index, task in enumerate(tasks)}
+        self.modules["value_task"] = nn.Embedding(len(tasks), VALUE_TASK_SIZE)
+        self.modules["value_head"] = mlp(nn, self.h_size + self.z_dim + VALUE_TASK_SIZE, VALUE_UNITS, VALUE_LAYERS, 1)
+
+    def value(self, h, z, goals):
+        torch = self._torch
+        tasks = torch.tensor([self.value_tasks[goal] for goal in goals], device=h.device)
+        return self.modules["value_head"](torch.cat((h, z, self.modules["value_task"](tasks)), dim=-1)).squeeze(-1).float()
+
 
 def build_model(config, init_checkpoint, device):
     """The world model described by a run config (experiment.json / checkpoint config), untrained."""
@@ -435,7 +469,10 @@ def build_model(config, init_checkpoint, device):
          config.get("decoder_input", "hz"), config.get("posterior_input", "hx"), config.get("cnn_depth", 32),
          config.get("mlp_units"), config.get("mlp_layers", 1))
     if config.get("transition", "slm") == "gru":
-        return RSSMWorldModel(config["h_size"], *z).to(device)
+        model = RSSMWorldModel(config["h_size"], *z)
+        if config.get("value_tasks"):
+            model.add_value(config["value_tasks"])
+        return model.to(device)
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(init_checkpoint)
     lm = AutoModelForCausalLM.from_pretrained(init_checkpoint).to(device)
@@ -456,10 +493,11 @@ def balanced_kl(model, q, p, free, dyn_scale, rep_scale):
 
 
 def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoning, args, device, diagnostics=False,
-                   descriptions=None, states=None):
+                   descriptions=None, states=None, values=None):
     """descriptions: [chunk][step] text of the state after each transition (--descriptions), scored by the SLM.
     states: [chunk][step] text of the state before each transition (--description-input), fed to the SLM; like the
-    reasoning text it comes from the dataset also in the overshooting rollouts."""
+    reasoning text it comes from the dataset also in the overshooting rollouts.
+    values: (G_t, mask) of value_targets (--value-loss-scale)."""
     state_at = (lambda t: None) if states is None else (lambda t: [s[t] for s in states])
     import torch
     import torch.nn.functional as F
@@ -472,7 +510,7 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
     # z_0 is regularised like every other z: against p(z_0 | h_0 = 0)
     kl_loss, kl_raw, kl_dims = balanced_kl(model, q, model.prior(h), args.free_nats, args.kl_dyn, args.kl_rep)
     kl_raws, kl_dims_all = [kl_raw], [kl_dims]
-    h_states, q_states = [h], [q]
+    h_states, q_states, z_states = [h], [q], [z]
     recon = torch.zeros((), device=device)
     reward_loss = torch.zeros((), device=device)
     continue_loss = torch.zeros((), device=device)
@@ -496,8 +534,22 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
         step_kl, step_raw, step_dims = balanced_kl(model, q, p, args.free_nats, args.kl_dyn, args.kl_rep)
         kl_loss = kl_loss + step_kl
         kl_raws.append(step_raw); kl_dims_all.append(step_dims)
-        h_states.append(h); q_states.append(q)
+        h_states.append(h); q_states.append(q); z_states.append(z)
     recon, reward_loss, continue_loss = recon / steps, reward_loss / steps, continue_loss / steps
+    value_loss = torch.zeros((), device=device)
+    value_parts = {}
+    if values is not None:
+        # states after the burn-in only: h_0 = 0 at a chunk start knows no past, later use filters --context frames
+        first = args.value_burn_in
+        cut = (lambda t: t.detach()) if args.value_stop_gradient else (lambda t: t)
+        predicted = torch.stack([model.value(cut(h_states[t]), cut(z_states[t]), goals)
+                                 for t in range(first, steps + 1)], dim=1)
+        targets, mask = values[0][:, first:], values[1][:, first:]
+        value_loss = ((predicted - targets).square() * mask).sum() / mask.sum().clamp_min(1)
+        kept = mask > 0
+        pair = torch.stack((predicted.detach()[kept], targets[kept]))
+        value_parts = dict(value_loss=float(value_loss.detach()),
+                           value_corr=float(torch.nan_to_num(torch.corrcoef(pair)[0, 1])) if pair.shape[1] > 1 else 0.0)
     kl_loss = kl_loss / (steps + 1)
     overshoot, terms = torch.zeros((), device=device), 0
     depth = args.overshoot_depth or args.horizon
@@ -516,12 +568,14 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
                 z_roll = model.mode(p_roll)
         overshoot = overshoot / max(terms, 1)
     loss = recon + kl_loss + overshoot + args.reward_loss_scale * reward_loss + args.continue_loss_scale * continue_loss
+    if values is not None:
+        loss = loss + args.value_loss_scale * value_loss
     kl_raw_all = torch.cat(kl_raws)
     parts = dict(world_loss=float(loss.detach()), reconstruction=float(recon.detach()),
                  reconstruction_mse_per_pixel=float(recon.detach()) * 2 / PIXELS,
                  kl_loss=float(kl_loss.detach()), kl_raw=float(kl_raw_all.mean()),
                  overshooting_kl=float(overshoot.detach()), reward_loss=float(reward_loss.detach()),
-                 continue_loss=float(continue_loss.detach()))
+                 continue_loss=float(continue_loss.detach()), **value_parts)
     if descriptions is not None:
         # log-likelihood of the next-state text, summed over its tokens (like the pixel term), mean over transitions
         text_nll, text_tokens = text_nll / steps, text_tokens / steps
@@ -580,7 +634,8 @@ def evaluate(model, root, chunks, args, device):
             _, parts, extra = loss_for_batch(model, images, actions, rewards, continuation, goals, reasoning, args,
                                              device, diagnostics=want,
                                              descriptions=next_descriptions(part) if args.descriptions else None,
-                                             states=current_descriptions(part) if args.description_input else None)
+                                             states=current_descriptions(part) if args.description_input else None,
+                                             values=value_targets(part, device) if args.value_loss_scale else None)
             if want:
                 diag = diagnose(model, images, actions, goals, reasoning, extra, args, device)
             count += 1
@@ -642,6 +697,12 @@ def main():
     parser.add_argument("--max-updates", type=int, default=0, help="smoke: stop after this many updates")
     parser.add_argument("--save-every", type=int, default=0,
                         help="also keep epoch_<N>.pt every N epochs (best.pt follows the validation world loss only)")
+    parser.add_argument("--value-loss-scale", type=float, default=0.0,
+                        help="--transition gru: > 0 adds the task value head V(h_t, z_t, g), MSE to the task return")
+    parser.add_argument("--value-gamma", type=float, default=0.99)
+    parser.add_argument("--value-burn-in", type=int, default=7, help="chunk states before this one get no value loss")
+    parser.add_argument("--value-stop-gradient", action="store_true",
+                        help="train only the head; by default the value loss also trains the RSSM, as the reward head")
     parser.add_argument("--seed", type=int, default=7950)
     args = parser.parse_args()
     if args.transition == "slm" and args.init_checkpoint is None:
@@ -650,6 +711,8 @@ def main():
         parser.error("--description-input needs --descriptions")
     if args.transition == "gru" and (args.reasoning or args.descriptions):
         parser.error("--transition gru reads and writes no text: drop --reasoning / --descriptions")
+    if args.value_loss_scale and args.transition != "gru":
+        parser.error("--value-loss-scale needs --transition gru")
     import torch
     from torch.utils.tensorboard import SummaryWriter
     global IMAGE_CACHE
@@ -667,6 +730,11 @@ def main():
         descriptions = {(int(r["episode_id"]), int(r["step"])): r["state_description"]
                         for r in map(json.loads, args.descriptions.open())}
     episodes = load_episodes(args.raw_data, reasoning, descriptions)
+    if args.value_loss_scale:
+        add_value_targets(episodes, args.value_gamma)
+        args.value_tasks = sorted({episode[0]["instruction"] for episode in episodes.values()})
+        model.add_value(args.value_tasks)
+        model.to(device)
     valid_ids ={json.loads(line)["source_episode_id"] for line in (args.split_from / "valid.jsonl").open()}
     train_episodes = {k: v for k, v in episodes.items() if k not in valid_ids}
     valid_episodes = {k: v for k, v in episodes.items() if k in valid_ids}
@@ -704,7 +772,8 @@ def main():
                     loss, micro_parts, _ = loss_for_batch(
                         model, images, actions, rewards, continuation, goals, rs, args, device,
                         descriptions=next_descriptions(part) if args.descriptions else None,
-                        states=current_descriptions(part) if args.description_input else None)
+                        states=current_descriptions(part) if args.description_input else None,
+                        values=value_targets(part, device) if args.value_loss_scale else None)
                 # the losses are batch means: weight each micro-batch by its share of the batch
                 (loss * len(part) / len(batch_chunks)).backward()
                 for key, value in micro_parts.items():
