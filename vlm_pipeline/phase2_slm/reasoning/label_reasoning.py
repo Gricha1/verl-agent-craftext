@@ -134,6 +134,9 @@ def main() -> None:
     parser.add_argument("--concurrency", type=int, default=32)
     parser.add_argument("--max-tokens", type=int, default=160)
     parser.add_argument("--limit", type=int, default=0, help="label only the first N rows (smoke)")
+    parser.add_argument("--context", nargs="*", type=Path, default=[],
+                        help="more states files: rows of the same episodes, read for the hindsight facts, not labelled. "
+                             "Needed whenever --states does not hold whole episodes")
     args = parser.parse_args()
 
     rows = [json.loads(line) for line in args.states.open()]
@@ -142,7 +145,8 @@ def main() -> None:
     done = set()
     if args.out.exists():
         done = {(r["episode_id"], r["step"]) for r in map(json.loads, args.out.open())}
-    following = {(r["episode_id"], r["step"]): r for r in rows}
+    following = {(r["episode_id"], r["step"]): r for path in args.context for r in map(json.loads, path.open())}
+    following.update({(r["episode_id"], r["step"]): r for r in rows})
     todo = [r for r in rows if (r["episode_id"], r["step"]) not in done]
     print(json.dumps(dict(rows=len(rows), done=len(done), todo=len(todo))), flush=True)
 
@@ -162,7 +166,7 @@ def main() -> None:
                     response_format=dict(type="json_schema",
                                          json_schema=dict(name="explained_action", strict=True, schema=schema)))
         problem = None
-        for attempt in range(3):
+        for attempt in range(6):
             request = urllib.request.Request(url, data=json.dumps(body).encode(),
                                              headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(request, timeout=300) as response:
@@ -183,7 +187,7 @@ def main() -> None:
             if ok:
                 reasoning = " ".join(item["reasoning"].split())
                 problem = inconsistency(row, reasoning)
-                if problem is None or attempt == 2:
+                if problem is None or attempt >= 2:
                     return dict(episode_id=row["episode_id"], step=row["step"], action=row["teacher_action"],
                                 reasoning=reasoning, effective=is_effective, consistent=problem is None,
                                 attempts=attempt + 1)
@@ -191,6 +195,8 @@ def main() -> None:
                     dict(role="assistant", content=choice["message"]["content"]),
                     dict(role="user", content=f"Correction: {problem} Rewrite the reasoning so that it leads to "
                                               f"{row['teacher_action']} and matches the observation.")]
+            elif choice.get("finish_reason") == "length":
+                body["temperature"] = 0.7  # at temperature 0 the same cut-off sentence comes back every time
             with lock:
                 totals["retries"] += 1
         raise RuntimeError(f"no valid answer for episode {row['episode_id']} step {row['step']}")
