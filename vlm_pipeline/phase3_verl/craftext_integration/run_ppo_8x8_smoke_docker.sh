@@ -148,7 +148,14 @@ TORCHINDUCTOR_CACHE_DIR=/workspace/run/torchinductor
 HF_HOME=/workspace/run/hf
 ENVEOF
 
+# DOCKER_GPUS=true: a plain docker daemon (h200), where the GPU is chosen by --gpus, not by the aicenter3 wrapper.
+GPU_MOUNT=()
+if [[ "${DOCKER_GPUS:-false}" == true ]]; then
+  GPU_MOUNT=(--gpus "\"device=${GPU_ID}\"")
+fi
+
 env CUDA_VISIBLE_DEVICES="${GPU_ID}" docker run --rm --name="${CONTAINER_NAME}" \
+  "${GPU_MOUNT[@]}" \
   --network host \
   --shm-size=8g \
   --entrypoint=bash \
