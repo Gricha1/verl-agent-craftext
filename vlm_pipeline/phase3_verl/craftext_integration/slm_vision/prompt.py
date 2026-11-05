@@ -36,6 +36,11 @@ def vision_image_only_prompt(instruction: str, action_history: list[str] | None 
     )
 
 
+def rssm_prompt(instruction: str) -> str:
+    """HEAD of phase4_world_model/train_slm_action_on_rssm.py; the h, z tokens follow it."""
+    return f"Task:\n{instruction}\n\nChoose the next action:\n"
+
+
 def parse_slm_action(response: str) -> ParsedAction:
     """ZeroHero ``parse_action``: the text after the last ``ACTION:``; else NOOP.
 

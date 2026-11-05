@@ -25,30 +25,37 @@ from vllm.multimodal.processing import (
 )
 from vllm.sequence import IntermediateTensors
 
-
-_MARKERS = tuple(f"<|crafter_visual_{i}|>" for i in range(4))
+from .modeling_crafter_vision_slm import build_front_end, front_end_input
 
 
 class CrafterVisionProcessingInfo(BaseProcessingInfo):
-    """vLLM-side declaration: one CrafText frame becomes four soft tokens."""
+    """vLLM-side declaration: one observation becomes ``crafter_visual_tokens`` soft tokens."""
 
     def get_supported_mm_limits(self):
         return {"image": 1}
 
     def get_mm_max_tokens_per_item(self, seq_len, mm_counts):
-        return {"image": 4}
+        return {"image": len(self.get_hf_config().crafter_visual_token_ids)}
 
 
 class CrafterVisionDummyInputsBuilder(BaseDummyInputsBuilder):
     def get_dummy_text(self, mm_counts):
-        return "".join(_MARKERS) * mm_counts.get("image", 0)
+        ids = self.info.get_hf_config().crafter_visual_token_ids
+        return "".join(self.info.get_tokenizer().convert_ids_to_tokens(list(ids))) * mm_counts.get("image", 0)
 
     def get_dummy_mm_data(self, seq_len, mm_counts, mm_options):
-        return {"image": self._get_dummy_images(width=63, height=63, num_images=mm_counts.get("image", 0))}
+        count = mm_counts.get("image", 0)
+        shape = front_end_input(self.info.get_hf_config())
+        if len(shape) == 1:
+            return {"image": [np.zeros((shape[0], 1, 1), dtype=np.float32)] * count}
+        return {"image": self._get_dummy_images(width=63, height=63, num_images=count)}
 
 
 class CrafterVisionMultiModalProcessor(BaseMultiModalProcessor):
-    """Keep caller token ids intact; convert an RGB CrafText frame to CHW float."""
+    """Keep caller token ids intact; convert an RGB CrafText frame to CHW float.
+
+    With an RSSM policy the "image" is the state h_t, z_t as a float32 array [h + z, 1, 1]: vLLM hashes, schedules and
+    hands it over like a frame, and only this processor and the adapters know what it holds."""
 
     def _get_mm_fields_config(self, hf_inputs, hf_processor_mm_kwargs):
         return {"pixel_values": MultiModalFieldConfig.batched("image")}
@@ -61,9 +68,18 @@ class CrafterVisionMultiModalProcessor(BaseMultiModalProcessor):
         if isinstance(prompt_ids, str):
             prompt_ids = self.info.get_tokenizer().encode(prompt_ids, add_special_tokens=False)
         images = inputs.mm_data_items.get_items("image", ImageProcessorItems)
+        config = self.info.get_hf_config()
+        shape = front_end_input(config)
+        marker_ids = [int(token) for token in config.crafter_visual_token_ids]
         pixels = []
         for index in range(images.get_count()):
             image = images.get(index)
+            if len(shape) == 1:
+                latent = torch.as_tensor(np.asarray(image, dtype=np.float32)).flatten()
+                if latent.numel() != shape[0]:
+                    raise ValueError(f"Expected an RSSM state of {shape[0]} numbers, got {latent.numel()}")
+                pixels.append(latent.contiguous())
+                continue
             # The vLLM profiler supplies PIL images; real CrafText rollouts
             # supply uint8 numpy arrays.  Normalise both at this boundary.
             pixel = torch.as_tensor(np.asarray(image))
@@ -74,7 +90,6 @@ class CrafterVisionMultiModalProcessor(BaseMultiModalProcessor):
             if tuple(pixel.shape) != (3, 63, 63):
                 raise ValueError(f"Expected CrafText RGB [63,63,3], got {tuple(pixel.shape)}")
             pixels.append(pixel.contiguous().to(dtype=torch.float32).div_(255.0))
-        marker_ids = [self.info.get_tokenizer().convert_tokens_to_ids(marker) for marker in _MARKERS]
         ranges = []
         cursor = 0
         for _ in pixels:
@@ -84,9 +99,10 @@ class CrafterVisionMultiModalProcessor(BaseMultiModalProcessor):
                     if prompt_ids[pos : pos + len(marker_ids)] == marker_ids
                 )
             except StopIteration as exc:
-                raise ValueError("CrafText image supplied without four visual marker ids") from exc
-            ranges.append(PlaceholderRange(offset=offset, length=4, is_embed=torch.ones(4, dtype=torch.bool)))
-            cursor = offset + 4
+                raise ValueError("CrafText observation supplied without its visual marker ids") from exc
+            size = len(marker_ids)
+            ranges.append(PlaceholderRange(offset=offset, length=size, is_embed=torch.ones(size, dtype=torch.bool)))
+            cursor = offset + size
         mm_kwargs = MultiModalKwargsItems.from_hf_inputs(
             {"pixel_values": torch.stack(pixels)}, self._get_mm_fields_config({}, {})
         )
@@ -115,8 +131,8 @@ class CrafterVisionQwen3ForCausalLM(TransformersForCausalLM, SupportsMultiModal)
 
     def embed_multimodal(self, *, pixel_values: torch.Tensor, **kwargs) -> torch.Tensor:
         """Encode frames in vLLM, so its scheduler owns the visual prefill."""
-        if pixel_values.ndim != 4 or tuple(pixel_values.shape[1:]) != (3, 63, 63):
-            raise ValueError(f"Expected CrafText pixels [B,3,63,63], got {tuple(pixel_values.shape)}")
+        if tuple(pixel_values.shape[1:]) != self.input_shape:
+            raise ValueError(f"Expected CrafText input [B,{self.input_shape}], got {tuple(pixel_values.shape)}")
         visual = self.vision(pixel_values.to(dtype=next(self.vision.parameters()).dtype))
         return visual.view(-1, self.visual_tokens, visual.shape[-1] // self.visual_tokens)
 
@@ -149,12 +165,8 @@ class CrafterVisionQwen3ForCausalLM(TransformersForCausalLM, SupportsMultiModal)
         # Do not create this small extension on ``meta``.  Unlike the
         # Transformer tree, it has ordinary PyTorch parameters and vLLM's
         # generic loader fills the allocated tensors directly.
-        self.vision = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=5, padding=2), nn.ReLU(), nn.MaxPool2d(2),
-            nn.Conv2d(32, 32, kernel_size=5, padding=2), nn.ReLU(), nn.MaxPool2d(2),
-            nn.Conv2d(32, 32, kernel_size=5, padding=2), nn.ReLU(), nn.MaxPool2d(2),
-            nn.Flatten(), nn.Linear(32 * 7 * 7, self.visual_tokens * int(config.hidden_size)),
-        )
+        self.vision = build_front_end(config)
+        self.input_shape = front_end_input(config)
 
     def compute_logits(self, hidden_states: torch.Tensor, *args, **kwargs):
         # The visual marker ids are input-only placeholders; they must never be
@@ -166,8 +178,8 @@ class CrafterVisionQwen3ForCausalLM(TransformersForCausalLM, SupportsMultiModal)
         return logits
 
     def _visual_embeds(self, input_ids: torch.Tensor, pixel_values: torch.Tensor) -> torch.Tensor:
-        if pixel_values.ndim != 4 or tuple(pixel_values.shape[1:]) != (3, 63, 63):
-            raise ValueError(f"Expected Crafter pixels [B,3,63,63], got {tuple(pixel_values.shape)}")
+        if tuple(pixel_values.shape[1:]) != self.input_shape:
+            raise ValueError(f"Expected Crafter input [B,{self.input_shape}], got {tuple(pixel_values.shape)}")
         visual = self.vision(pixel_values.to(dtype=next(self.vision.parameters()).dtype))
         visual = visual.view(-1, self.visual_tokens, visual.shape[-1] // self.visual_tokens)
         markers = torch.stack([input_ids.eq(token_id) for token_id in self.visual_token_ids], dim=1)

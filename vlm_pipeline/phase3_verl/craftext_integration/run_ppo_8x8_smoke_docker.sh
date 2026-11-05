@@ -137,6 +137,12 @@ USE_TORCH_COMPILE=${USE_TORCH_COMPILE:-true}
 ROLLOUT_MAX_MODEL_LEN=${ROLLOUT_MAX_MODEL_LEN:-1536}
 ROLLOUT_MAX_NUM_SEQS=${ROLLOUT_MAX_NUM_SEQS:-${NUM_ENVS}}
 TENSORBOARD_DIR=/workspace/run/tensorboard
+RSSM_CHECKPOINT=${RSSM_CHECKPOINT:+/workspace/rssm.pt}
+RSSM_PACK=${RSSM_PACK:+/workspace/rssm_pack}
+RSSM_UPDATES=${RSSM_UPDATES:-0}
+RSSM_EMA=${RSSM_EMA:-0.995}
+RSSM_SAVE_EVERY=${RSSM_SAVE_EVERY:-50}
+RSSM_TOKENS=${RSSM_TOKENS:-55}
 COMET_API_KEY
 COMET_WORKSPACE
 PYTHON_BIN=python3
@@ -154,8 +160,18 @@ if [[ "${DOCKER_GPUS:-false}" == true ]]; then
   GPU_MOUNT=(--gpus "\"device=${GPU_ID}\"")
 fi
 
+# RSSM policy: the world-model checkpoint and the packed teacher frames of phase4_world_model/rssm_service.py.
+RSSM_MOUNTS=()
+if [[ -n "${RSSM_CHECKPOINT:-}" ]]; then
+  RSSM_MOUNTS+=(-v "${RSSM_CHECKPOINT}:/workspace/rssm.pt:ro")
+fi
+if [[ -n "${RSSM_PACK:-}" ]]; then
+  RSSM_MOUNTS+=(-v "${RSSM_PACK}:/workspace/rssm_pack:ro")
+fi
+
 env CUDA_VISIBLE_DEVICES="${GPU_ID}" docker run --rm --name="${CONTAINER_NAME}" \
   "${GPU_MOUNT[@]}" \
+  "${RSSM_MOUNTS[@]}" \
   --network host \
   --shm-size=8g \
   --entrypoint=bash \

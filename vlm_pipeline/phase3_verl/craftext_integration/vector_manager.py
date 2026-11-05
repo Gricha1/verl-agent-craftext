@@ -30,7 +30,8 @@ from verl.utils.tensordict_utils import list_of_dict_to_tensordict
 from .actions import ParsedAction
 from .agent_loop import CraftextAgentLoopOutput
 from .env_adapter import CraftextJaxVectorEnv
-from .slm_vision.prompt import VISUAL_SLM_ACTION_HISTORY, parse_slm_action, vision_image_only_prompt
+from .rssm_client import RssmClient
+from .slm_vision.prompt import VISUAL_SLM_ACTION_HISTORY, parse_slm_action, rssm_prompt, vision_image_only_prompt
 
 
 class _TokenCodec(AgentLoopBase):
@@ -85,6 +86,10 @@ class CraftextVectorAgentLoopWorker(AgentLoopWorker):
         self.invalid_action_penalty_coef = float(cfg.get("invalid_action_penalty_coef", 0.0))
         self.validation_trajectory_dir = cfg.get("validation_trajectory_dir")
         self.validation_trajectory_limit = int(cfg.get("validation_trajectory_limit", 10))
+        # RSSM policy: the socket of rssm_service.py, which turns frames into h_t, z_t.  The slots then hold
+        # rssm_tokens soft tokens at the end of the prompt, as in phase 4 BC.
+        self.rssm_socket = str(cfg.get("rssm_socket") or "")
+        self.rssm_tokens = int(cfg.get("rssm_tokens", 55))
         self.codec = _TokenCodec(
             trainer_config=DictConfigWrap(self.config),
             server_manager=self.llm_client,
@@ -95,10 +100,11 @@ class CraftextVectorAgentLoopWorker(AgentLoopWorker):
             data_config=DictConfigWrap(self.config.data),
         )
         self.visual_marker_ids = [
-            int(self.tokenizer.convert_tokens_to_ids(f"<|crafter_visual_{index}|>")) for index in range(4)
+            int(self.tokenizer.convert_tokens_to_ids(f"<|crafter_visual_{index}|>"))
+            for index in range(self.rssm_tokens if self.rssm_socket else 4)
         ]
         if any(token_id < 0 or token_id == self.tokenizer.unk_token_id for token_id in self.visual_marker_ids):
-            raise RuntimeError("Visual SLM tokenizer is missing the four reserved CrafText marker tokens")
+            raise RuntimeError("Visual SLM tokenizer is missing the reserved CrafText marker tokens")
 
     async def generate_sequences(self, batch: TensorDict) -> None:
         validate = bool(batch["validate"]) if "validate" in batch else False
@@ -148,8 +154,14 @@ class CraftextVectorAgentLoopWorker(AgentLoopWorker):
             config_name=self.env_config_name,
             use_pixel_obs=True,
         )
+        rssm: RssmClient | None = None
         try:
             observations, frames, infos = env.reset()
+            latents = None
+            if self.rssm_socket:
+                # A training rollout also feeds the RSSM buffer; validation only reads the state.
+                rssm = await asyncio.to_thread(RssmClient, self.rssm_socket, learn=not validate)
+                latents = await asyncio.to_thread(rssm.first, frames)
             tasks = [str(info.get("instruction", "Complete the CrafText task safely.")) for info in infos]
             action_histories: list[list[str]] = [[] for _ in range(num_envs)]
             reasoning_histories: list[list[str]] = [[] for _ in range(num_envs)]
@@ -169,14 +181,20 @@ class CraftextVectorAgentLoopWorker(AgentLoopWorker):
                         continue
                     # The visual SLM has no chat template: its CE prompt is plain
                     # text, tokenised as-is, after the four visual marker ids.
-                    prompt_text = vision_image_only_prompt(
-                        tasks[lane],
-                        action_histories[lane][-self.visual_prompt_history :] if self.visual_prompt_history else None,
-                        reasoning=self.reasoning_prompt,
-                    )
-                    prompt_ids[lane] = self.visual_marker_ids + self.tokenizer.encode(
-                        prompt_text, add_special_tokens=False
-                    )
+                    if rssm is not None:
+                        prompt_ids[lane] = (
+                            self.tokenizer.encode(rssm_prompt(tasks[lane]), add_special_tokens=False)
+                            + self.visual_marker_ids
+                        )
+                    else:
+                        prompt_text = vision_image_only_prompt(
+                            tasks[lane],
+                            action_histories[lane][-self.visual_prompt_history :] if self.visual_prompt_history else None,
+                            reasoning=self.reasoning_prompt,
+                        )
+                        prompt_ids[lane] = self.visual_marker_ids + self.tokenizer.encode(
+                            prompt_text, add_special_tokens=False
+                        )
                     if len(prompt_ids[lane]) > self.codec.rollout_config.prompt_length:
                         raise RuntimeError(
                             f"Visual SLM prompt has {len(prompt_ids[lane])} tokens, above rollout.prompt_length"
@@ -190,7 +208,7 @@ class CraftextVectorAgentLoopWorker(AgentLoopWorker):
                             request_id=f"craftext-{uuid4().hex}",
                             prompt_ids=prompt_ids[lane],
                             sampling_params=params,
-                            image_data=[frames[lane]],
+                            image_data=[frames[lane] if rssm is None else latents[lane][:, None, None]],
                             priority=lane,
                         )
                     )
@@ -219,6 +237,16 @@ class CraftextVectorAgentLoopWorker(AgentLoopWorker):
                     actions.append(parse_slm_action(decoded[lane]))
 
                 next_observations, next_frames, rewards, dones, next_infos = env.step(actions)
+                next_latents = latents
+                if rssm is not None:
+                    next_latents = await asyncio.to_thread(
+                        rssm.step,
+                        lanes,
+                        [actions[lane].action_name for lane in lanes],
+                        [float(rewards[lane]) for lane in lanes],
+                        [bool(dones[lane]) or turn + 1 >= self.max_env_steps for lane in lanes],
+                        [next_frames[lane] for lane in lanes],
+                    )
                 for lane in lanes:
                     reward, done = float(rewards[lane]), bool(dones[lane])
                     transition = {
@@ -268,9 +296,13 @@ class CraftextVectorAgentLoopWorker(AgentLoopWorker):
                                 ),
                                 # Stored separately from text telemetry and moved to
                                 # ``multi_modal_inputs`` at the TQ boundary below.
-                                "craftext_pixel_values": torch.from_numpy(
-                                    frames[lane].transpose(2, 0, 1).copy()
-                                ).unsqueeze(0).to(dtype=torch.float32).div_(255.0),
+                                "craftext_pixel_values": (
+                                    torch.from_numpy(frames[lane].transpose(2, 0, 1).copy())
+                                    .unsqueeze(0).to(dtype=torch.float32).div_(255.0)
+                                    if rssm is None
+                                    # the state the action came from: PPO re-scores it without the RSSM
+                                    else torch.from_numpy(latents[lane].copy()).unsqueeze(0)
+                                ),
                             },
                         )
                     )
@@ -285,7 +317,7 @@ class CraftextVectorAgentLoopWorker(AgentLoopWorker):
                             ]
                     if done or turn + 1 >= self.max_env_steps:
                         active[lane] = False
-                observations, frames, infos = next_observations, next_frames, next_infos
+                observations, frames, infos, latents = next_observations, next_frames, next_infos, next_latents
 
             for lane in range(num_envs):
                 if self.reward_mode == "remaining_return":
@@ -364,6 +396,8 @@ class CraftextVectorAgentLoopWorker(AgentLoopWorker):
             raise
         finally:
             env.close()
+            if rssm is not None:
+                await asyncio.to_thread(rssm.close)
 
     async def _publish(
         self, outputs_by_lane: list[list[CraftextAgentLoopOutput]], prompts: list[dict[str, Any]], *, partition: str

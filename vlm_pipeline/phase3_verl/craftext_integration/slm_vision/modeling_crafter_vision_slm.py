@@ -13,6 +13,10 @@ Two heads share this visual front end:
 * ``CrafterVisionQwen3ForTokenClassification`` -- the PPO critic.  veRL's
   value engine reads ``logits[..., 0]`` of a ``num_labels=1`` token classifier,
   so the critic sees the same frame as the actor instead of a text-only prompt.
+
+With ``config.crafter_rssm`` the same slots hold the world-model state instead of a frame: phase 4's ``h_prefix`` and
+``z_prefix`` map h_t, z_t to ``h_tokens + z_tokens`` soft tokens, and ``pixel_values`` is ``[batch, h + z]``.  The agent
+loop gets h_t, z_t from phase4_world_model/rssm_service.py; they are data here, PPO never reaches into the RSSM.
 """
 from __future__ import annotations
 
@@ -38,20 +42,45 @@ def _sdpa_if_flash_attn_missing(config) -> None:
         config._attn_implementation = "sdpa"
 
 
-def _build_vision(visual_tokens: int, hidden_size: int) -> nn.Sequential:
+class LatentAdapters(nn.Module):
+    """h_prefix, z_prefix of phase 4: [B, h + z] to [B, (h_tokens + z_tokens) * width], h tokens first."""
+
+    def __init__(self, h_size: int, z_size: int, h_tokens: int, z_tokens: int, width: int):
+        super().__init__()
+        self.sizes = (h_size, z_size)
+        self.h_prefix = nn.Sequential(nn.Linear(h_size, h_size), nn.GELU(), nn.Linear(h_size, h_tokens * width))
+        self.z_prefix = nn.Sequential(nn.Linear(z_size, z_size), nn.GELU(), nn.Linear(z_size, z_tokens * width))
+
+    def forward(self, latents: torch.Tensor) -> torch.Tensor:
+        h, z = latents.split(self.sizes, dim=-1)
+        return torch.cat((self.h_prefix(h), self.z_prefix(z)), dim=-1)
+
+
+def build_front_end(config) -> nn.Module:
+    """What turns one observation into the soft tokens: the CE CNN, or the adapters of ``config.crafter_rssm``."""
+    width = int(config.hidden_size)
+    rssm = getattr(config, "crafter_rssm", None)
+    if rssm:
+        return LatentAdapters(int(rssm["h_size"]), int(rssm["z_size"]), int(rssm["h_tokens"]), int(rssm["z_tokens"]), width)
     return nn.Sequential(
         nn.Conv2d(3, 32, kernel_size=5, padding=2), nn.ReLU(), nn.MaxPool2d(2),
         nn.Conv2d(32, 32, kernel_size=5, padding=2), nn.ReLU(), nn.MaxPool2d(2),
         nn.Conv2d(32, 32, kernel_size=5, padding=2), nn.ReLU(), nn.MaxPool2d(2),
-        nn.Flatten(), nn.Linear(32 * 7 * 7, visual_tokens * hidden_size),
+        nn.Flatten(), nn.Linear(32 * 7 * 7, int(getattr(config, "crafter_visual_tokens", 4)) * width),
     )
+
+
+def front_end_input(config) -> tuple:
+    """Shape of one observation at ``pixel_values``."""
+    rssm = getattr(config, "crafter_rssm", None)
+    return (int(rssm["h_size"]) + int(rssm["z_size"]),) if rssm else (3, 63, 63)
 
 
 class _CrafterVisionMixin:
     """CNN soft-token injection shared by the policy and the critic.
 
-    ``pixel_values`` is ``[frames, 3, 63, 63]`` in the [0, 1] range.  It is
-    deliberately required whenever the reserved visual ids occur: a veRL
+    ``pixel_values`` is ``[frames, 3, 63, 63]`` in the [0, 1] range, or ``[states, h + z]`` with
+    ``config.crafter_rssm``.  It is deliberately required whenever the reserved visual ids occur: a veRL
     integration must fail loudly rather than silently running a text-only SLM.
     Frames are matched, in order, to the rows that contain the markers; each
     such row must contain each marker exactly once.  Rows without markers are
@@ -66,8 +95,11 @@ class _CrafterVisionMixin:
         self.crafter_visual_token_ids = tuple(int(x) for x in config.crafter_visual_token_ids)
         if len(self.crafter_visual_token_ids) != visual_tokens:
             raise ValueError("crafter_visual_token_ids must have crafter_visual_tokens entries")
-        self.vision = _build_vision(visual_tokens, int(config.hidden_size))
+        self.vision = build_front_end(config)
         self.crafter_visual_tokens = visual_tokens
+        self.crafter_input_shape = front_end_input(config)
+        if getattr(config, "crafter_freeze_front_end", False):
+            self.vision.requires_grad_(False)
 
     def _has_visual_ids(self, input_ids: Optional[torch.LongTensor]) -> bool:
         return input_ids is not None and any(
@@ -75,8 +107,8 @@ class _CrafterVisionMixin:
         )
 
     def _inject_visual_tokens(self, input_ids: torch.LongTensor, pixel_values: torch.Tensor) -> torch.Tensor:
-        if pixel_values.ndim != 4 or tuple(pixel_values.shape[1:]) != (3, 63, 63):
-            raise ValueError(f"Expected pixel_values [batch,3,63,63], got {tuple(pixel_values.shape)}")
+        if tuple(pixel_values.shape[1:]) != self.crafter_input_shape:
+            raise ValueError(f"Expected pixel_values [batch,{self.crafter_input_shape}], got {tuple(pixel_values.shape)}")
         marked = input_ids.eq(self.crafter_visual_token_ids[0]).any(dim=1)
         if pixel_values.shape[0] != int(marked.sum()):
             raise ValueError(

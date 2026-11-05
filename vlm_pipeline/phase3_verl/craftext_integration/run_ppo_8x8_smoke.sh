@@ -98,6 +98,27 @@ export VERL_FILE_LOGGER_PATH="${FILE_LOGGER_PATH}"
 # PPO correctness run; the sole GPU is reserved for modern veRL actor/critic.
 export JAX_PLATFORM_NAME=cpu
 
+# RSSM policy: the world model runs beside RL in this container (phase4_world_model/rssm_service.py).
+RSSM_SOCKET=""
+if [[ -n "${RSSM_CHECKPOINT:-}" ]]; then
+  RSSM_SOCKET=/tmp/rssm.sock
+  mkdir -p "${RUN_ROOT}/rssm"
+  RSSM_PACK_ARGS=()
+  if [[ -n "${RSSM_PACK:-}" ]]; then
+    RSSM_PACK_ARGS=(--pack "${RSSM_PACK}")
+  fi
+  "${PYTHON_BIN}" "${CRAFTEXT_LEGACY_ROOT}/vlm_pipeline/phase4_world_model/rssm_service.py" serve \
+    --checkpoint "${RSSM_CHECKPOINT}" --socket "${RSSM_SOCKET}" --out "${RUN_ROOT}/rssm" \
+    --updates-per-rollout "${RSSM_UPDATES:-0}" --ema "${RSSM_EMA:-0.995}" --save-every "${RSSM_SAVE_EVERY:-50}" \
+    --seed "${CRAF_TEXT_SEED}" "${RSSM_PACK_ARGS[@]}" > "${RUN_ROOT}/rssm/service.log" 2>&1 &
+  RSSM_PID=$!
+  trap 'kill "${RSSM_PID}" 2>/dev/null || true' EXIT
+  until [[ -f "${RUN_ROOT}/rssm/ready" ]]; do
+    kill -0 "${RSSM_PID}"
+    sleep 2
+  done
+fi
+
 if [[ "${LOGGER_BACKENDS}" == *comet* ]]; then
   unset COMET_DISABLE_AUTO_LOGGING
   : "${COMET_API_KEY:?COMET_API_KEY is required when LOGGER_BACKENDS includes comet}"
@@ -224,6 +245,8 @@ cd "${REPO_ROOT}"
   +craftext.use_invalid_action_penalty="${CRAF_TEXT_USE_INVALID_ACTION_PENALTY}" \
   +craftext.invalid_action_penalty_coef="${CRAF_TEXT_INVALID_ACTION_PENALTY_COEF}" \
   +craftext.validation_seed="${VALIDATION_SEED}" \
+  +craftext.rssm_socket="${RSSM_SOCKET}" \
+  +craftext.rssm_tokens="${RSSM_TOKENS:-55}" \
   +craftext.validation_trajectory_dir="${RUN_ROOT}/validation_trajectories" \
   +craftext.validation_trajectory_limit="${VALIDATION_TRAJECTORY_LIMIT}" \
   "${PROFILE_ARGS[@]}"
