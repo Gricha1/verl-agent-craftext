@@ -47,7 +47,19 @@ def world(args, device):
 
 
 def load_trainable(model, path):
+    """A .pt of this script, or a directory of export_rl_checkpoint.py: RL weights, whose marker rows are dropped."""
     import torch
+    if path.is_dir():
+        from safetensors.torch import load_file
+        saved = load_file(path / "model.safetensors")
+        own = model.lm.state_dict()
+        lm = {k: v[:own[k].shape[0]] if v.shape != own[k].shape else v for k, v in saved.items() if k in own}
+        missing = model.lm.load_state_dict(lm, strict=False).missing_keys
+        if [k for k in missing if k != "lm_head.weight"]:
+            raise KeyError(f"missing {missing[:10]}")
+        for key in ADAPTERS:
+            model.modules[key].load_state_dict({k[len(f"vision.{key}."):]: v for k, v in saved.items() if k.startswith(f"vision.{key}.")})
+        return
     state = torch.load(path, map_location="cpu", weights_only=False)["model"]
     model.lm.load_state_dict(state["lm"])
     for key in ADAPTERS:
