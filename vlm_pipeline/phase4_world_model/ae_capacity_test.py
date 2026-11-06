@@ -24,6 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
+from imagine_eval import classify_tiles, tile_prototypes
 from train_slm_world_model import (PIXELS, categorical, categorical_kl_dims, dreamer_decoder, dreamer_encoder,
                                    load_episodes, read_image, save_json)
 
@@ -100,6 +101,25 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     save_json(args.out / "config.json", {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
               | dict(train_frames=len(train), validation_frames=len(valid), show=SHOW))
+    protos, index, names = tile_prototypes()
+    tables = torch.from_numpy(protos).to(device), torch.from_numpy(index).to(device)
+    classes_of = lambda frames: classify_tiles(frames[:, None].float(), *tables)[0][:, 0]
+    real_tiles = torch.cat([classes_of(as_float(valid[i:i + 512])) for i in range(0, len(valid), 512)])
+    rows, cols = torch.meshgrid(torch.arange(7), torch.arange(9), indexing="ij")
+    distance = ((rows - 3).abs() + (cols - 4).abs()).to(device)
+
+    def object_recall(drawn):
+        """Share of real zombie and cow tiles drawn, next to the agent and further."""
+        out = {}
+        for name in ("zombie", "cow"):
+            real = real_tiles == names.index(name)
+            right = real & (drawn == names.index(name))
+            for tag, near in (("near", distance == 1), ("far", distance >= 2)):
+                out[f"{name}_{tag}"] = round(float(right[:, near].sum() / real[:, near].sum().clamp_min(1)), 4)
+            guessed = (drawn == names.index(name)).sum().clamp_min(1)
+            out[f"{name}_precision"] = round(float(right.sum() / guessed), 4)
+        return out
+
     for variant in args.variants.split(","):
         model = AE(variant, device)
         optimizer = torch.optim.AdamW(model.net.parameters(), lr=args.lr, weight_decay=.01)
@@ -118,17 +138,19 @@ def main():
             optimizer.step()
             if update % args.eval_every == 0 or update == args.updates:
                 model.net.eval()
-                sq, kls = 0.0, []
+                sq, kls, drawn = 0.0, [], []
                 with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
                     for start in range(0, len(valid), 256):
                         batch = as_float(valid[start:start + 256])
                         out, _, kl_raw = model.forward(batch, sample=False)
                         sq += float((out.float() - batch).square().mean(dim=(1, 2, 3)).sum())
                         kls.append(float(kl_raw))
+                        drawn.append(classes_of(out.float()))
                     shown = model.forward(as_float(show), sample=False)[0].float().clamp(0, 1).cpu().numpy()
                 row = dict(variant=variant, update=update, frames_seen=update * args.batch_size,
                            validation_mse_per_pixel=sq / len(valid), validation_kl_raw=float(np.mean(kls)),
-                           train_loss_per_pixel=float(loss.detach()) * 2 / PIXELS, seconds=time.time() - t0)
+                           train_loss_per_pixel=float(loss.detach()) * 2 / PIXELS, seconds=time.time() - t0,
+                           **object_recall(torch.cat(drawn)))
                 log.write(json.dumps(row) + "\n"); log.flush()
                 print(json.dumps(row), flush=True)
                 if update in (1000, 5000, args.updates):
