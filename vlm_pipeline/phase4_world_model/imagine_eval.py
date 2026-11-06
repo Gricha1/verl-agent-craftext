@@ -53,6 +53,9 @@ DAYLIGHT = (1.0, 0.8, 0.65, 0.5)  # light levels rendered without the night stat
 TILE_RELIABLE = 0.003  # a real tile is "explained" when its per-pixel MSE to the nearest prototype is below this
 
 
+PLAYER_CLASS = None
+
+
 def tile_prototypes(assets: Path = ASSETS):
     """7x7 tile prototypes of the Craftax-Classic renderer: every block texture, the player / cow / zombie drawn over
     grass, sand and path, each at the DAYLIGHT levels (night blend of the renderer: desaturate, tint (0, 16, 64)).
@@ -81,11 +84,16 @@ def tile_prototypes(assets: Path = ASSETS):
         night = 0.5 * (0.4 * tile + 0.6 * lum) + 0.5 * tint
         for light in DAYLIGHT:
             protos.append(light * tile + (1 - light) * night); index.append(classes.index(name))
+    global PLAYER_CLASS
+    PLAYER_CLASS = classes.index("player")
     return np.moveaxis(np.stack(protos), -1, 1), np.asarray(index), classes
 
 
 def classify_tiles(frames, protos, index):
-    """frames [..., 3, 63, 63] -> (class [..., 7, 9], per-pixel MSE to the nearest prototype [..., 7, 9])."""
+    """frames [..., 3, 63, 63] -> (class [..., 7, 9], per-pixel MSE to the nearest prototype [..., 7, 9]).
+
+    The centre tile is the agent. There are no prototypes for its sleeping texture, which the nearest neighbour called a
+    zombie: 637 of the 1253 "zombie" tiles of the validation frames, so the tile is the player whatever it looks like."""
     lead, n = frames.shape[:-3], frames.dim() - 3
     tiles = frames[..., :ROWS * TILE, :].unflatten(-2, (ROWS, TILE)).unflatten(-1, (COLS, TILE))  # [..., 3, R, 7, C, 7]
     tiles = tiles.permute(*range(n), n + 1, n + 3, n, n + 2, n + 4)                               # [..., R, C, 3, 7, 7]
@@ -95,7 +103,10 @@ def classify_tiles(frames, protos, index):
     with torch.autocast(frames.device.type, enabled=False):  # bf16 would blur the distances
         dist = flat.square().sum(1, keepdim=True) - 2 * flat @ p.T + p.square().sum(1)[None]
     best, arg = dist.min(1)
-    return index[arg].reshape(*lead, ROWS, COLS), (best.clamp_min(0) / p.shape[1]).reshape(*lead, ROWS, COLS)
+    classes = index[arg].reshape(*lead, ROWS, COLS)
+    if PLAYER_CLASS is not None:
+        classes[..., ROWS // 2, COLS // 2] = PLAYER_CLASS
+    return classes, (best.clamp_min(0) / p.shape[1]).reshape(*lead, ROWS, COLS)
 
 
 def main():
