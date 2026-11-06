@@ -9,6 +9,10 @@ same frames, without the SLM and without dynamics, in three variants:
   cat_kl   : the same + the world model's KL on z_0: 0.5 max(1, KL(sg q || p)) + 0.1 max(1, KL(q || sg p))
              against a learned prior (p(z | h = 0) of the world model)
   noz      : frame -> encoder (4096 features) -> decoder                                   (no z: decoder bound)
+  det_N    : N real numbers, no noise
+  gauss_N  : N gaussians, KL to N(0, 1) at weight .1 with one free nat
+  cat_GxC  : G categoricals of C classes, one linear layer from the features, no KL
+  grid_C   : one categorical of C classes per 7 x 7 patch, no KL (the nets of --image-net grid)
 
 Loss = 1/2 sum over pixels (x^ - x)^2, as in the world model. Train frames: the 165 train episodes; validation:
 the 35 validation episodes of the same split.
@@ -26,7 +30,7 @@ import numpy as np
 
 from imagine_eval import classify_tiles, tile_prototypes
 from train_slm_world_model import (PIXELS, categorical, categorical_kl_dims, dreamer_decoder, dreamer_encoder,
-                                   load_episodes, read_image, save_json)
+                                   grid_nets, load_episodes, read_image, save_json)
 
 GROUPS, CLASSES = 32, 32
 SHOW = [(9, 72 + d) for d in range(1, 9)] + [(93, 48 + d) for d in range(1, 9)]  # frames of the imagination figures
@@ -38,7 +42,21 @@ class AE:
         import torch.nn as nn
         self.variant, self.torch = variant, torch
         modules = {"encoder": dreamer_encoder(nn)}
-        if variant == "noz":
+        kind, _, size = variant.partition("_")
+        self.kind = kind if kind in ("det", "gauss", "grid") or (kind == "cat" and "x" in size) else None
+        if self.kind == "grid":
+            self.classes = int(size)
+            encoder, _, cells, draw = grid_nets(nn, torch, 1, 81, self.classes, 32)
+            modules = dict(encoder=encoder, posterior=cells, decoder=draw)
+        elif self.kind == "cat":
+            self.groups, self.classes = map(int, size.split("x"))
+            modules["posterior"] = nn.Linear(256 * 4 * 4, self.groups * self.classes)
+            modules["decoder"] = dreamer_decoder(nn, self.groups * self.classes)
+        elif self.kind:
+            size = int(size)
+            modules["posterior"] = nn.Linear(256 * 4 * 4, size * (2 if self.kind == "gauss" else 1))
+            modules["decoder"] = dreamer_decoder(nn, size)
+        elif variant == "noz":
             modules["decoder"] = dreamer_decoder(nn, 256 * 4 * 4)
         else:
             modules["posterior"] = nn.Sequential(nn.Linear(256 * 4 * 4, 512), nn.GELU(), nn.Linear(512, GROUPS * CLASSES))
@@ -53,6 +71,27 @@ class AE:
         torch = self.torch
         embed = self.net["encoder"](images)
         zero = images.new_zeros(())
+        if self.kind == "det":
+            return self.net["decoder"](self.net["posterior"](embed)), zero, zero
+        if self.kind == "gauss":
+            mu, log_std = self.net["posterior"](embed).float().chunk(2, -1)
+            std = log_std.clamp(-8, 2).exp()
+            kl = (.5 * (mu.square() + std.square()) - log_std.clamp(-8, 2) - .5).sum(-1)
+            z = mu + std * torch.randn_like(std) if sample else mu
+            return self.net["decoder"](z.to(embed.dtype)), .1 * kl.clamp_min(1.0).mean(), kl.detach().mean()
+        if self.kind in ("cat", "grid"):
+            none = images.new_zeros(len(images), 1)
+            logits = self.net["posterior"](embed if self.kind == "cat" else torch.cat((none, embed), 1))
+            groups = 81 if self.kind == "grid" else self.groups
+            probs = categorical(logits, groups, self.classes)[0]
+            if sample:
+                index = torch.multinomial(probs.flatten(0, 1), 1).view(probs.shape[:-1])
+                z = torch.nn.functional.one_hot(index, self.classes).to(probs.dtype)
+                z = (z + probs - probs.detach()).flatten(1)
+            else:
+                z = torch.nn.functional.one_hot(probs.argmax(-1), self.classes).to(probs.dtype).flatten(1)
+            z = z.to(embed.dtype)
+            return self.net["decoder"](z if self.kind == "cat" else torch.cat((none, z), 1)), zero, zero
         if self.variant == "noz":
             return self.net["decoder"](embed), zero, zero
         q = categorical(self.net["posterior"](embed), GROUPS, CLASSES)
