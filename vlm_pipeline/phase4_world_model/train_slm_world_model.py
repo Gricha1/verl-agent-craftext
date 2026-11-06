@@ -364,7 +364,7 @@ class SLMWorldModel:
             "pixel_decoder": decoder,
         })
         self._text_cache = {}
-        self.z_fixed_std = None  # build_model sets it from --z-fixed-std
+        self.z_fixed_std, self.prior_skip = None, False  # build_model sets them
 
     def to(self, device):
         self.lm.to(device); self.modules.to(device); return self
@@ -397,7 +397,8 @@ class SLMWorldModel:
         return self._dist(self.modules["posterior"](embed if self.posterior_input == "x" else self._torch.cat((h, embed), dim=-1)))
 
     def prior(self, h):
-        return self._dist(self.modules["z_prior"](h))
+        dist = self._dist(self.modules["z_prior"](h))
+        return (h[:, -self.z_dim:].to(dist[0].dtype) + dist[0], dist[1]) if self.prior_skip else dist
 
     def sample(self, dist):
         """Reparameterised (gaussian) or straight-through one-hot (categorical) sample, flat [B, z_dim]."""
@@ -531,8 +532,19 @@ class RSSMWorldModel(SLMWorldModel):
         if targets is not None or states is not None:
             raise ValueError("the GRU transition reads and writes no text")
         a = self._torch.nn.functional.one_hot(actions, len(ACTIONS)).to(z.dtype)
-        h = self.modules["gru"](self.modules["gru_input"](self._torch.cat((z, a), dim=-1)), h)
+        core = h[:, :-self.z_dim] if self.prior_skip else h
+        h = self.modules["gru"](self.modules["gru_input"](self._torch.cat((z, a), dim=-1)), core)
+        if self.prior_skip:
+            h = self._torch.cat((h, z.to(h.dtype)), dim=-1)
         return h, h
+
+    def add_prior_skip(self):
+        """--prior-skip: h = [GRU state; z_t], the prior predicts z_{t+1} - z_t, so a large z need not pass through the GRU."""
+        if self.z_kind != "gaussian":
+            raise ValueError("--prior-skip needs a gaussian z")
+        self.prior_skip = True
+        units = self.modules["gru_input"][0].out_features
+        self.modules["gru"] = self._torch.nn.GRUCell(units, self.h_size - self.z_dim)
 
     def add_value(self, tasks):
         """Value head of --value-loss-scale: V(h_t, z_t, g), the RSSM itself has no task."""
@@ -578,6 +590,8 @@ def build_model(config, init_checkpoint, device):
         if config.get("story_vocabulary"):
             model.add_words("story_head", len(config["story_vocabulary"]))
         model.z_fixed_std = config.get("z_fixed_std")
+        if config.get("prior_skip"):
+            model.add_prior_skip()
         return model.to(device)
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(init_checkpoint)
@@ -585,8 +599,22 @@ def build_model(config, init_checkpoint, device):
     return SLMWorldModel(lm, tokenizer, config["h_size"], z[0], config["h_tokens"], config["z_tokens"], *z[1:]).to(device)
 
 
+IMAGINED_PIXELS = (2, 4, 8)  # distances of the overshooting rollouts drawn by --prior-recon
+
+
 def detach(dist):
     return tuple(t.detach() for t in dist)
+
+
+def prior_pixel_error(model, h, p, image):
+    """--prior-recon: .5 * squared error of the frame drawn from the prior mean. It trains the dynamics, not the decoder."""
+    decoder = list(model.modules["pixel_decoder"].parameters())
+    for v in decoder:
+        v.requires_grad_(False)
+    out = model.decode(h, model.mode(p)).float()
+    for v in decoder:
+        v.requires_grad_(True)
+    return .5 * (out - image).square().flatten(1).sum(-1).mean()
 
 
 def balanced_kl(model, q, p, free, dyn_scale, rep_scale):
@@ -626,6 +654,7 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
     focus = getattr(args, "recon_focus", 0.0)
     # --free-encoder: the dynamics read z as data, nothing but the reconstruction reaches the encoder
     fed = (lambda t: t.detach()) if getattr(args, "free_encoder", False) else (lambda t: t)
+    pixel_scale, pixel_loss, pixel_terms = getattr(args, "prior_recon", 0.0), torch.zeros((), device=device), 0
     for t in range(steps):
         rs = [r[t] for r in reasoning]
         if descriptions is None:
@@ -645,6 +674,8 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
             weights = weights / weights.mean((1, 2, 3), keepdim=True).clamp_min(1e-8)
             error = error * F.interpolate(weights, scale_factor=7, mode="nearest")
         recon = recon + .5 * error.flatten(1).sum(-1).mean()
+        if pixel_scale:
+            pixel_loss = pixel_loss + prior_pixel_error(model, h, p, images[:, t + 1]); pixel_terms += 1
         if tiles is not None:
             logits = model.tile_logits(h, z)
             tile_loss = tile_loss + F.cross_entropy(logits.flatten(0, 2), tiles[:, t + 1].flatten(), weight=model.tile_weight,
@@ -694,6 +725,8 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
                     imagined_loss = imagined_loss + word_bce(model.words("word_head", h_roll, model.sample(p_roll)),
                                                              words[:, anchor + distance], model.word_weight)
                     imagined_terms += 1
+                if pixel_scale and anchor % 4 == 0 and distance in IMAGINED_PIXELS:
+                    pixel_loss = pixel_loss + prior_pixel_error(model, h_roll, p_roll, images[:, anchor + distance]); pixel_terms += 1
                 if distance > 1:
                     raw = model.kl_dims(detach(q_states[anchor + distance]), p_roll).sum(-1)
                     overshoot = overshoot + args.kl_dyn * raw.clamp_min(args.free_nats).mean()
@@ -702,6 +735,10 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
         overshoot = overshoot / max(terms, 1)
     loss = (getattr(args, "recon_scale", 1.0) * recon + kl_loss + overshoot + args.reward_loss_scale * reward_loss
             + args.continue_loss_scale * continue_loss)
+    if pixel_scale:
+        pixel_loss = pixel_loss / pixel_terms
+        loss = loss + pixel_scale * pixel_loss
+        value_parts.update(prior_pixel_loss=float(pixel_loss.detach()))
     if values is not None:
         loss = loss + args.value_loss_scale * value_loss
     if words is not None:
@@ -861,6 +898,10 @@ def main():
     parser.add_argument("--free-encoder", action="store_true",
                         help="only the reconstruction trains the encoder: use with --kl-rep 0 --value-stop-gradient. The transition reads z detached, "
                              "encoder, posterior and decoder are clipped apart from the rest")
+    parser.add_argument("--prior-skip", action="store_true", help="h carries z_t and the prior predicts the change of z, gaussian z. "
+                        "--h-size then counts the GRU state and z together: GRU state = h_size - z_size. Give --mlp-units")
+    parser.add_argument("--prior-recon", type=float, default=0.0,
+                        help="> 0: weight of the pixel error of frames drawn from the prior mean, one step and 2, 4, 8 steps ahead. Trains the dynamics only")
     parser.add_argument("--recon-scale", type=float, default=1.0, help="weight of the reconstruction term against the KL")
     parser.add_argument("--recon-focus", type=float, default=0.0,
                         help="> 0: tiles with a larger reconstruction error weigh more, (error / mean error) ** focus")
