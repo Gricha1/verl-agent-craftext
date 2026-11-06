@@ -257,6 +257,46 @@ def dreamer_decoder(nn, size, depth=32):
     return nn.Sequential(*layers)
 
 
+def grid_nets(nn, torch, h_size, cells, classes, depth):
+    """--image-net grid: z is one categorical variable per 7 x 7 patch of the 63 x 63 frame, so a small object has its own
+    variable and needs no place in a global code. Patches come from the frame's size alone, nothing here knows the game.
+    Returns (encoder, its output size, posterior, decoder); the posterior gets [h; features], the decoder [h; z]."""
+    side = round(cells ** .5)
+    if side * side != cells or side * 7 != 63:
+        raise ValueError("--image-net grid needs --z-size 81: 9 x 9 patches of 7 x 7 pixels")
+    channels = 2 * depth
+
+    class Cells(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.context = nn.Linear(h_size, channels)
+            self.out = nn.Sequential(nn.Conv2d(2 * channels, channels, 1), nn.SiLU(), nn.Conv2d(channels, classes, 1))
+
+        def forward(self, x):
+            h, features = x[:, :h_size], x[:, h_size:].view(-1, channels, side, side)
+            context = self.context(h)[:, :, None, None].expand(-1, -1, side, side)
+            return self.out(torch.cat((features, context), 1)).permute(0, 2, 3, 1).flatten(1)
+
+    class Draw(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.context = nn.Linear(h_size, channels)
+            self.net = nn.Sequential(
+                nn.Conv2d(classes + channels, 2 * channels, 1), nn.SiLU(), nn.Conv2d(2 * channels, 2 * channels, 3, padding=1), nn.SiLU(),
+                nn.ConvTranspose2d(2 * channels, channels, 7, stride=7), nn.SiLU(), nn.Conv2d(channels, depth, 3, padding=1), nn.SiLU(),
+                nn.Conv2d(depth, 3, 1), nn.Sigmoid())
+
+        def forward(self, x):
+            h, z = x[:, :h_size], x[:, h_size:].view(-1, side, side, classes).permute(0, 3, 1, 2)
+            context = self.context(h)[:, :, None, None].expand(-1, -1, side, side)
+            return self.net(torch.cat((z, context), 1))
+
+    encoder = nn.Sequential(
+        nn.Conv2d(3, depth, 3, padding=1), nn.GroupNorm(1, depth), nn.SiLU(), nn.Conv2d(depth, channels, 7, stride=7),
+        nn.GroupNorm(1, channels), nn.SiLU(), nn.Conv2d(channels, channels, 3, padding=1), nn.GroupNorm(1, channels), nn.SiLU(), nn.Flatten())
+    return encoder, channels * cells, Cells(), Draw()
+
+
 def mlp(nn, size, units, layers, out):
     """layers x (Linear, GELU), then Linear to out."""
     modules = []
@@ -297,6 +337,10 @@ class SLMWorldModel:
                 nn.Upsample(size=(63, 63), mode="bilinear", align_corners=False),
                 nn.Conv2d(32, 32, 5, padding=2), nn.GELU(), nn.Conv2d(32, 3, 3, padding=1), nn.Sigmoid(),
             )
+        elif image_net == "grid":
+            if z_kind != "categorical" or decoder_input != "hz" or posterior_input != "hx":
+                raise ValueError("--image-net grid needs categorical z, a decoder and a posterior that read h")
+            cnn, embed, cells, decoder = grid_nets(nn, torch, h_size, z_size, z_classes, cnn_depth)
         else:  # "dreamer"
             cnn, embed = dreamer_encoder(nn, cnn_depth), 8 * cnn_depth * 4 * 4
             decoder = dreamer_decoder(nn, dec_size, cnn_depth)
@@ -312,7 +356,7 @@ class SLMWorldModel:
                     "h_transition": nn.Sequential(nn.Linear(self.width, h_size), nn.GELU(), nn.Linear(h_size, h_size))}
         self.modules = nn.ModuleDict({
             "cnn": cnn,
-            "posterior": mlp(nn, (0 if posterior_input == "x" else h_size) + embed, units, 1, z_raw),
+            "posterior": cells if image_net == "grid" else mlp(nn, (0 if posterior_input == "x" else h_size) + embed, units, 1, z_raw),
             **core,
             "z_prior": mlp(nn, h_size, units, 1, z_raw),
             "reward_head": mlp(nn, self.width, units, mlp_layers, 1),
@@ -762,7 +806,7 @@ def main():
     parser.add_argument("--z-size", type=int, default=48, help="gaussian dims, or number of categoricals")
     parser.add_argument("--z-kind", choices=("gaussian", "categorical"), default="gaussian")
     parser.add_argument("--z-classes", type=int, default=32, help="classes per categorical (--z-kind categorical)")
-    parser.add_argument("--image-net", choices=("small", "dreamer"), default="small",
+    parser.add_argument("--image-net", choices=("small", "dreamer", "grid"), default="small",
                         help="small: 3-conv CNN + 7x7 bilinear decoder; dreamer: DreamerV3 stride-2 CNN / transposed-conv decoder")
     parser.add_argument("--cnn-depth", type=int, default=32,
                         help="--image-net dreamer: channels depth x 1/2/4/8 (DreamerV3 small 32, medium 48)")
