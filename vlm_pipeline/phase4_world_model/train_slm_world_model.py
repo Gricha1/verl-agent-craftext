@@ -624,12 +624,14 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
     tile_loss, tile_right = torch.zeros((), device=device), 0.0
     word_loss, story_loss, imagined_loss, imagined_terms = [torch.zeros((), device=device) for _ in range(3)] + [0]
     focus = getattr(args, "recon_focus", 0.0)
+    # --free-encoder: the dynamics read z as data, nothing but the reconstruction reaches the encoder
+    fed = (lambda t: t.detach()) if getattr(args, "free_encoder", False) else (lambda t: t)
     for t in range(steps):
         rs = [r[t] for r in reasoning]
         if descriptions is None:
-            h, last = model.transition(goals, actions[:, t], rs, h, z, device, states=state_at(t))
+            h, last = model.transition(goals, actions[:, t], rs, h, fed(z), device, states=state_at(t))
         else:
-            h, last, nll, lengths = model.transition(goals, actions[:, t], rs, h, z, device,
+            h, last, nll, lengths = model.transition(goals, actions[:, t], rs, h, fed(z), device,
                                                      targets=[d[t] for d in descriptions], states=state_at(t))
             text_nll, text_tokens = text_nll + nll.mean(), text_tokens + lengths.mean()
         p = model.prior(h)
@@ -682,7 +684,7 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
     depth = args.overshoot_depth or args.horizon
     if depth > 1:
         for anchor in range(steps):
-            h_roll, z_roll = h_states[anchor], model.mode(q_states[anchor])
+            h_roll, z_roll = h_states[anchor], fed(model.mode(q_states[anchor]))
             for distance in range(1, min(depth, steps - anchor) + 1):
                 rs = [r[anchor + distance - 1] for r in reasoning]
                 h_roll, _ = model.transition(goals, actions[:, anchor + distance - 1], rs, h_roll, z_roll, device,
@@ -856,6 +858,9 @@ def main():
     parser.add_argument("--word-stories", type=Path,
                         help="segment_stories.jsonl (needs --word-descriptions): another head finds the words of the story of the next segment")
     parser.add_argument("--word-loss-scale", type=float, default=1.0)
+    parser.add_argument("--free-encoder", action="store_true",
+                        help="only the reconstruction trains the encoder: use with --kl-rep 0 --value-stop-gradient. The transition reads z detached, "
+                             "encoder, posterior and decoder are clipped apart from the rest")
     parser.add_argument("--recon-scale", type=float, default=1.0, help="weight of the reconstruction term against the KL")
     parser.add_argument("--recon-focus", type=float, default=0.0,
                         help="> 0: tiles with a larger reconstruction error weigh more, (error / mean error) ** focus")
@@ -988,7 +993,12 @@ def main():
                 (loss * len(part) / len(batch_chunks)).backward()
                 for key, value in micro_parts.items():
                     parts[key] += value * len(part) / len(batch_chunks)
-            parts["grad_norm"] = float(torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0))
+            if args.free_encoder:  # the KL of the dynamics is far larger: one shared clip would stop the image nets
+                image_nets = {id(v) for name in ("cnn", "posterior", "pixel_decoder") for v in model.modules[name].parameters()}
+                parts["grad_norm_image"] = float(torch.nn.utils.clip_grad_norm_([v for v in model.parameters() if id(v) in image_nets], 1.0))
+                parts["grad_norm"] = float(torch.nn.utils.clip_grad_norm_([v for v in model.parameters() if id(v) not in image_nets], 1.0))
+            else:
+                parts["grad_norm"] = float(torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0))
             optimizer.step()
             updates += 1; batches += 1
             for key, value in parts.items():
