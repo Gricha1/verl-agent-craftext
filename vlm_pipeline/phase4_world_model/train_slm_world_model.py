@@ -364,6 +364,7 @@ class SLMWorldModel:
             "pixel_decoder": decoder,
         })
         self._text_cache = {}
+        self.z_fixed_std = None  # build_model sets it from --z-fixed-std
 
     def to(self, device):
         self.lm.to(device); self.modules.to(device); return self
@@ -386,7 +387,10 @@ class SLMWorldModel:
         return self._text_cache[text]
 
     def _dist(self, raw):
-        return normal(raw) if self.z_kind == "gaussian" else categorical(raw, self.z_size, self.z_classes)
+        if self.z_kind != "gaussian":
+            return categorical(raw, self.z_size, self.z_classes)
+        mu, std = normal(raw)
+        return (mu, std.new_full(std.shape, self.z_fixed_std)) if self.z_fixed_std else (mu, std)
 
     def posterior(self, image, h):
         embed = self.modules["cnn"](image)
@@ -573,6 +577,7 @@ def build_model(config, init_checkpoint, device):
             model.add_words("word_head", len(config["word_vocabulary"]))
         if config.get("story_vocabulary"):
             model.add_words("story_head", len(config["story_vocabulary"]))
+        model.z_fixed_std = config.get("z_fixed_std")
         return model.to(device)
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(init_checkpoint)
@@ -806,6 +811,9 @@ def main():
     parser.add_argument("--z-size", type=int, default=48, help="gaussian dims, or number of categoricals")
     parser.add_argument("--z-kind", choices=("gaussian", "categorical"), default="gaussian")
     parser.add_argument("--z-classes", type=int, default=32, help="classes per categorical (--z-kind categorical)")
+    parser.add_argument("--z-fixed-std", type=float,
+                        help="--z-kind gaussian --transition gru: all std of q and p are this constant, the encoder cannot drown a dimension "
+                             "in noise and the KL is a squared error between the means. A 32 x 32 categorical z loses zombies even with no KL")
     parser.add_argument("--image-net", choices=("small", "dreamer", "grid"), default="small",
                         help="small: 3-conv CNN + 7x7 bilinear decoder; dreamer: DreamerV3 stride-2 CNN / transposed-conv decoder")
     parser.add_argument("--cnn-depth", type=int, default=32,
