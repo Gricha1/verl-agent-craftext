@@ -364,7 +364,7 @@ class SLMWorldModel:
             "pixel_decoder": decoder,
         })
         self._text_cache = {}
-        self.z_fixed_std, self.prior_skip = None, False  # build_model sets them
+        self.z_fixed_std, self.prior_skip, self.prior_modes = None, False, 0  # build_model sets them
 
     def to(self, device):
         self.lm.to(device); self.modules.to(device); return self
@@ -397,12 +397,26 @@ class SLMWorldModel:
         return self._dist(self.modules["posterior"](embed if self.posterior_input == "x" else self._torch.cat((h, embed), dim=-1)))
 
     def prior(self, h):
+        if self.prior_modes:  # candidates [B, K, z], their std, logits of pi [B, K]
+            raw = self.modules["z_prior"](h).float()
+            means = h[:, -self.z_dim:].float().unsqueeze(1) + raw[:, self.prior_modes:].view(-1, self.prior_modes, self.z_dim)
+            return means, means.new_full(means.shape, self.z_fixed_std), raw[:, :self.prior_modes]
         dist = self._dist(self.modules["z_prior"](h))
         return (h[:, -self.z_dim:].to(dist[0].dtype) + dist[0], dist[1]) if self.prior_skip else dist
 
+    def candidate(self, dist, index):
+        return dist[0].gather(1, index.view(-1, 1, 1).expand(-1, 1, self.z_dim)).squeeze(1)
+
+    def nearest(self, dist, target):
+        """--prior-modes: the candidate closest to the real next z (training only, it needs that z)."""
+        return self.candidate(dist, (target.float().unsqueeze(1) - dist[0]).square().sum(-1).argmin(1))
+
     def sample(self, dist):
-        """Reparameterised (gaussian) or straight-through one-hot (categorical) sample, flat [B, z_dim]."""
+        """Reparameterised (gaussian) or straight-through one-hot (categorical) sample, flat [B, z_dim].
+        --prior-modes: one candidate drawn from pi, without added noise."""
         torch = self._torch
+        if len(dist) == 3:
+            return self.candidate(dist, torch.multinomial(dist[2].softmax(-1), 1))
         if self.z_kind == "gaussian":
             return dist[0] + dist[1] * torch.randn_like(dist[1])
         probs = dist[0]
@@ -411,7 +425,9 @@ class SLMWorldModel:
         return (onehot + probs - probs.detach()).flatten(1)
 
     def mode(self, dist):
-        """Gaussian mean / categorical argmax one-hot, flat [B, z_dim]."""
+        """Gaussian mean / categorical argmax one-hot, flat [B, z_dim]. --prior-modes: the most probable candidate."""
+        if len(dist) == 3:
+            return self.candidate(dist, dist[2].argmax(-1))
         if self.z_kind == "gaussian":
             return dist[0]
         probs = dist[0]
@@ -546,6 +562,14 @@ class RSSMWorldModel(SLMWorldModel):
         units = self.modules["gru_input"][0].out_features
         self.modules["gru"] = self._torch.nn.GRUCell(units, self.h_size - self.z_dim)
 
+    def add_prior_modes(self, modes):
+        """--prior-modes: K candidates z_t + change_k(h_{t+1}) and pi_k(h_{t+1}), for a next state that has several outcomes."""
+        if not self.prior_skip or not self.z_fixed_std:
+            raise ValueError("--prior-modes needs --prior-skip and --z-fixed-std")
+        self.prior_modes = modes
+        units = self.modules["gru_input"][0].out_features
+        self.modules["z_prior"] = mlp(self._torch.nn, self.h_size, units, 1, modes + modes * self.z_dim)
+
     def add_value(self, tasks):
         """Value head of --value-loss-scale: V(h_t, z_t, g), the RSSM itself has no task."""
         nn = self._torch.nn
@@ -592,6 +616,8 @@ def build_model(config, init_checkpoint, device):
         model.z_fixed_std = config.get("z_fixed_std")
         if config.get("prior_skip"):
             model.add_prior_skip()
+        if config.get("prior_modes"):
+            model.add_prior_modes(config["prior_modes"])
         return model.to(device)
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(init_checkpoint)
@@ -600,18 +626,19 @@ def build_model(config, init_checkpoint, device):
 
 
 IMAGINED_PIXELS = (2, 4, 8)  # distances of the overshooting rollouts drawn by --prior-recon
+IMAGE_NETS = ("cnn", "posterior", "pixel_decoder")
 
 
 def detach(dist):
     return tuple(t.detach() for t in dist)
 
 
-def prior_pixel_error(model, h, p, image):
-    """--prior-recon: .5 * squared error of the frame drawn from the prior mean. It trains the dynamics, not the decoder."""
-    decoder = list(model.modules["pixel_decoder"].parameters())
+def prior_pixel_error(model, h, z, image):
+    """--prior-recon: .5 * squared error of the frame drawn from a predicted z. It trains the dynamics, not the decoder."""
+    decoder = [v for v in model.modules["pixel_decoder"].parameters() if v.requires_grad]
     for v in decoder:
         v.requires_grad_(False)
-    out = model.decode(h, model.mode(p)).float()
+    out = model.decode(h, z).float()
     for v in decoder:
         v.requires_grad_(True)
     return .5 * (out - image).square().flatten(1).sum(-1).mean()
@@ -624,6 +651,33 @@ def balanced_kl(model, q, p, free, dyn_scale, rep_scale):
     dyn, rep = dims_dyn.sum(-1), dims_rep.sum(-1)
     loss = dyn_scale * dyn.clamp_min(free).mean() + rep_scale * rep.clamp_min(free).mean()
     return loss, dyn.detach(), dims_dyn.detach()
+
+
+def mode_loss(model, target, p, scale, spread, wins=None):
+    """--prior-modes, the negative log-likelihood of the real next z under the mixture, in its EM form:
+    r_k = pi_k N(z | candidate k) / sum, loss = scale * sum_k w_k |z - candidate k|^2 / (2 std^2) - sum_k r_k log pi_k,
+    w_k = (1 - spread) r_k + spread / K, so that a candidate which never wins still follows the data.
+    Returns (loss, error of the winners per sample, its dimensions); the error is the KL of a one-mode prior of equal std."""
+    import torch
+    means, logits = p[0], p[2]
+    dims = (target.detach().float().unsqueeze(1) - means).square() / (2 * model.z_fixed_std ** 2)
+    error, log_pi = dims.sum(-1), logits.log_softmax(-1)
+    with torch.no_grad():
+        r = (log_pi - error).softmax(-1)
+        best = dims.gather(1, error.argmin(1).view(-1, 1, 1).expand(-1, 1, dims.shape[-1])).squeeze(1)
+    if wins is not None:
+        wins.append((r, log_pi.detach().exp()))
+    loss = scale * (((1 - spread) * r + spread / r.shape[-1]) * error).sum(-1).mean() - (r * log_pi).sum(-1).mean()
+    return loss, best.sum(-1), best
+
+
+def mode_metrics(wins):
+    """Do the candidates share the work? mode_used: effective number of winners, mode_top_share: share of the top one, pi_used: of pi."""
+    import torch
+    r, pi = (torch.cat(v) for v in zip(*wins))
+    share = r.mean(0)
+    used = lambda v: float((-(v * v.clamp_min(1e-12).log()).sum(-1)).exp().mean())
+    return dict(mode_used=used(share), mode_top_share=float(share.max()), mode_pi_used=used(pi))
 
 
 def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoning, args, device, diagnostics=False,
@@ -642,8 +696,17 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
     h = zeros
     q = model.posterior(images[:, 0], h)
     z = model.sample(q)
+    wins = []
+
+    def prior_term(q, p):
+        if model.prior_modes:
+            return mode_loss(model, q[0], p, args.kl_dyn, args.mode_spread, wins)
+        return balanced_kl(model, q, p, args.free_nats, args.kl_dyn, args.kl_rep)
+
+    # the prior z of the pixel loss and of the overshooting rollouts: with --prior-modes the candidate closest to the real z
+    predicted_z = (lambda p, q: model.nearest(p, q[0].detach())) if model.prior_modes else (lambda p, q: model.mode(p))
     # z_0 is regularised like every other z: against p(z_0 | h_0 = 0)
-    kl_loss, kl_raw, kl_dims = balanced_kl(model, q, model.prior(h), args.free_nats, args.kl_dyn, args.kl_rep)
+    kl_loss, kl_raw, kl_dims = prior_term(q, model.prior(h))
     kl_raws, kl_dims_all = [kl_raw], [kl_dims]
     h_states, q_states, z_states = [h], [q], [z]
     recon = torch.zeros((), device=device)
@@ -675,7 +738,7 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
             error = error * F.interpolate(weights, scale_factor=7, mode="nearest")
         recon = recon + .5 * error.flatten(1).sum(-1).mean()
         if pixel_scale:
-            pixel_loss = pixel_loss + prior_pixel_error(model, h, p, images[:, t + 1]); pixel_terms += 1
+            pixel_loss = pixel_loss + prior_pixel_error(model, h, predicted_z(p, q), images[:, t + 1]); pixel_terms += 1
         if tiles is not None:
             logits = model.tile_logits(h, z)
             tile_loss = tile_loss + F.cross_entropy(logits.flatten(0, 2), tiles[:, t + 1].flatten(), weight=model.tile_weight,
@@ -689,7 +752,7 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
                                                rewards[:, t] * args.reward_target_scale)
         continue_loss = continue_loss + F.binary_cross_entropy_with_logits(
             model.modules["continue_head"](last).squeeze(-1).float(), continuation[:, t])
-        step_kl, step_raw, step_dims = balanced_kl(model, q, p, args.free_nats, args.kl_dyn, args.kl_rep)
+        step_kl, step_raw, step_dims = prior_term(q, p)
         kl_loss = kl_loss + step_kl
         kl_raws.append(step_raw); kl_dims_all.append(step_dims)
         h_states.append(h); q_states.append(q); z_states.append(z)
@@ -725,16 +788,22 @@ def loss_for_batch(model, images, actions, rewards, continuation, goals, reasoni
                     imagined_loss = imagined_loss + word_bce(model.words("word_head", h_roll, model.sample(p_roll)),
                                                              words[:, anchor + distance], model.word_weight)
                     imagined_terms += 1
+                z_next = predicted_z(p_roll, q_states[anchor + distance])
                 if pixel_scale and anchor % 4 == 0 and distance in IMAGINED_PIXELS:
-                    pixel_loss = pixel_loss + prior_pixel_error(model, h_roll, p_roll, images[:, anchor + distance]); pixel_terms += 1
+                    pixel_loss = pixel_loss + prior_pixel_error(model, h_roll, z_next, images[:, anchor + distance]); pixel_terms += 1
                 if distance > 1:
-                    raw = model.kl_dims(detach(q_states[anchor + distance]), p_roll).sum(-1)
-                    overshoot = overshoot + args.kl_dyn * raw.clamp_min(args.free_nats).mean()
+                    if model.prior_modes:
+                        overshoot = overshoot + mode_loss(model, q_states[anchor + distance][0], p_roll, args.kl_dyn, args.mode_spread)[0]
+                    else:
+                        raw = model.kl_dims(detach(q_states[anchor + distance]), p_roll).sum(-1)
+                        overshoot = overshoot + args.kl_dyn * raw.clamp_min(args.free_nats).mean()
                     terms += 1
-                z_roll = model.mode(p_roll)
+                z_roll = z_next
         overshoot = overshoot / max(terms, 1)
     loss = (getattr(args, "recon_scale", 1.0) * recon + kl_loss + overshoot + args.reward_loss_scale * reward_loss
             + args.continue_loss_scale * continue_loss)
+    if model.prior_modes:
+        value_parts.update(mode_metrics(wins))
     if pixel_scale:
         pixel_loss = pixel_loss / pixel_terms
         loss = loss + pixel_scale * pixel_loss
@@ -902,6 +971,12 @@ def main():
                         "--h-size then counts the GRU state and z together: GRU state = h_size - z_size. Give --mlp-units")
     parser.add_argument("--prior-recon", type=float, default=0.0,
                         help="> 0: weight of the pixel error of frames drawn from the prior mean, one step and 2, 4, 8 steps ahead. Trains the dynamics only")
+    parser.add_argument("--prior-modes", type=int, default=0,
+                        help="> 0: the prior is a mixture of K candidates of z_{t+1} (needs --prior-skip and --z-fixed-std), trained by mode_loss. "
+                             "Training rollouts follow the candidate closest to the real z, imagination draws one from pi (model.sample)")
+    parser.add_argument("--mode-spread", type=float, default=0.05, help="--prior-modes: share of the z error given to all candidates equally")
+    parser.add_argument("--image-from", type=Path,
+                        help="checkpoint with --free-encoder: takes encoder, posterior and decoder from it and freezes them, only the dynamics and heads learn")
     parser.add_argument("--recon-scale", type=float, default=1.0, help="weight of the reconstruction term against the KL")
     parser.add_argument("--recon-focus", type=float, default=0.0,
                         help="> 0: tiles with a larger reconstruction error weigh more, (error / mean error) ** focus")
@@ -919,6 +994,8 @@ def main():
         parser.error("--value-loss-scale, --tile-loss-scale and --word-descriptions need --transition gru")
     if args.word_stories and not args.word_descriptions:
         parser.error("--word-stories needs --word-descriptions")
+    if args.image_from and not args.free_encoder:
+        parser.error("--image-from needs --free-encoder: without it the dynamics would still ask the frozen encoder for gradients")
     import torch
     from torch.utils.tensorboard import SummaryWriter
     global IMAGE_CACHE
@@ -927,6 +1004,11 @@ def main():
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = build_model(vars(args), args.init_checkpoint, device)
+    if args.image_from:
+        weights = torch.load(args.image_from, map_location="cpu", weights_only=False)["model"]["support"]
+        for name in IMAGE_NETS:
+            model.modules[name].load_state_dict({k[len(name) + 1:]: v for k, v in weights.items() if k.startswith(name + ".")})
+            model.modules[name].requires_grad_(False)
     lm = model.lm
     reasoning = None
     if args.reasoning:
@@ -1035,7 +1117,7 @@ def main():
                 for key, value in micro_parts.items():
                     parts[key] += value * len(part) / len(batch_chunks)
             if args.free_encoder:  # the KL of the dynamics is far larger: one shared clip would stop the image nets
-                image_nets = {id(v) for name in ("cnn", "posterior", "pixel_decoder") for v in model.modules[name].parameters()}
+                image_nets = {id(v) for name in IMAGE_NETS for v in model.modules[name].parameters()}
                 parts["grad_norm_image"] = float(torch.nn.utils.clip_grad_norm_([v for v in model.parameters() if id(v) in image_nets], 1.0))
                 parts["grad_norm"] = float(torch.nn.utils.clip_grad_norm_([v for v in model.parameters() if id(v) not in image_nets], 1.0))
             else:
