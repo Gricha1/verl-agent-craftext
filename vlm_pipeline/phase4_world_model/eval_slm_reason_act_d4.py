@@ -74,8 +74,9 @@ def main():
             if gt is not None:
                 rows.append((g, tasks.index(ep[0]["instruction"]), it["action"], gt, t == n - 1))
             g += 1
-    if a.limit:
-        rows = rows[:a.limit]
+    if a.limit:   # a fixed random subset of the validation frames (same for every checkpoint)
+        keep = sorted(np.random.default_rng(0).choice(len(rows), min(a.limit, len(rows)), replace=False).tolist())
+        rows = [rows[i] for i in keep]
     system = SYSTEM_PLAN.format(plan) if plan else SYSTEM
     pre = torch.tensor([enc("System:\n" + system + "\nUser:\n")], device=device)
     posts = [enc(f"\nTask: {t}\nAssistant:\n") for t in tasks]
