@@ -136,7 +136,8 @@ def policy(carry, obs):
     a = np.array([env.next_action], np.int32)
     acts = {**acts, "action": a}
     enc, dyn, dec, prev = carry
-    carry = (enc, dyn, dec, {**prev, "action": [jnp.asarray(a[0])]})
+    old = prev["action"][0]
+    carry = (enc, dyn, dec, {**prev, "action": [jax.device_put(a[0].astype(old.dtype), old.sharding)]})  # explicit transfer: the agent forbids implicit ones
     return carry, acts, outs
 
 
