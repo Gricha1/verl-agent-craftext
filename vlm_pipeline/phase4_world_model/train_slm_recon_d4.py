@@ -45,15 +45,22 @@ def load_split(root):
 
 
 @torch.no_grad()
-def encode_split(tok, frames, starts, lengths, device, chunk=256):
-    """Per-frame latents z_t (history window inside the frozen encoder) and the frames, both on the GPU."""
-    zs, xs = [], []
-    for s, n in zip(starts, lengths):
-        x = torch.from_numpy(np.asarray(frames[s:s + n, :63, :63]))
-        z = torch.cat([tok.encode_frames(x[None, max(0, a - 3):a + chunk].to(device))[0, min(a, 3):]
-                       for a in range(0, n, chunk)])
-        zs.append(z.half()); xs.append(x.to(device))
-    z, x = torch.cat(zs), torch.cat(xs)
+def encode_split(tok, frames, starts, lengths, device, cache=None, chunk=256):
+    """Per-frame latents z_t (history window inside the frozen encoder) and the frames, both on the GPU.
+    The latents are kept in `cache` (a .pt file) and read from it on the next run."""
+    xs = [torch.from_numpy(np.asarray(frames[s:s + n, :63, :63])) for s, n in zip(starts, lengths)]
+    if cache is not None and Path(cache).exists():
+        z = torch.load(cache).to(device)
+    else:
+        zs = []
+        for x, n in zip(xs, lengths):
+            zs.append(torch.cat([tok.encode_frames(x[None, max(0, a - 3):a + chunk].to(device))[0, min(a, 3):]
+                                 for a in range(0, n, chunk)]).half())
+        z = torch.cat(zs)
+        if cache is not None:
+            torch.save(z.cpu(), cache)
+    x = torch.cat(xs).to(device)
+    assert len(z) == len(x), (len(z), len(x))
     ep_first = torch.cat([torch.full((n,), int(o), dtype=torch.long) for n, o in zip(lengths, np.concatenate(([0], np.cumsum(lengths)[:-1])))])
     return z, x, ep_first.to(device)
 
@@ -114,6 +121,7 @@ def main():
     p.add_argument("--val-samples", type=int, default=2048)
     p.add_argument("--lpips-weight", type=float, default=0.2)
     p.add_argument("--seed", type=int, default=7950)
+    p.add_argument("--latent-cache", default="", help="directory for z_train.pt / z_val.pt of this tokenizer")
     a = p.parse_args()
     sys.path.insert(0, f"{a.repo}/vlm_pipeline/phase4_world_model")
     from imagine_eval import classify_tiles, tile_prototypes
@@ -135,14 +143,15 @@ def main():
     data = {}
     for tag, root in (("train", a.train), ("val", a.val)):
         frames, starts, lengths = load_split(root)
-        data[tag] = encode_split(tok, frames, starts, lengths, device)
+        cache = Path(a.latent_cache) / f"z_{tag}.pt" if a.latent_cache else None
+        data[tag] = encode_split(tok, frames, starts, lengths, device, cache)
         print(tag, "episodes", len(lengths), "frames", len(data[tag][0]), "encoded in", round(time.time() - t0), "s", flush=True)
     zt, xt, ft = data["train"]
     zv, xv, fv = data["val"]
     g = torch.Generator(device="cpu").manual_seed(a.seed)
     val_idx = torch.randperm(len(zv), generator=g)[:a.val_samples].to(device)
 
-    lm = AutoModelForCausalLM.from_pretrained(a.init_checkpoint, torch_dtype=torch.float32)
+    lm = AutoModelForCausalLM.from_pretrained(a.init_checkpoint, dtype=torch.float32)
     model = SLMRecon(lm, a.readout).to(device)
     n_slm = sum(v.numel() for v in model.backbone.parameters())
     n_all = sum(v.numel() for v in model.parameters())
