@@ -87,7 +87,20 @@ def main():
     opener = "<plan>" if plan else "<action>"
     closers = [", ", "</plan>"] if plan else ["</action>"]
 
+    def words(t):
+        return re.findall(r"[a-z]+", t.lower())
+
+    def f1(a, b):   # bag-of-words F1 of two texts
+        ca, cb = collections.Counter(words(a)), collections.Counter(words(b))
+        common = sum((ca & cb).values())
+        return 0.0 if common == 0 else 2 * common / (sum(ca.values()) + sum(cb.values()))
+
+    def reasoning_of(t):
+        m = re.search(r"<reasoning>(.*?)</reasoning>", t, re.S)
+        return m.group(1).strip() if m else ""
+
     free_ok = gt_ok = 0
+    per_frame = []
     confusion_gt, confusion_free = collections.Counter(), collections.Counter()
     examples = []
     with torch.no_grad():
@@ -135,6 +148,10 @@ def main():
                 teacher = r[2]
                 gt_ok += pred[b] == teacher; free_ok += free[b][0] == teacher
                 confusion_gt[(NAMES[teacher], NAMES[pred[b]])] += 1
+                mine = reasoning_of(free[b][1])
+                per_frame.append(dict(frame=r[0], task=tasks[r[1]], teacher=NAMES[teacher], gt_reasoning=r[3], reasoning=mine,
+                                      action=NAMES[free[b][0]] if free[b][0] is not None else None, gt_pred=NAMES[pred[b]],
+                                      exact=mine == r[3], f1=f1(mine, r[3])))
                 confusion_free[(NAMES[teacher], NAMES[free[b][0]] if free[b][0] is not None else "unparsed")] += 1
                 if len(examples) < 12:
                     top = prob[b].topk(3)
@@ -142,12 +159,22 @@ def main():
                                          gt_pred=NAMES[pred[b]], gt_top3=[(NAMES[i], round(float(v), 3)) for v, i in zip(top.values, top.indices)],
                                          free_text=free[b][1]))
     n = len(rows)
+    ok = [x for x in per_frame if x["action"] == x["teacher"]]; bad = [x for x in per_frame if x["action"] != x["teacher"]]
     res = dict(run=run.name, step=state["step"], frames=n, free_action_acc=free_ok / n, gt_reasoning_action_acc=gt_ok / n,
+               reasoning_exact=float(np.mean([x["exact"] for x in per_frame])), reasoning_f1=float(np.mean([x["f1"] for x in per_frame])),
+               reasoning_f1_when_action_right=float(np.mean([x["f1"] for x in ok])) if ok else None,
+               reasoning_f1_when_action_wrong=float(np.mean([x["f1"] for x in bad])) if bad else None,
+               distinct_reasoning=len({x["reasoning"] for x in per_frame}), distinct_gt_reasoning=len({x["gt_reasoning"] for x in per_frame}),
                teacher_actions=collections.Counter(NAMES[r[2]] for r in rows).most_common(),
                confusion_gt=[[k[0], k[1], v] for k, v in confusion_gt.most_common(30)],
                confusion_free=[[k[0], k[1], v] for k, v in confusion_free.most_common(30)], examples=examples)
     Path(a.out).write_text(json.dumps(res, indent=1, ensure_ascii=False))
-    print(json.dumps({k: res[k] for k in ("run", "step", "frames", "free_action_acc", "gt_reasoning_action_acc")}), flush=True)
+    with open(Path(a.out).with_suffix(".frames.jsonl"), "w") as f:
+        for x in per_frame:
+            f.write(json.dumps(x, ensure_ascii=False) + "\n")
+    print(json.dumps({k: res[k] for k in ("run", "step", "frames", "free_action_acc", "gt_reasoning_action_acc", "reasoning_exact",
+                                          "reasoning_f1", "reasoning_f1_when_action_right", "reasoning_f1_when_action_wrong",
+                                          "distinct_reasoning", "distinct_gt_reasoning")}), flush=True)
 
 
 if __name__ == "__main__":
