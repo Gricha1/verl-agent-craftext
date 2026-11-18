@@ -18,6 +18,12 @@ Here, the same layout with our data:
   loss    L = sum_i L_i / sg(EMA_i) over reconstruction, text CE, value (each term divided by its running mean).
 Frames without a reasoning label (episodes the teacher failed, not labelled) train reconstruction and value only.
 
+--plan K: a plan of actions instead of one action (user, 2026-11-18): target
+  "<reasoning>\n{reasoning}\n</reasoning>\n<plan>{a_t}, {a_t+1}, ..., {a_t+K-1}</plan>" + EOS, the teacher's next K actions of
+  the episode (fewer at its end); the system text asks for the next K actions. Evaluation: share of greedy plans whose k-th
+  action is the teacher's k-th next action, for every k, and the mean length of the matching prefix.
+--accum M: the batch is split into M micro-batches whose gradients are summed (same update, less memory).
+
 Reasoning labels: rows of the phase-2 reasoning data dir of wood2200 (Gemma-4, label_reasoning.py --context;
 reason_wood2200_h200_20261106/data/{train,valid}.jsonl), cot_target "<reasoning>R</reasoning>\nACTION: X".
 
@@ -44,6 +50,8 @@ from train_slm_recon_d4 import OBJECTS, SLMRecon, decode, encode_split, load_spl
 
 SYSTEM = ("You play Crafter from the game screen. Think about the best course of action step by step inside "
           "<reasoning></reasoning>, then give the action inside <action></action>")
+SYSTEM_PLAN = ("You play Crafter from the game screen. Think about the best course of action step by step inside "
+               "<reasoning></reasoning>, then give your next {} actions, comma-separated, inside <plan></plan>")
 NAMES = ("Noop", "Move West", "Move East", "Move North", "Move South", "Do", "Sleep", "Place Stone", "Place Table",
          "Place Furnace", "Place Plant", "Make Wood Pickaxe", "Make Stone Pickaxe", "Make Iron Pickaxe",
          "Make Wood Sword", "Make Stone Sword", "Make Iron Sword")   # ZeroHero ACTIONS, the Craftax-Classic order
@@ -53,6 +61,14 @@ EOS = 2
 def parse_action(text):
     m = re.search(r"<action>(.*?)</action>", text)
     return NAMES.index(m.group(1).strip()) if m and m.group(1).strip() in NAMES else None
+
+
+def parse_plan(text):
+    """List of action indices inside <plan></plan> (None for a name that is not an action), or None without the tags."""
+    m = re.search(r"<plan>(.*?)</plan>", text, re.S)
+    if m is None:
+        return None
+    return [NAMES.index(s.strip()) if s.strip() in NAMES else None for s in m.group(1).split(",")]
 
 
 class SLMReasonAct(SLMRecon):
@@ -138,6 +154,8 @@ def main():
     p.add_argument("--value-gamma", type=float, default=0.99)
     p.add_argument("--seed", type=int, default=7950)
     p.add_argument("--latent-cache", default="")
+    p.add_argument("--plan", type=int, default=0, help="K > 0: target <plan> with the teacher's next K actions instead of <action>")
+    p.add_argument("--accum", type=int, default=1, help="micro-batches per optimizer step (batch / accum examples each)")
     a = p.parse_args()
     sys.path.insert(0, f"{a.repo}/vlm_pipeline/phase4_world_model")
     from imagine_eval import classify_tiles, tile_prototypes
@@ -172,7 +190,8 @@ def main():
             reasoning[key] = (m.group(1).strip(), ACTIONS.index(r["action"]))
     print("reasoning labels", len(reasoning), "unparsed", mismatch, flush=True)
 
-    pre = torch.tensor([enc("System:\n" + SYSTEM + "\nUser:\n")], device=device)
+    system = SYSTEM_PLAN.format(a.plan) if a.plan else SYSTEM
+    pre = torch.tensor([enc("System:\n" + system + "\nUser:\n")], device=device)
     posts = [enc(f"\nTask: {t}\nAssistant:\n") for t in tasks]
     Lp = max(map(len, posts))
     post_ids = torch.zeros(len(tasks), Lp, dtype=torch.long, device=device)
@@ -192,7 +211,11 @@ def main():
                 teacher.append(it["action"])
                 lab = reasoning.get((int(key), t))
                 if lab is not None and lab[1] == it["action"]:
-                    ids = enc(f"<reasoning>\n{lab[0]}\n</reasoning>\n<action>{NAMES[it['action']]}</action>") + [EOS]
+                    if a.plan:   # the teacher's next K actions of this episode (fewer near its end)
+                        plan = ", ".join(NAMES[x["action"]] for x in ep[t:t + a.plan])
+                        ids = enc(f"<reasoning>\n{lab[0]}\n</reasoning>\n<plan>{plan}</plan>") + [EOS]
+                    else:
+                        ids = enc(f"<reasoning>\n{lab[0]}\n</reasoning>\n<action>{NAMES[it['action']]}</action>") + [EOS]
                     targets.append(ids); has.append(1)
                 else:
                     targets.append([EOS]); has.append(0)
@@ -216,6 +239,9 @@ def main():
         cache = Path(a.latent_cache) / f"z_{tag}.pt" if a.latent_cache else None
         z, x, first = encode_split(tok, frames, starts, lengths, device, cache)
         data[tag] = (z, x, first, *split_data(root, tag))
+        if tag == "val":   # end (exclusive) of each frame's episode, for the teacher's next actions
+            vend = torch.cat([torch.full((n,), s + n, dtype=torch.long) for s, n in
+                              zip(np.concatenate(([0], np.cumsum(lengths)[:-1])), lengths)]).to(device)
     zt, xt, ft, gt, vt, mt, Tt, TMt, Ht, At = data["train"]
     zv, xv, fv, gv, vv, mv, Tv, TMv, Hv, Av = data["val"]
     gen = torch.Generator().manual_seed(a.seed)
@@ -280,18 +306,39 @@ def main():
         # greedy generation: is the action inside <action></action> the teacher's?
         gi = val_idx[:a.generate_samples]
         ok = parsed = 0; examples = []
+        K = max(a.plan, 1)
+        pos_hit, pos_n, prefix = np.zeros(K), np.zeros(K), []
         for st in range(0, len(gi), 128):
             idx = gi[st:st + 128]
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                ids = model.generate(windows(zv, fv, idx), pre, post_ids[gv[idx]], post_mask[gv[idx]])
+                ids = model.generate(windows(zv, fv, idx), pre, post_ids[gv[idx]], post_mask[gv[idx]],
+                                     max_tokens=80 + 6 * a.plan)
             for i, row in enumerate(ids.tolist()):
                 row = row[:row.index(EOS)] if EOS in row else row
                 txt = text.decode(row)
-                act = parse_action(txt)
-                parsed += act is not None; ok += act == int(Av[idx[i]])
+                j = int(idx[i])
+                teacher = [int(Av[j + k]) for k in range(K) if j + k < int(vend[j])]
+                if a.plan:
+                    plan = parse_plan(txt)
+                    parsed += plan is not None
+                    plan = plan or []
+                    good = 0
+                    for k, want in enumerate(teacher):
+                        pos_n[k] += 1
+                        same = k < len(plan) and plan[k] == want
+                        pos_hit[k] += same
+                        good = good + 1 if same and good == k else good
+                    prefix.append(good)
+                    ok += bool(plan) and plan[0] == teacher[0]
+                else:
+                    act = parse_action(txt)
+                    parsed += act is not None; ok += act == teacher[0]
                 if len(examples) < 6:
-                    examples.append(dict(frame=int(idx[i]), task=tasks[int(gv[idx[i]])], teacher=NAMES[int(Av[idx[i]])], text=txt))
+                    examples.append(dict(frame=j, task=tasks[int(gv[j])], teacher=", ".join(NAMES[t] for t in teacher), text=txt))
         res["action_acc_greedy"] = ok / len(gi); res["action_parsed"] = parsed / len(gi)
+        if a.plan:   # share of plans whose k-th action is the teacher's k-th next action; matching prefix length
+            res["plan_acc_by_position"] = (pos_hit / np.maximum(pos_n, 1)).round(4).tolist()
+            res["plan_matching_prefix"] = float(np.mean(prefix))
         res["examples"] = examples; res["real_tiles"] = real_n; res["step"] = step
         model.train()
         return res
@@ -307,28 +354,29 @@ def main():
     while step < a.steps:
         for g in opt.param_groups:
             g["lr"] = lr_at(step)
-        idx = torch.randint(0, len(zt), (a.batch,), device=device)
-        Z = windows(zt, ft, idx)
-        x = to_img(xt[idx.cpu()].to(device, non_blocking=True))
-        po, pm, tg, tm = batch_inputs(idx, Tt, TMt, gt)
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            zhat, logits, value = model(Z, pre, po, pm, tg, tm)
-            xh = decode(tok, zhat).float()
-        lm_mask = (tm.bool() & Ht[idx].bool()[:, None]).float()
-        ce = F.cross_entropy(logits.transpose(1, 2), tg, reduction="none")
-        terms = dict(rec=F.mse_loss(xh, x) + a.lpips_weight * lpips(xh, x),
-                     text=(ce * lm_mask).sum() / lm_mask.sum().clamp_min(1),
-                     val=((value - vt[idx]) ** 2 * mt[idx]).sum() / mt[idx].sum().clamp_min(1))
-        loss = 0.0
-        for k, v in terms.items():
-            ema[k] = v.item() if k not in ema else .99 * ema[k] + .01 * v.item()
-            loss = loss + v / max(ema[k], 1e-8)
         opt.zero_grad(set_to_none=True)
-        loss.backward()
+        for _ in range(a.accum):   # a.batch examples per optimizer step, in a.accum micro-batches
+            idx = torch.randint(0, len(zt), (a.batch // a.accum,), device=device)
+            Z = windows(zt, ft, idx)
+            x = to_img(xt[idx.cpu()].to(device, non_blocking=True))
+            po, pm, tg, tm = batch_inputs(idx, Tt, TMt, gt)
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                zhat, logits, value = model(Z, pre, po, pm, tg, tm)
+                xh = decode(tok, zhat).float()
+            lm_mask = (tm.bool() & Ht[idx].bool()[:, None]).float()
+            ce = F.cross_entropy(logits.transpose(1, 2), tg, reduction="none")
+            terms = dict(rec=F.mse_loss(xh, x) + a.lpips_weight * lpips(xh, x),
+                         text=(ce * lm_mask).sum() / lm_mask.sum().clamp_min(1),
+                         val=((value - vt[idx]) ** 2 * mt[idx]).sum() / mt[idx].sum().clamp_min(1))
+            loss = 0.0
+            for k, v in terms.items():
+                ema[k] = v.item() if k not in ema else .99 * ema[k] + .01 * v.item()
+                loss = loss + v / max(ema[k], 1e-8)
+            (loss / a.accum).backward()
+            for k in terms:
+                run[k] += terms[k].item() / a.accum
         gn = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step(); step += 1
-        for k in terms:
-            run[k] += terms[k].item()
         if step % 100 == 0:
             print(f"step {step} rec {run['rec']/100:.5f} text_ce {run['text']/100:.4f} val_mse {run['val']/100:.5f} "
                   f"lr {lr_at(step):.2e} gnorm {gn.item():.2f} {step/(time.time()-t0):.2f} it/s", flush=True)
