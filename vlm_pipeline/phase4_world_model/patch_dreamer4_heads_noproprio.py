@@ -24,6 +24,8 @@ edits = [
      '    return {"z": z, "proprio": as_t(proprio) if has_p else None, "actions"'),
     ('    p_in = (1 - tau_ctx) * prop + tau_ctx * torch.randn_like(prop)\n',
      '    p_in = None if prop is None else (1 - tau_ctx) * prop + tau_ctx * torch.randn_like(prop)\n'),
+    ('        clip = {k: torch.cat([rel[k], uni[k]], 0) for k in rel}\n',
+     '        clip = {k: torch.cat([rel[k], uni[k]], 0) if rel[k] is not None else None for k in rel}   # patched\n'),
 ]
 for old, new in edits:
     if new in src:
