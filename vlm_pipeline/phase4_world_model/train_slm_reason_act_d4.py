@@ -387,6 +387,8 @@ def main():
             print("[val]", json.dumps({k: (round(v, 5) if isinstance(v, float) else v) for k, v in res.items()})[:1500], flush=True)
             state = dict(model=model.state_dict(), step=step, args=vars(a), val=res, tasks=tasks)
             torch.save(state, out / "latest.pt")
+            (out / "checkpoints").mkdir(exist_ok=True)
+            torch.save(state, out / "checkpoints" / f"step_{step:06d}.pt")
             if best is None or res["text_nll"] < best:
                 best = res["text_nll"]; torch.save(state, out / "best.pt")
     print("TRAIN_DONE", step, flush=True)
