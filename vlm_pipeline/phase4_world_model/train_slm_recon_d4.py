@@ -59,7 +59,7 @@ def encode_split(tok, frames, starts, lengths, device, cache=None, chunk=256):
         z = torch.cat(zs)
         if cache is not None:
             torch.save(z.cpu(), cache)
-    x = torch.cat(xs).to(device)
+    x = torch.cat(xs).pin_memory()          # frames stay in host memory, batches are copied over
     assert len(z) == len(x), (len(z), len(x))
     ep_first = torch.cat([torch.full((n,), int(o), dtype=torch.long) for n, o in zip(lengths, np.concatenate(([0], np.cumsum(lengths)[:-1])))])
     return z, x, ep_first.to(device)
@@ -172,7 +172,7 @@ def main():
         for s in range(0, len(val_idx), 256):
             idx = val_idx[s:s + 256]
             Z = windows(zv, fv, idx)
-            x = to_img(xv[idx])
+            x = to_img(xv[idx.cpu()].to(device))
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 zhat, _ = model(Z)
                 xh = decode(tok, zhat.float()).float()
@@ -201,7 +201,7 @@ def main():
         res["step"] = step
         if step % (a.eval_every * 5) == 0 or step == a.steps:
             sel = idx[:8]
-            np.savez_compressed(out / f"examples_{step:06d}.npz", real=xv[sel].cpu().numpy(),
+            np.savez_compressed(out / f"examples_{step:06d}.npz", real=xv[sel.cpu()].numpy(),
                                 tok=(xr[:8].permute(0, 2, 3, 1).cpu().numpy() * 255).round().astype(np.uint8),
                                 slm=(xh[:8].permute(0, 2, 3, 1).cpu().numpy() * 255).round().astype(np.uint8))
         model.train()
@@ -215,7 +215,7 @@ def main():
     while step < a.steps:
         idx = torch.randint(0, len(zt), (a.batch,), device=device)
         Z = windows(zt, ft, idx)
-        x = to_img(xt[idx])
+        x = to_img(xt[idx.cpu()].to(device, non_blocking=True))
         with torch.autocast("cuda", dtype=torch.bfloat16):
             zhat, _ = model(Z)
             xh = decode(tok, zhat).float()
