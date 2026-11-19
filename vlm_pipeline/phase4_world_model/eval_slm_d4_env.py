@@ -21,7 +21,14 @@ At step t of an episode (frames x_0..x_t, executed actions a_0..a_{t-1}):
           that ends at the k-th imagined frame
   score   max_k v_k (--score max) or v_H (--score last), over the steps the plan covers (shorter plans: Noop after its end,
           not scored)
-  The candidate with the best score is chosen and its first action played; replanning at every step.
+  The candidate with the best score is chosen and its first --execute actions are played (default 1: replanning at every
+  step); a lane plans again when its queue is empty.
+  --score mean: mean_k v_k.
+  --score reward (needs --heads, a Dreamer 4 phase-2 checkpoint of train_heads.py: finetuned dynamics + reward head, which
+  then also produces the dream): with r_k the expected reward that arrives with d_k (reward head, MTP distance 0, task g)
+  and p_k its terminal probability (the dataset's rule on the head's bins),
+          score = sum_{k<=L} gamma^(k-1) A_k r_k + gamma^L A_{L+1} v_L,   A_k = prod_{j<k} (1 - p_j),  L = plan length (<= H)
+  i.e. Dreamer's predicted rewards along the plan plus the SLM value of the last imagined state.
 
   python eval_slm_d4_env.py --run <SLM run dir> --checkpoint step_030000.pt --out <json> [--plans 8 --decode sample --imagine
      --dyn <dreamer4 dyn>/checkpoints/latest.pt]
@@ -60,7 +67,10 @@ def main():
     p.add_argument("--keep-previous", action="store_true", help="the rest of the previous chosen plan is one more candidate")
     p.add_argument("--imagine", action="store_true", help="choose the candidate by the value of its Dreamer 4 dream")
     p.add_argument("--horizon", type=int, default=0, help="imagined steps (0 = the plan length of the checkpoint)")
-    p.add_argument("--score", choices=("max", "last"), default="max")
+    p.add_argument("--score", choices=("max", "last", "mean", "reward"), default="max")
+    p.add_argument("--execute", type=int, default=1, help="actions of the chosen plan played before planning again")
+    p.add_argument("--heads", default="", help="Dreamer 4 phase-2 checkpoint (train_heads.py) for --score reward")
+    p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--K", type=int, default=4, help="denoising steps per imagined frame")
     p.add_argument("--chunk", type=int, default=1024, help="rows per forward pass")
     p.add_argument("--seed", type=int, default=0)
@@ -95,6 +105,21 @@ def main():
         dyn.eval()
         window, k_max, tau_ctx = dck["config"]["data"]["seq_len"], dck["config"]["model"]["k_max"], dck["config"]["objective"]["tau_ctx"]
         ctx = window - 1
+        if a.heads:   # phase-2 world model: finetuned dynamics with agent tokens + reward head; it also produces the dream
+            from dreamer4.models.agent_heads import build_agent_heads, flatten_agent_out, terminal_bins
+            from dreamer4.models.dynamics import _log2_int
+            from dreamer4.models.world_model import WorldModel
+            hck = torch.load(a.heads, map_location="cpu", weights_only=False)
+            world = WorldModel(a.dyn, device=device, n_agent=int(hck["n_agent"]))
+            world.load_dynamics_weights(hck["dyn"])
+            dyn = world.dyn.eval()
+            heads = build_agent_heads(hck["agent_cfg"]).to(device).eval()
+            heads.load_state_dict(hck["agent"])
+            term_bin = terminal_bins(heads.reward, world.continues_from_reward, device)
+            bin_values = heads.reward.twohot.bin_values.to(device).float()
+            head_task = {g: i for i, g in enumerate(world.dataset.manifest["task_names"])}
+    if a.score == "reward" and not a.heads:
+        raise ValueError("--score reward needs --heads")
 
     system = SYSTEM_PLAN.format(K) if K else SYSTEM
     pre = torch.tensor([enc("System:\n" + system + "\nUser:\n")], device=device)
@@ -198,6 +223,36 @@ def main():
             outs.append(d.float())
         return torch.cat(outs)
 
+    @torch.no_grad()
+    def rewards_of(S, acts, gi):
+        """S [C, 4 + H, 64, 16] latents (z_{t-3..t}, d_1..d_H), acts [C, ctx - 1 + H] action ids (a_{t-2}, a_{t-1}, plan),
+        gi [C] SLM task ids -> expected arriving reward r_k and terminal probability p_k of d_k, each [C, H]."""
+        C = S.shape[0]
+        into = torch.cat([acts[:, :1] * 0, acts], 1)        # actions leading into S[1..]: a_{t-3} (unknown, 0), a_{t-2}, ...
+        task = torch.tensor([head_task[tasks[int(g)]] for g in gi.tolist()], device=device)
+        sig = min(int(round((1.0 - tau_ctx) * k_max)), k_max)
+        rs, ps = [], []
+        for k in range(1, H + 1):
+            zw = S[:, k:k + 4]                                  # window ending at d_k
+            mv = into[:, k:k + 3]                               # actions into slots 1..3 of the window
+            av = torch.zeros(C, 4, 18, device=device)
+            av[:, 0, 17] = 1.0                                  # window start flag
+            av[:, 1:, :17] = F.one_hot(mv, 17).float()
+            out_r, out_p = [], []
+            for s0 in range(0, C, a.chunk):
+                sl = slice(s0, s0 + a.chunk)
+                B = zw[sl].shape[0]
+                st = torch.full((B, 4), _log2_int(k_max), device=device, dtype=torch.long)
+                sg = torch.full((B, 4), sig, device=device, dtype=torch.long)
+                ag = heads.tokens((B, 4), task_ids=task[sl].reshape(B, 1).expand(B, 4), device=device)
+                with torch.autocast("cuda", dtype=torch.bfloat16):
+                    out = dyn(av[sl], st, sg, (1 - tau_ctx) * zw[sl], agent_tokens=ag)
+                h = flatten_agent_out(out[-1][:, -1]).float()
+                pr = heads.reward.at(h, 0).float().softmax(-1)
+                out_r.append((pr * bin_values).sum(-1)); out_p.append((pr * term_bin).sum(-1))
+            rs.append(torch.cat(out_r)); ps.append(torch.cat(out_p))
+        return torch.stack(rs, 1), torch.stack(ps, 1)
+
     # ---------------- closed loop ----------------
     xs, zs, played = [], [], []       # per step: frames [L,63,63,3], latents [L,64,16], actions [L]
     active = np.ones(L, bool)
@@ -210,6 +265,8 @@ def main():
     chosen_stats = collections.Counter()
     best_scores, now_values = [[] for _ in range(L)], [[] for _ in range(L)]
     previous = [None] * L               # rest of the chosen plan, for --keep-previous
+    queue = [[] for _ in range(L)]      # actions of the chosen plan still to play (--execute)
+    reward_terms = [[] for _ in range(L)]
     N = max(1, a.plans)
     timing = collections.defaultdict(float)
     for t in range(a.max_steps):
@@ -219,8 +276,9 @@ def main():
         with torch.no_grad():
             zs.append(tok.encode_frames(win)[:, -1].float())
         timing["encode"] += time.time() - t0
-        act_lanes = np.flatnonzero(active)
-        idx = torch.tensor(act_lanes, device=device)
+        live = np.flatnonzero(active)
+        act_lanes = np.array([lane for lane in live if not queue[lane]], dtype=int)   # lanes that plan now
+        idx = torch.tensor(act_lanes, device=device, dtype=torch.long)
         hist = [zs[max(0, t - 3 + j)][idx] for j in range(4)]
         Zt = torch.stack(hist, 1)                                              # [A, 4, 64, 16]
         A = len(act_lanes)
@@ -231,7 +289,7 @@ def main():
         if a.greedy_candidate:
             greedy_rows[::N] = True
         t1 = time.time()
-        answers = sample_text(rows_Z, rows_g, greedy_rows)
+        answers = sample_text(rows_Z, rows_g, greedy_rows) if A else []
         timing["text"] += time.time() - t1
         cands = []                                                              # per active lane: list of (plan, source)
         for j, lane in enumerate(act_lanes):
@@ -253,7 +311,7 @@ def main():
             if len(texts[lane]) < 3:
                 texts[lane].append(answers[j * N])
         choice = [0] * A
-        if a.imagine and (N > 1 or a.keep_previous):
+        if A and a.imagine and (N > 1 or a.keep_previous):
             t2 = time.time()
             flat = [(j, c) for j, cl in enumerate(cands) for c in range(len(cl))]
             lane_of = torch.tensor([j for j, _ in flat], device=device)
@@ -273,11 +331,24 @@ def main():
             Wk = torch.stack([S[:, k:k + 4] for k in range(1, H + 1)], 1)       # [C, H, 4, 64, 16]
             v = value_of(Wk.flatten(0, 1), g_of_lane[idx][lane_of].repeat_interleave(H, 0)).view(-1, H)
             v = v.masked_fill(~valid, float("-inf"))
+            last = valid.long().sum(1) - 1
             if a.score == "max":
                 sc = v.max(1).values
-            else:
-                last = valid.long().sum(1) - 1
+            elif a.score == "mean":
+                sc = v.masked_fill(~valid, 0).sum(1) / valid.sum(1)
+            elif a.score == "last":
                 sc = v.gather(1, last[:, None])[:, 0]
+            else:
+                rk, pk = rewards_of(S, acts, g_of_lane[idx][lane_of])
+                alive = torch.cumprod(torch.cat([torch.ones_like(pk[:, :1]), 1 - pk], 1), 1)   # A_1..A_{H+1}
+                disc = a.gamma ** torch.arange(H, device=device, dtype=torch.float32)
+                rsum = (disc * alive[:, :H] * rk * valid).sum(1)
+                vl = v.gather(1, last[:, None])[:, 0]
+                tail = a.gamma ** (last + 1).float() * alive.gather(1, (last + 1)[:, None])[:, 0] * vl
+                sc = rsum + tail
+                for j, (jj, c) in enumerate(flat):
+                    if c == 0:
+                        reward_terms[act_lanes[jj]].append((float(rsum[j]), float(tail[j])))
             v_now = value_of(Zt, g_of_lane[idx])
             timing["value"] += time.time() - t3
             sc = sc.tolist()
@@ -292,19 +363,22 @@ def main():
         for j, lane in enumerate(act_lanes):
             plan, src, _ = cands[j][choice[j]]
             chosen_stats[src] += 1
-            acts_now[lane] = plan[0]
-            previous[lane] = plan[1:] if len(plan) > 1 else None
-            counts[lane][NAMES[plan[0]]] += 1
+            queue[lane] = list(plan[:max(1, a.execute)])
+            previous[lane] = plan[len(queue[lane]):] or None
+        for lane in live:
+            acts_now[lane] = queue[lane].pop(0)
+            counts[lane][NAMES[acts_now[lane]]] += 1
         played.append(acts_now)
         t4 = time.time()
         keys, obs, est, r, done, ok = step_v(keys, est, jnp.asarray(acts_now))
         r, done, ok = np.asarray(r), np.asarray(done), np.asarray(ok)
         timing["env"] += time.time() - t4
-        for lane in act_lanes:
+        for lane in live:
             ret[lane] += float(r[lane]); steps[lane] = t + 1
             success[lane] |= bool(ok[lane])
             if done[lane]:
                 active[lane] = False
+                queue[lane] = []
         if t % 20 == 0 or not active.any():
             print(json.dumps(dict(t=t, active=int(active.sum()), success=int(success.sum()), lanes=L,
                                   sec=round(time.time() - t_start, 1), **{k: round(v, 1) for k, v in timing.items()})), flush=True)
@@ -315,7 +389,9 @@ def main():
         episodes.append(dict(task=instrs[ti], seed=seed, steps=int(steps[lane]), success=bool(success[lane]), ret=float(ret[lane]),
                              top_actions=counts[lane].most_common(4), unparsed=int(unparsed[lane]), first_texts=texts[lane],
                              mean_best_score=float(np.mean(best_scores[lane])) if best_scores[lane] else None,
-                             mean_value_now=float(np.mean(now_values[lane])) if now_values[lane] else None))
+                             mean_value_now=float(np.mean(now_values[lane])) if now_values[lane] else None,
+                             mean_reward_term=float(np.mean([x[0] for x in reward_terms[lane]])) if reward_terms[lane] else None,
+                             mean_value_term=float(np.mean([x[1] for x in reward_terms[lane]])) if reward_terms[lane] else None))
     by_task = {instrs[ti]: float(np.mean([e["success"] for e in episodes if e["task"] == instrs[ti]])) for ti in task_ids}
     res = dict(run=run.name, checkpoint=a.checkpoint, step=state["step"], args=vars(a), plan=K, horizon=H,
                success_rate=float(success.mean()), successes=int(success.sum()), episodes_n=L, by_task=by_task,
