@@ -23,6 +23,9 @@ Frames without a reasoning label (episodes the teacher failed, not labelled) tra
   the episode (fewer at its end); the system text asks for the next K actions. Evaluation: share of greedy plans whose k-th
   action is the teacher's k-th next action, for every k, and the mean length of the matching prefix.
 --accum M: the batch is split into M micro-batches whose gradients are summed (same update, less memory).
+--dreamer-h DIR: h_train.pt / h_val.pt of cache_dreamer_h.py, the agent-token outputs h_t (n_agent x d) of a Dreamer 4 phase-2
+  model (task as text, reward / value / instruction heads) on the real window ending at frame t. They enter the prompt as
+  n_agent more tokens after the latents, e_h = MLP(h) + slot: the SLM reads the world model's own task-aware state.
 
 Reasoning labels: rows of the phase-2 reasoning data dir of wood2200 (Gemma-4, label_reasoning.py --context;
 reason_wood2200_h200_20261106/data/{train,valid}.jsonl), cot_target "<reasoning>R</reasoning>\nACTION: X".
@@ -72,22 +75,29 @@ def parse_plan(text):
 
 
 class SLMReasonAct(SLMRecon):
-    def __init__(self, lm, readout, **kw):
+    def __init__(self, lm, readout, n_h=0, d_h=0, **kw):
         super().__init__(lm, readout, **kw)
         d = lm.config.hidden_size
         self.embed = lm.get_input_embeddings()
         self.lm_head = lm.lm_head
         self.value_head = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, 1))
+        self.n_h = n_h
+        if n_h:   # Dreamer 4 agent-token outputs h_t as extra prompt tokens (--dreamer-h)
+            self.h_adapter = nn.Sequential(nn.Linear(d_h, d), nn.GELU(), nn.Linear(d, d))
+            self.h_slot = nn.Parameter(torch.randn(n_h, d) * .02)
 
-    def prefix(self, Z, pre, post, post_mask):
-        """Embeddings of the prompt: pre text, latents + readouts, post text (task, padded) -> (embeds, mask, readout slice)."""
+    def prefix(self, Z, pre, post, post_mask, Hd=None):
+        """Embeddings of the prompt: pre text, latents (+ Dreamer h tokens) + readouts, post text (task, padded)
+        -> (embeds, mask, readout slice)."""
         B = Z.shape[0]
         e = self.adapter(Z) + self.slot + self.index
-        parts = [self.embed(pre).expand(B, -1, -1), e.reshape(B, -1, e.shape[-1]), self.readout.expand(B, -1, -1),
-                 self.embed(post)]
+        parts = [self.embed(pre).expand(B, -1, -1), e.reshape(B, -1, e.shape[-1])]
+        if self.n_h:
+            parts.append(self.h_adapter(Hd.float()) + self.h_slot)
+        parts += [self.readout.expand(B, -1, -1), self.embed(post)]
         lengths = [p.shape[1] for p in parts]
-        mask = torch.cat([torch.ones(B, sum(lengths[:3]), dtype=torch.long, device=Z.device), post_mask], 1)
-        start = lengths[0] + lengths[1]
+        mask = torch.cat([torch.ones(B, sum(lengths[:-1]), dtype=torch.long, device=Z.device), post_mask], 1)
+        start = sum(lengths[:-2])
         return torch.cat([p.float() for p in parts], 1), mask, slice(start, start + self.R)
 
     def recon(self, h, sl):
@@ -97,8 +107,8 @@ class SLMReasonAct(SLMRecon):
             return zhat.view(B, self.w, self.n_lat, self.d_lat)
         return zhat.view(B, self.n_lat, self.w, self.d_lat).transpose(1, 2)
 
-    def forward(self, Z, pre, post, post_mask, target, target_mask):
-        emb, mask, sl = self.prefix(Z, pre, post, post_mask)
+    def forward(self, Z, pre, post, post_mask, target, target_mask, Hd=None):
+        emb, mask, sl = self.prefix(Z, pre, post, post_mask, Hd)
         P = emb.shape[1]
         x = torch.cat([emb, self.embed(target).float()], 1)
         mask = torch.cat([mask, target_mask], 1)
@@ -108,8 +118,8 @@ class SLMReasonAct(SLMRecon):
         return self.recon(h, sl), logits, value
 
     @torch.no_grad()
-    def generate(self, Z, pre, post, post_mask, max_tokens=64):
-        emb, mask, _ = self.prefix(Z, pre, post, post_mask)
+    def generate(self, Z, pre, post, post_mask, max_tokens=64, Hd=None):
+        emb, mask, _ = self.prefix(Z, pre, post, post_mask, Hd)
         out = self.backbone(inputs_embeds=emb, attention_mask=mask, use_cache=True)
         past, h = out.past_key_values, out.last_hidden_state[:, -1]
         B = Z.shape[0]
@@ -156,6 +166,7 @@ def main():
     p.add_argument("--latent-cache", default="")
     p.add_argument("--plan", type=int, default=0, help="K > 0: target <plan> with the teacher's next K actions instead of <action>")
     p.add_argument("--accum", type=int, default=1, help="micro-batches per optimizer step (batch / accum examples each)")
+    p.add_argument("--dreamer-h", default="", help="dir with h_train.pt / h_val.pt (cache_dreamer_h.py): Dreamer 4 h_t tokens")
     a = p.parse_args()
     sys.path.insert(0, f"{a.repo}/vlm_pipeline/phase4_world_model")
     from imagine_eval import classify_tiles, tile_prototypes
@@ -244,6 +255,14 @@ def main():
                               zip(np.concatenate(([0], np.cumsum(lengths)[:-1])), lengths)]).to(device)
     zt, xt, ft, gt, vt, mt, Tt, TMt, Ht, At = data["train"]
     zv, xv, fv, gv, vv, mv, Tv, TMv, Hv, Av = data["val"]
+    if a.dreamer_h:   # [N, n_agent, d] per frame, same order as the latents
+        hT = torch.load(Path(a.dreamer_h) / "h_train.pt").to(device); hV = torch.load(Path(a.dreamer_h) / "h_val.pt").to(device)
+        assert len(hT) == len(zt) and len(hV) == len(zv), (hT.shape, zt.shape, hV.shape, zv.shape)
+        n_h, d_h = hT.shape[1:]
+        print("Dreamer h tokens", tuple(hT.shape), flush=True)
+    else:
+        hT = hV = None; n_h = d_h = 0
+    HD = lambda h, idx: None if h is None else h[idx]
     gen = torch.Generator().manual_seed(a.seed)
     val_idx = torch.randperm(len(zv), generator=gen)[:a.val_samples].to(device)
     vmean = float((vt * mt).sum() / mt.sum())
@@ -252,7 +271,7 @@ def main():
     lm.resize_token_embeddings(len(text))
     nn.init.normal_(lm.get_input_embeddings().weight, std=lm.config.initializer_range)   # new vocabulary, random rows
     lm.tie_weights()
-    model = SLMReasonAct(lm, a.readout).to(device)
+    model = SLMReasonAct(lm, a.readout, n_h=n_h, d_h=d_h).to(device)
     if a.from_run:
         state = torch.load(Path(a.from_run) / "latest.pt", map_location="cpu", weights_only=False)
         sd = {k: v for k, v in state["model"].items() if "embed_tokens" not in k}   # its embeddings were never used
@@ -260,7 +279,7 @@ def main():
         print("fine-tune from", a.from_run, "step", state["step"], "not loaded:", sorted({k.split(".")[0] for k in missing}),
               "unexpected:", unexpected, flush=True)
     n_par = sum(v.numel() for v in model.parameters())
-    print(f"parameters {n_par/1e6:.2f}M, vocabulary {len(text)}, prompt {pre.shape[1]}+{256 + a.readout}+{Lp} tokens", flush=True)
+    print(f"parameters {n_par/1e6:.2f}M, vocabulary {len(text)}, prompt {pre.shape[1]}+{256 + n_h + a.readout}+{Lp} tokens", flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, betas=(0.9, 0.95), weight_decay=0.1)
     warm = min(a.warmup, max(1, a.steps // 20))
     lr_at = lambda s: a.lr * ((s + 1) / warm if s < warm else
@@ -284,7 +303,7 @@ def main():
             Z = windows(zv, fv, idx); x = to_img(xv[idx.cpu()].to(device))
             po, pm, tg, tm = batch_inputs(idx, Tv, TMv, gv)
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                zhat, logits, value = model(Z, pre, po, pm, tg, tm)
+                zhat, logits, value = model(Z, pre, po, pm, tg, tm, Hd=HD(hV, idx))
                 xh = decode(tok, zhat.float()).float()
             b = len(idx); n += b
             s["mse"] += F.mse_loss(xh, x).item() * b; s["lpips"] += lpips(xh, x).item() * b
@@ -312,7 +331,7 @@ def main():
             idx = gi[st:st + 128]
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 ids = model.generate(windows(zv, fv, idx), pre, post_ids[gv[idx]], post_mask[gv[idx]],
-                                     max_tokens=80 + 6 * a.plan)
+                                     max_tokens=80 + 6 * a.plan, Hd=HD(hV, idx))
             for i, row in enumerate(ids.tolist()):
                 row = row[:row.index(EOS)] if EOS in row else row
                 txt = text.decode(row)
@@ -361,7 +380,7 @@ def main():
             x = to_img(xt[idx.cpu()].to(device, non_blocking=True))
             po, pm, tg, tm = batch_inputs(idx, Tt, TMt, gt)
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                zhat, logits, value = model(Z, pre, po, pm, tg, tm)
+                zhat, logits, value = model(Z, pre, po, pm, tg, tm, Hd=HD(hT, idx))
                 xh = decode(tok, zhat).float()
             lm_mask = (tm.bool() & Ht[idx].bool()[:, None]).float()
             ce = F.cross_entropy(logits.transpose(1, 2), tg, reduction="none")

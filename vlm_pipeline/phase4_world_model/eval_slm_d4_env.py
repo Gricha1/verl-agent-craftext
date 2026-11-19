@@ -29,6 +29,8 @@ At step t of an episode (frames x_0..x_t, executed actions a_0..a_{t-1}):
   and p_k its terminal probability (the dataset's rule on the head's bins),
           score = sum_{k<=L} gamma^(k-1) A_k r_k + gamma^L A_{L+1} v_L,   A_k = prod_{j<k} (1 - p_j),  L = plan length (<= H)
   i.e. Dreamer's predicted rewards along the plan plus the SLM value of the last imagined state.
+SLM checkpoints trained with --dreamer-h read the Dreamer agent tokens h too (needs --heads, the same phase-2 model): h of the
+real window ending at t when writing the plan, h of each imagined window for its value (cache_dreamer_h.py conventions).
 
   python eval_slm_d4_env.py --run <SLM run dir> --checkpoint step_030000.pt --out <json> [--plans 8 --decode sample --imagine
      --dyn <dreamer4 dyn>/checkpoints/latest.pt]
@@ -90,15 +92,20 @@ def main():
     H = a.horizon or K
     if a.imagine and not K:
         raise ValueError("--imagine needs a --plan checkpoint")
+    need_world = a.imagine or bool(a.heads)
     text = PreTrainedTokenizerFast(tokenizer_file=str(Path(cfg["text_tokenizer"]) / "tokenizer.json"))
     enc = lambda s: text.encode(s, add_special_tokens=False)
     lm = AutoModelForCausalLM.from_pretrained(cfg["init_checkpoint"], dtype=torch.float32)
     lm.resize_token_embeddings(len(text)); lm.tie_weights()
-    model = SLMReasonAct(lm, cfg["readout"]).to(device)
+    n_h = int(state["model"]["h_slot"].shape[0]) if "h_slot" in state["model"] else 0
+    d_h = int(state["model"]["h_adapter.0.weight"].shape[1]) if n_h else 0
+    model = SLMReasonAct(lm, cfg["readout"], n_h=n_h, d_h=d_h).to(device)
     model.load_state_dict(state["model"]); model.eval()
+    if n_h and not a.heads:
+        raise ValueError("this SLM reads Dreamer h tokens: pass --heads (and --dyn) of the phase-2 model it was trained on")
     tasks = state["tasks"]
     tok = FrozenTokenizer(cfg["tok"], history=4, device=device)
-    if a.imagine:
+    if need_world:
         from dreamer4.dynamics_eval import windowed_rollout
         from dreamer4.train.train_dynamics import load_dynamics_checkpoint
         dyn, dck = load_dynamics_checkpoint(a.dyn, device=device)
@@ -162,13 +169,13 @@ def main():
 
     # ---------------- SLM helpers ----------------
     @torch.no_grad()
-    def sample_text(Z, gi, greedy_rows):
+    def sample_text(Z, gi, greedy_rows, Hd=None):
         """Decode one answer per row; rows flagged in greedy_rows are greedy, the others follow --decode."""
         out_rows = []
         for s in range(0, Z.shape[0], a.chunk):
             Zc, gc, gr = Z[s:s + a.chunk], gi[s:s + a.chunk], greedy_rows[s:s + a.chunk]
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                emb, mask, _ = model.prefix(Zc, pre, post_ids[gc], post_mask[gc])
+                emb, mask, _ = model.prefix(Zc, pre, post_ids[gc], post_mask[gc], None if Hd is None else Hd[s:s + a.chunk])
                 o = model.backbone(inputs_embeds=emb, attention_mask=mask, use_cache=True)
             past, h = o.past_key_values, o.last_hidden_state[:, -1]
             B = Zc.shape[0]
@@ -202,11 +209,12 @@ def main():
         return out_rows
 
     @torch.no_grad()
-    def value_of(Z, gi):
+    def value_of(Z, gi, Hd=None):
         vs = []
         for s in range(0, Z.shape[0], a.chunk):
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                emb, mask, _ = model.prefix(Z[s:s + a.chunk], pre, post_ids[gi[s:s + a.chunk]], post_mask[gi[s:s + a.chunk]])
+                emb, mask, _ = model.prefix(Z[s:s + a.chunk], pre, post_ids[gi[s:s + a.chunk]], post_mask[gi[s:s + a.chunk]],
+                                            None if Hd is None else Hd[s:s + a.chunk])
                 hh = model.backbone(inputs_embeds=emb, attention_mask=mask).last_hidden_state
                 vs.append(model.value_head(hh[:, -1]).squeeze(-1).float())
         return torch.cat(vs)
@@ -224,21 +232,24 @@ def main():
         return torch.cat(outs)
 
     @torch.no_grad()
-    def rewards_of(S, acts, gi):
-        """S [C, 4 + H, 64, 16] latents (z_{t-3..t}, d_1..d_H), acts [C, ctx - 1 + H] action ids (a_{t-2}, a_{t-1}, plan),
-        gi [C] SLM task ids -> expected arriving reward r_k and terminal probability p_k of d_k, each [C, H]."""
+    def agent_scan(S, into, fresh, gi, ks):
+        """Phase-2 agent tokens on the windows S[:, k:k+4] for k in ks. S [C, n, 64, 16] latents, into [C, n - 1] the action that
+        led into S[:, i + 1], fresh [n] bool (False: S[i] repeats S[i - 1] at the episode start -> start flag), gi [C] SLM task
+        ids. Returns h [C, len(ks), n_agent, d], expected arriving reward r and terminal probability p [C, len(ks)]."""
         C = S.shape[0]
-        into = torch.cat([acts[:, :1] * 0, acts], 1)        # actions leading into S[1..]: a_{t-3} (unknown, 0), a_{t-2}, ...
         task = torch.tensor([head_task[tasks[int(g)]] for g in gi.tolist()], device=device)
         sig = min(int(round((1.0 - tau_ctx) * k_max)), k_max)
-        rs, ps = [], []
-        for k in range(1, H + 1):
-            zw = S[:, k:k + 4]                                  # window ending at d_k
-            mv = into[:, k:k + 3]                               # actions into slots 1..3 of the window
+        hs, rs, ps = [], [], []
+        for k in ks:
+            zw = S[:, k:k + 4]                                  # window S[k..k+3]
             av = torch.zeros(C, 4, 18, device=device)
             av[:, 0, 17] = 1.0                                  # window start flag
-            av[:, 1:, :17] = F.one_hot(mv, 17).float()
-            out_r, out_p = [], []
+            for j in range(1, 4):
+                if fresh[k + j]:
+                    av[:, j, :17] = F.one_hot(into[:, k + j - 1], 17).float()
+                else:
+                    av[:, j, 17] = 1.0
+            out_h, out_r, out_p = [], [], []
             for s0 in range(0, C, a.chunk):
                 sl = slice(s0, s0 + a.chunk)
                 B = zw[sl].shape[0]
@@ -247,11 +258,11 @@ def main():
                 ag = heads.tokens((B, 4), task_ids=task[sl].reshape(B, 1).expand(B, 4), device=device)
                 with torch.autocast("cuda", dtype=torch.bfloat16):
                     out = dyn(av[sl], st, sg, (1 - tau_ctx) * zw[sl], agent_tokens=ag)
-                h = flatten_agent_out(out[-1][:, -1]).float()
-                pr = heads.reward.at(h, 0).float().softmax(-1)
-                out_r.append((pr * bin_values).sum(-1)); out_p.append((pr * term_bin).sum(-1))
-            rs.append(torch.cat(out_r)); ps.append(torch.cat(out_p))
-        return torch.stack(rs, 1), torch.stack(ps, 1)
+                hh = out[-1][:, -1].float()                         # (B, n_agent, d)
+                pr = heads.reward.at(flatten_agent_out(hh), 0).float().softmax(-1)
+                out_h.append(hh); out_r.append((pr * bin_values).sum(-1)); out_p.append((pr * term_bin).sum(-1))
+            hs.append(torch.cat(out_h)); rs.append(torch.cat(out_r)); ps.append(torch.cat(out_p))
+        return torch.stack(hs, 1), torch.stack(rs, 1), torch.stack(ps, 1)
 
     # ---------------- closed loop ----------------
     xs, zs, played = [], [], []       # per step: frames [L,63,63,3], latents [L,64,16], actions [L]
@@ -285,11 +296,17 @@ def main():
         # candidates
         rows_Z = Zt.repeat_interleave(N, 0)
         rows_g = g_of_lane[idx].repeat_interleave(N, 0)
+        fresh_real = [False] + [t - 3 + i >= 1 for i in range(1, 4)]          # S[0..3] = z_{t-3..t}
+        into_real = torch.tensor([[played[t - 3 + i][lane] if t - 3 + i >= 0 else 0 for i in range(3)] for lane in act_lanes],
+                                 device=device, dtype=torch.long).reshape(A, 3)   # a_{t-3}, a_{t-2}, a_{t-1}
+        Hnow = None
+        if n_h and A:
+            Hnow = agent_scan(Zt, into_real, fresh_real, g_of_lane[idx], [0])[0][:, 0]   # [A, n_agent, d]
         greedy_rows = torch.zeros(A * N, dtype=torch.bool, device=device)
         if a.greedy_candidate:
             greedy_rows[::N] = True
         t1 = time.time()
-        answers = sample_text(rows_Z, rows_g, greedy_rows) if A else []
+        answers = sample_text(rows_Z, rows_g, greedy_rows, None if Hnow is None else Hnow.repeat_interleave(N, 0)) if A else []
         timing["text"] += time.time() - t1
         cands = []                                                              # per active lane: list of (plan, source)
         for j, lane in enumerate(act_lanes):
@@ -329,7 +346,11 @@ def main():
             t3 = time.time()
             S = torch.cat([Zt[lane_of], d], 1)                                  # [C, 4 + H, 64, 16]
             Wk = torch.stack([S[:, k:k + 4] for k in range(1, H + 1)], 1)       # [C, H, 4, 64, 16]
-            v = value_of(Wk.flatten(0, 1), g_of_lane[idx][lane_of].repeat_interleave(H, 0)).view(-1, H)
+            if a.heads:   # Dreamer agent tokens of every imagined window: reward head, and the SLM's h input
+                into = torch.cat([into_real[lane_of], acts[:, ctx - 1:]], 1)    # actions into S[1..3 + H]
+                Himg, rk, pk = agent_scan(S, into, fresh_real + [True] * H, g_of_lane[idx][lane_of], list(range(1, H + 1)))
+            v = value_of(Wk.flatten(0, 1), g_of_lane[idx][lane_of].repeat_interleave(H, 0),
+                         Himg.flatten(0, 1) if n_h else None).view(-1, H)
             v = v.masked_fill(~valid, float("-inf"))
             last = valid.long().sum(1) - 1
             if a.score == "max":
@@ -339,7 +360,6 @@ def main():
             elif a.score == "last":
                 sc = v.gather(1, last[:, None])[:, 0]
             else:
-                rk, pk = rewards_of(S, acts, g_of_lane[idx][lane_of])
                 alive = torch.cumprod(torch.cat([torch.ones_like(pk[:, :1]), 1 - pk], 1), 1)   # A_1..A_{H+1}
                 disc = a.gamma ** torch.arange(H, device=device, dtype=torch.float32)
                 rsum = (disc * alive[:, :H] * rk * valid).sum(1)
@@ -349,7 +369,7 @@ def main():
                 for j, (jj, c) in enumerate(flat):
                     if c == 0:
                         reward_terms[act_lanes[jj]].append((float(rsum[j]), float(tail[j])))
-            v_now = value_of(Zt, g_of_lane[idx])
+            v_now = value_of(Zt, g_of_lane[idx], Hnow)
             timing["value"] += time.time() - t3
             sc = sc.tolist()
             pos = 0
