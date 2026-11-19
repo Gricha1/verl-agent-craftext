@@ -18,7 +18,7 @@
 #
 #   bash crafter_dyna_loop.sh <run dir> <SLM run dir> <SLM checkpoint> [GPU]
 #   env: ITERS=4 SEEDS=64 CSTEPS=1000 WM_STEPS=2000 GRPO_UPDATES=200 BASE_EPS=3000 EVAL_SEEDS=128 EVAL_STEPS=2000 SMOKE=0
-set -e
+set -eo pipefail   # a failed stage must stop the loop (its output is piped through grep / tee)
 D=$1; S0=$2; CK0=$3; GPU=${4:-3}
 ITERS=${ITERS:-4}; SEEDS=${SEEDS:-64}; CSTEPS=${CSTEPS:-1000}; WM_STEPS=${WM_STEPS:-2000}; GRPO_UPDATES=${GRPO_UPDATES:-200}
 BASE_EPS=${BASE_EPS:-3000}; EVAL_SEEDS=${EVAL_SEEDS:-128}; EVAL_STEPS=${EVAL_STEPS:-2000}; SMOKE=${SMOKE:-0}
