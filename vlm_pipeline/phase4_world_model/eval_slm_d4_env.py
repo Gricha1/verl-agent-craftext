@@ -40,6 +40,13 @@ moves the policy's backbone, its value head is not trained); --save-traj <dir> w
 WoodEpisodeDataset with the native reward (frames 64 x 64, actions, rewards, terminals = done, wood_manifest.json, the
 build_wood_d4_heads.py native conventions) plus z.pt, the per-frame latents the SLM saw, for GRPO starts.
 
+--env crafter (Qwen-teacher Crafter data of Alexey, 2026-11-19): stock Crafter 1.8.3 (crafter.Env(size=(64, 64)), the
+  63 x 63 view of its 64 x 64 frame as in build_qwen_crafter64.py), one world per seed of --seeds, the one task of the SLM,
+  native reward (+1 per new achievement, +-0.1 per health point); an episode ends at death or --max-steps. Result: score =
+  mean number of distinct achievements per episode (ZeroHero protocol: seeds 150000000..150000127, 2000 steps), the
+  unlock rate of each achievement, and success_rate = score so that the loop logs read the same; an episode counts as
+  "success" in the saved trajectories when no death ended it (the failed episodes of the GRPO start sampler).
+
   python eval_slm_d4_env.py --run <SLM run dir> --checkpoint step_030000.pt --out <json> [--plans 8 --decode sample --imagine
      --dyn <dreamer4 dyn>/checkpoints/latest.pt]
 """
@@ -65,6 +72,7 @@ def main():
     p.add_argument("--out", required=True)
     p.add_argument("--dyn", default="", help="Dreamer 4 dynamics checkpoint (for --imagine)")
     p.add_argument("--teacher-root", default="/w/repo/caged_craftext")
+    p.add_argument("--env", choices=("craftax", "crafter"), default="craftax")
     p.add_argument("--settings", default="achievements_wood")
     p.add_argument("--seeds", default="20264000:20264032")
     p.add_argument("--tasks", default="", help="comma-separated task indices (default all)")
@@ -151,7 +159,8 @@ def main():
             heads.load_state_dict(hck["agent"])
             term_bin = terminal_bins(heads.reward, world.continues_from_reward, device)
             bin_values = heads.reward.twohot.bin_values.to(device).float()
-            head_task = {g: i for i, g in enumerate(world.dataset.manifest["task_names"])}
+            head_task = ({g: i for i, g in enumerate(world.dataset.manifest["task_names"])} if "task_names" in world.dataset.manifest
+                         else {g: 0 for g in tasks})   # Qwen Crafter data: one task, no names
     if a.score == "reward" and not a.heads:
         raise ValueError("--score reward needs --heads")
     if a.value_mix and not (a.heads and a.imagine):
@@ -174,39 +183,65 @@ def main():
     post_mask = torch.zeros_like(post_ids)
     for i, ids in enumerate(posts):
         post_ids[i, Lp - len(ids):] = torch.tensor(ids); post_mask[i, Lp - len(ids):] = 1
-    max_tokens = 80 + 6 * K if K else 96
+    max_tokens = cfg.get("gen_tokens") or (80 + 6 * K if K else 96)
 
     # ---------------- environment: all episodes in one vmapped batch ----------------
-    os.environ.setdefault("JAX_PLATFORMS", "cpu")
-    sys.path[:0] = [a.teacher_root, f"{a.teacher_root}/Craftax"]
-    import jax
-    import jax.numpy as jnp
-    from craftax.craftax_env import make_craftax_env_from_name
-    from craftext.environment.craftext_wrapper import InstructionWrapper
-    base = make_craftax_env_from_name("Craftax-Classic-Pixels-v1", False)
-    params = base.default_params
-    env = InstructionWrapper(base, a.settings)
-    instrs = list(env.scenario_handler.scenario_data.instructions_list)
-    assert set(instrs) <= set(tasks), (instrs, tasks)
-    first_seed, last_seed = map(int, a.seeds.split(":"))
-    task_ids = [int(x) for x in a.tasks.split(",")] if a.tasks else list(range(len(instrs)))
-    lanes = [(ti, s) for ti in task_ids for s in range(first_seed, last_seed)]
-    L = len(lanes)
-    g_of_lane = torch.tensor([tasks.index(instrs[ti]) for ti, _ in lanes], device=device)
-    keys = jnp.stack([jax.random.PRNGKey(s) for _, s in lanes])
-    reset_v = jax.jit(jax.vmap(lambda k, i: env.reset(k, params, instruction_idx=i)))
+    crafter_env = a.env == "crafter"
+    if crafter_env:   # stock Crafter, one python env per world seed, stepped in a loop
+        import crafter
+        instrs = list(tasks)
+        first_seed, last_seed = map(int, a.seeds.split(":"))
+        task_ids = [0]
+        lanes = [(0, s) for s in range(first_seed, last_seed)]
+        L = len(lanes)
+        g_of_lane = torch.zeros(L, dtype=torch.long, device=device)
+        envs = [crafter.Env(size=(64, 64), seed=s, length=10 ** 9) for _, s in lanes]
+        obs = np.stack([e.reset() for e in envs])
+        to_frame = lambda o: torch.from_numpy(np.ascontiguousarray(o[:, :63, :63])).to(device)   # [L, 63, 63, 3] uint8
+        unlocked = [set() for _ in range(L)]
+        died = np.zeros(L, bool)
 
-    def step_one(key, st, act):
-        key, k = jax.random.split(key)
-        obs, st, r, done, _ = env.step(k, st, act, params)
-        es = st.env_state   # Craftax state: why an episode ended (health <= 0; lava; food / drink at 0 drain health)
-        lava = es.map[es.player_position[0], es.player_position[1]] == 14   # BlockType.LAVA in Craftax-Classic
-        vit = jnp.stack([es.player_health, es.player_food, es.player_drink, es.player_energy]).astype(jnp.float32)
-        return key, obs, st, r, done, st.instruction_done, vit, lava
+        def crafter_step(acts, live_mask):
+            r, done, vit = np.zeros(L, np.float32), np.zeros(L, bool), np.zeros((L, 4), np.float32)
+            for lane in np.flatnonzero(live_mask):
+                o, rr, dd, info = envs[lane].step(int(acts[lane]))
+                obs[lane] = o; r[lane] = rr; done[lane] = dd
+                inv = info["inventory"]
+                vit[lane] = (inv["health"], inv["food"], inv["drink"], inv["energy"])
+                unlocked[lane] |= {k for k, v in info["achievements"].items() if v > 0}
+                died[lane] |= bool(dd) and inv["health"] <= 0
+            return r, done, vit
+    else:
+        os.environ.setdefault("JAX_PLATFORMS", "cpu")
+        sys.path[:0] = [a.teacher_root, f"{a.teacher_root}/Craftax"]
+        import jax
+        import jax.numpy as jnp
+        from craftax.craftax_env import make_craftax_env_from_name
+        from craftext.environment.craftext_wrapper import InstructionWrapper
+        base = make_craftax_env_from_name("Craftax-Classic-Pixels-v1", False)
+        params = base.default_params
+        env = InstructionWrapper(base, a.settings)
+        instrs = list(env.scenario_handler.scenario_data.instructions_list)
+        assert set(instrs) <= set(tasks), (instrs, tasks)
+        first_seed, last_seed = map(int, a.seeds.split(":"))
+        task_ids = [int(x) for x in a.tasks.split(",")] if a.tasks else list(range(len(instrs)))
+        lanes = [(ti, s) for ti in task_ids for s in range(first_seed, last_seed)]
+        L = len(lanes)
+        g_of_lane = torch.tensor([tasks.index(instrs[ti]) for ti, _ in lanes], device=device)
+        keys = jnp.stack([jax.random.PRNGKey(s) for _, s in lanes])
+        reset_v = jax.jit(jax.vmap(lambda k, i: env.reset(k, params, instruction_idx=i)))
 
-    step_v = jax.jit(jax.vmap(step_one))
-    obs, est = reset_v(keys, jnp.array([ti for ti, _ in lanes], jnp.int32))
-    to_frame = lambda o: torch.from_numpy(np.round(np.asarray(o) * 255).astype(np.uint8)).to(device)   # [L, 63, 63, 3]
+        def step_one(key, st, act):
+            key, k = jax.random.split(key)
+            obs, st, r, done, _ = env.step(k, st, act, params)
+            es = st.env_state   # Craftax state: why an episode ended (health <= 0; lava; food / drink at 0 drain health)
+            lava = es.map[es.player_position[0], es.player_position[1]] == 14   # BlockType.LAVA in Craftax-Classic
+            vit = jnp.stack([es.player_health, es.player_food, es.player_drink, es.player_energy]).astype(jnp.float32)
+            return key, obs, st, r, done, st.instruction_done, vit, lava
+
+        step_v = jax.jit(jax.vmap(step_one))
+        obs, est = reset_v(keys, jnp.array([ti for ti, _ in lanes], jnp.int32))
+        to_frame = lambda o: torch.from_numpy(np.round(np.asarray(o) * 255).astype(np.uint8)).to(device)   # [L, 63, 63, 3]
 
     # ---------------- SLM helpers ----------------
     @torch.no_grad()
@@ -451,9 +486,16 @@ def main():
             counts[lane][NAMES[acts_now[lane]]] += 1
         played.append(acts_now)
         t4 = time.time()
-        keys, obs, est, r, done, ok, vit, lava = step_v(keys, est, jnp.asarray(acts_now))
-        r, done, ok, vit, lava = np.asarray(r), np.asarray(done), np.asarray(ok), np.asarray(vit), np.asarray(lava)
-        rews.append(r.astype(np.float32)); dones.append(done.copy())
+        if crafter_env:
+            r, done, vit = crafter_step(acts_now, active)
+            env_done = done & died                                       # a death; the timeout below has no done flag
+            done = done | (steps + 1 >= a.max_steps)
+            ok, lava = np.zeros(L, bool), np.zeros(L, bool)
+        else:
+            keys, obs, est, r, done, ok, vit, lava = step_v(keys, est, jnp.asarray(acts_now))
+            r, done, ok, vit, lava = np.asarray(r), np.asarray(done), np.asarray(ok), np.asarray(vit), np.asarray(lava)
+            env_done = done
+        rews.append(r.astype(np.float32)); dones.append(env_done.copy())
         timing["env"] += time.time() - t4
         for lane in live:
             ret[lane] += float(r[lane]); steps[lane] = t + 1
@@ -463,16 +505,22 @@ def main():
                 active[lane] = False
                 queue[lane] = []
         if t % 20 == 0 or not active.any():
-            print(json.dumps(dict(t=t, active=int(active.sum()), success=int(success.sum()), lanes=L,
+            print(json.dumps(dict(t=t, active=int(active.sum()), success=int(success.sum()) if not crafter_env else
+                                  round(float(np.mean([len(u) for u in unlocked])), 3), lanes=L,
                                   sec=round(time.time() - t_start, 1), **{k: round(v, 1) for k, v in timing.items()})), flush=True)
         if not active.any():
             break
     episodes = []
     for lane, (ti, seed) in enumerate(lanes):
         h, f, dr, en = last_vit[lane]
-        end = ("success" if success[lane] else "lava" if in_lava[lane] else
-               ("death_starve" if min(f, dr) <= 0 else "death_damage") if h <= 0 else "timeout" if steps[lane] >= a.max_steps else "other")
+        if crafter_env:   # "success" of a Crafter episode in the saved trajectories: no death ended it
+            end = "death" if died[lane] else "timeout" if steps[lane] >= a.max_steps else "other"
+            success[lane] = not died[lane]
+        else:
+            end = ("success" if success[lane] else "lava" if in_lava[lane] else
+                   ("death_starve" if min(f, dr) <= 0 else "death_damage") if h <= 0 else "timeout" if steps[lane] >= a.max_steps else "other")
         episodes.append(dict(task=instrs[ti], seed=seed, steps=int(steps[lane]), success=bool(success[lane]), ret=float(ret[lane]),
+                             achievements=sorted(unlocked[lane]) if crafter_env else None,
                              end=end, final_health=float(h), final_food=float(f), final_drink=float(dr), final_energy=float(en),
                              min_health=float(min_health[lane]),
                              top_actions=counts[lane].most_common(4), unparsed=int(unparsed[lane]), first_texts=texts[lane],
@@ -481,9 +529,15 @@ def main():
                              mean_reward_term=float(np.mean([x[0] for x in reward_terms[lane]])) if reward_terms[lane] else None,
                              mean_value_term=float(np.mean([x[1] for x in reward_terms[lane]])) if reward_terms[lane] else None))
     by_task = {instrs[ti]: float(np.mean([e["success"] for e in episodes if e["task"] == instrs[ti]])) for ti in task_ids}
+    extra = {}
+    if crafter_env:   # ZeroHero score: distinct achievements per episode; unlock rate of each achievement
+        extra = dict(score=float(np.mean([len(u) for u in unlocked])), mean_return=float(ret.mean()),
+                     achievement_rates={k: float(np.mean([k in u for u in unlocked])) for k in sorted(crafter.constants.achievements)})
+        by_task = extra["achievement_rates"]
     ends = dict(collections.Counter(e["end"] for e in episodes))
-    res = dict(run=run.name, checkpoint=a.checkpoint, step=state["step"], args=vars(a), plan=K, horizon=H, ends=ends,
-               success_rate=float(success.mean()), successes=int(success.sum()), episodes_n=L, by_task=by_task,
+    res = dict(run=run.name, checkpoint=a.checkpoint, step=state["step"], args=vars(a), plan=K, horizon=H, ends=ends, **extra,
+               success_rate=extra["score"] if crafter_env else float(success.mean()), successes=int(success.sum()), episodes_n=L,
+               by_task=by_task,
                chosen=dict(chosen_stats), unparsed_share=float(unparsed.sum() / max(1, steps.sum() * N)),
                mean_steps=float(steps.mean()), seconds=time.time() - t_start, timing=dict(timing), episodes=episodes)
     Path(a.out).write_text(json.dumps(res, indent=1, ensure_ascii=False))
@@ -511,14 +565,16 @@ def main():
         torch.save(torch.cat(zz), sd / "z.pt")
         (sd / "wood_manifest.json").write_text(json.dumps(dict(
             starts=starts, lengths=lengths, episode_ids=[-(1 + i) for i in range(len(episodes))], n_actions=17, tasks=task_idx,
-            bc=bc, task_names=names, terminal_rule="native",
-            reward_rule="native environment reward (Craftax / 50), last action's reward added to the transition into x_{n-1}",
+            bc=[0] * len(bc) if crafter_env else bc, task_names=names, terminal_rule="native",
+            reward_rule=("native Crafter reward" if crafter_env else "native environment reward (Craftax / 50)") +
+                        ", last action's reward added to the transition into x_{n-1}",
             source=dict(run=run.name, checkpoint=a.checkpoint, seeds=a.seeds, heads=a.heads, critic=a.critic))))
         (sd / "episodes.json").write_text(json.dumps([dict(task=e["task"], seed=e["seed"], steps=e["steps"], success=e["success"],
                                                            end=e["end"]) for e in episodes]))
         print("saved", len(episodes), "episodes", first, "frames to", sd, flush=True)
     print(json.dumps({k: res[k] for k in ("run", "step", "success_rate", "successes", "episodes_n", "by_task", "ends", "chosen",
-                                          "unparsed_share", "mean_steps", "seconds")}), flush=True)
+                                          "unparsed_share", "mean_steps", "seconds") + (("score", "mean_return") if crafter_env else ())}),
+          flush=True)
     print("EVAL_DONE", flush=True)
 
 

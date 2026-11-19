@@ -7,6 +7,8 @@ train_heads.py
   --init <phase-2 checkpoint>: after the heads are built, their weights and the finetuned dynamics weights are loaded from
   it (agent_cfg must match: same task list, n_agent, cont head). The optimiser, the cosine schedule and the RMS loss
   normalisers start fresh, so use a smaller --lr / --dyn_lr and fewer --steps than a phase 2 from scratch.
+  A checkpoint without a continue head may start a run with --cont_head 1 (Qwen Crafter heads, crafter_dyna_loop.sh): the
+  new continue head starts from its random init, every other weight is loaded.
 
   python patch_dreamer4_heads_init.py <dreamer4 checkout>/dreamer4
 """
@@ -36,9 +38,14 @@ patch(root / "train" / "train_heads.py", [
 """, """    heads = build_agent_heads(agent_cfg).to(dev)
     if cfg.init:   # patched: continue from a phase-2 checkpoint
         ck = torch.load(cfg.init, map_location="cpu", weights_only=False)
-        for k in ("n_tasks", "n_agent", "mtp", "d_hidden", "cont_head", "task_text_ids"):
+        for k in ("n_tasks", "n_agent", "mtp", "d_hidden", "task_text_ids"):
             assert ck["agent_cfg"].get(k) == agent_cfg.get(k), ("--init agent_cfg differs", k, ck["agent_cfg"].get(k), agent_cfg.get(k))
-        heads.load_state_dict(ck["agent"])
+        new_cont = bool(agent_cfg.get("cont_head")) and not ck["agent_cfg"].get("cont_head")
+        assert new_cont or bool(ck["agent_cfg"].get("cont_head")) == bool(agent_cfg.get("cont_head")), "--init has a continue head, this run not"
+        missing, unexpected = heads.load_state_dict(ck["agent"], strict=not new_cont)
+        assert not unexpected and all(k.startswith("cont") for k in missing), (missing, unexpected)
+        if new_cont:
+            print("init: new continue head", missing, flush=True)
         world.load_dynamics_weights(ck["dyn"])
         print(f"init from {cfg.init}: heads and finetuned dynamics loaded", flush=True)
 """),

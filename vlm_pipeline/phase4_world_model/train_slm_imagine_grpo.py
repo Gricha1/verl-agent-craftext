@@ -30,6 +30,12 @@ The SLM keeps its reconstruction / value heads untouched (not in the loss). Chec
 format (eval_slm_d4_env.py reads them). Every --eval-every updates: on held-out validation starts, mean score, death share
 (sum_k A_k p_k with r_k < 0) and success share of the greedy plan, and the same for the start checkpoint at update 0.
 
+--frame-labels DIR (Qwen-teacher Crafter data of Alexey, 2026-11-19, the SLM of train_slm_reason_act_d4.py --frame-labels):
+dataset starts are the frames of --train / --val (build_qwen_crafter64.py dirs: actions.npy, terminal_in.npy, manifest.json),
+the BC target of a start is the teacher Qwen's reasoning (DIR/{train,val}.jsonl of build_qwen_slm_labels.py) + its next K
+actions, and "near death" are the last --death-window frames of the episodes a death ended; --raw-data / --reasoning unused.
+The rows are built lazily (3M frames). Answers are decoded up to the SLM's --gen-tokens (Qwen reasoning is longer).
+
   python train_slm_imagine_grpo.py --slm <run>/run/checkpoints/step_060000.pt --dyn <phase-1 dyn> --heads <phase-2 latest.pt>
      --raw-data <wood2200 raw> --reasoning <dir> --train <wood2200_v3> --val <wood2200_d4/val> --latent-cache <dir> --out <dir>
 """
@@ -51,8 +57,11 @@ import torch.nn.functional as F
 
 def main():
     p = argparse.ArgumentParser()
-    for k in ("--slm", "--dyn", "--heads", "--raw-data", "--reasoning", "--train", "--val", "--latent-cache", "--out"):
+    for k in ("--slm", "--dyn", "--heads", "--train", "--val", "--latent-cache", "--out"):
         p.add_argument(k, required=True)
+    p.add_argument("--raw-data", default="")
+    p.add_argument("--reasoning", default="")
+    p.add_argument("--frame-labels", default="", help="dir with {train,val}.jsonl of build_qwen_slm_labels.py (Qwen Crafter data)")
     p.add_argument("--repo", default="/w/repo")
     p.add_argument("--updates", type=int, default=2000)
     p.add_argument("--starts", type=int, default=32)
@@ -112,7 +121,7 @@ def main():
     post_ids = torch.zeros(len(tasks), Lp, dtype=torch.long, device=device); post_mask = torch.zeros_like(post_ids)
     for i, ids in enumerate(posts):
         post_ids[i, Lp - len(ids):] = torch.tensor(ids); post_mask[i, Lp - len(ids):] = 1
-    max_tokens = 80 + 6 * K
+    max_tokens = cfg.get("gen_tokens") or 80 + 6 * K
     params = [q for n, q in model.named_parameters() if not n.startswith(("head.", "value_head."))]
     opt = torch.optim.AdamW(params, lr=a.lr, betas=(0.9, 0.95), weight_decay=0.0)
     critic = copy.deepcopy(model).eval().requires_grad_(False) if a.tail == "slm" else None
@@ -137,16 +146,17 @@ def main():
     heads = build_agent_heads(hck["agent_cfg"]).to(device).eval()
     heads.load_state_dict(hck["agent"])
     term_bin = terminal_bins(heads.reward, world.continues_from_reward, device)
-    head_task = {g: i for i, g in enumerate(world.dataset.manifest["task_names"])}
+    head_task = ({g: i for i, g in enumerate(world.dataset.manifest["task_names"])} if "task_names" in world.dataset.manifest
+                 else {g: 0 for g in tasks})   # Qwen Crafter data: one task, no names
     k_max, tau = world.k_max, world.tau_ctx
     window = int(world.window); ctx = window - 1
     sig = min(int(round((1.0 - tau) * k_max)), k_max)
     H = a.horizon
 
     # ---------------- data ----------------
-    episodes = load_episodes(Path(a.raw_data), None, None)
+    episodes = None if a.frame_labels else load_episodes(Path(a.raw_data), None, None)
     reasoning = {}
-    for split in ("train", "valid"):
+    for split in (() if a.frame_labels else ("train", "valid")):
         for line in open(Path(a.reasoning) / f"{split}.jsonl"):
             r = json.loads(line)
             m = re.match(r"<reasoning>(.*)</reasoning>\nACTION: (\S+)$", r["cot_target"], re.S)
@@ -176,9 +186,49 @@ def main():
         ep_first = torch.tensor([r[0] - r[5] for r in rows], device=device)
         return z, ep_first, rows
 
-    zT, fT, rowsT = split(a.train, "train")
-    zV, fV, rowsV = split(a.val, "val")
-    near = [i for i, r in enumerate(rowsT) if r[4]]
+    class FrameRows:   # --frame-labels: rows (frame, task, a_{t-3..t-1}, BC target ids or None, near death, t), built on access
+        def __init__(self, root):
+            root = Path(root)
+            man = json.loads((root / "manifest.json").read_text())
+            self.acts = np.load(root / "actions.npy").astype(np.int64)
+            died = np.load(root / "terminal_in.npy")
+            N = len(self.acts)
+            self.t = np.zeros(N, np.int64); self.end = np.zeros(N, np.int64); near = np.zeros(N, bool)
+            for st, n in zip(man["starts"], man["lengths"]):
+                self.t[st:st + n] = np.arange(n); self.end[st:st + n] = st + n
+                if died[st + n - 1]:
+                    near[st + max(0, n - a.death_window):st + n] = True
+            self.near = np.flatnonzero(near).tolist()
+            self.lab = {}
+            for line in open(Path(a.frame_labels) / f"{root.name}.jsonl"):
+                r = json.loads(line); self.lab[r["row"]] = r["reasoning"]
+
+        def __len__(self):
+            return len(self.acts)
+
+        def __getitem__(self, i):
+            i = int(i); t = int(self.t[i])
+            prev = [int(self.acts[i - 3 + j]) if t - 3 + j >= 0 else 0 for j in range(3)]
+            tgt = None
+            if i in self.lab:
+                plan = ", ".join(NAMES[x] for x in self.acts[i:min(i + K, int(self.end[i]) - 1)])
+                tgt = enc(f"<reasoning>\n{self.lab[i]}\n</reasoning>\n<plan>{plan}</plan>") + [EOS]
+                if len(tgt) > cfg.get("max_target", 10 ** 9):
+                    tgt = None
+            return (i, 0, prev, tgt, False, t)
+
+    def frame_split(root, tag):
+        rows = FrameRows(root)
+        z = torch.load(Path(a.latent_cache) / f"z_{tag}.pt").to(device)
+        assert len(z) == len(rows), (len(z), len(rows))
+        return z, torch.from_numpy(np.arange(len(rows)) - rows.t).to(device), rows
+
+    if a.frame_labels:
+        (zT, fT, rowsT), (zV, fV, rowsV) = frame_split(a.train, "train"), frame_split(a.val, "val")
+    else:
+        zT, fT, rowsT = split(a.train, "train")
+        zV, fV, rowsV = split(a.val, "val")
+    near = rowsT.near if a.frame_labels else [i for i, r in enumerate(rowsT) if r[4]]
     print(f"train starts {len(rowsT)} ({len(near)} near death), val {len(rowsV)}", flush=True)
     rowsO, nearO = [], []
     if a.online:   # states the planner reached in the environment: (frame, task, a_{t-3..t-1}, no BC label, near death, t)
