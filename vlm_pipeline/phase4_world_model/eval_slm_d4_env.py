@@ -262,8 +262,8 @@ def main():
                 with torch.autocast("cuda", dtype=torch.bfloat16):
                     out = dyn(av[sl], st, sg, (1 - tau_ctx) * zw[sl], agent_tokens=ag)
                 hh = out[-1][:, -1].float()                         # (B, n_agent, d)
-                pr = heads.reward.at(flatten_agent_out(hh), 0).float().softmax(-1)
-                out_h.append(hh); out_r.append((pr * bin_values).sum(-1)); out_p.append((pr * term_bin).sum(-1))
+                lr_ = heads.reward.at(flatten_agent_out(hh), 0).float()   # symexp two-hot: decode with mean()
+                out_h.append(hh); out_r.append(heads.reward.mean(lr_)); out_p.append((lr_.softmax(-1) * term_bin).sum(-1))
             hs.append(torch.cat(out_h)); rs.append(torch.cat(out_r)); ps.append(torch.cat(out_p))
         return torch.stack(hs, 1), torch.stack(rs, 1), torch.stack(ps, 1)
 
