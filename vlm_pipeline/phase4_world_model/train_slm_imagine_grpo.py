@@ -22,6 +22,12 @@ One update:
   update   A_i = (R_i - mean_G R) / (std_G R + 1e-4);  L = - mean_i A_i * mean_tokens log pi(answer_i | Z_t, g)
            + --bc-weight * CE(teacher reasoning + next K teacher actions | Z_t, g) on labelled starts
            (the BC anchor keeps the policy near the demonstrations it started from)
+  PPO / KL (user 2026-11-19; --clip, --kl-coef, --ppo-epochs, --minibatches): log pi_old of the sampled answers is taken once,
+           then --ppo-epochs passes of --minibatches steps over the group batch with, per token,
+             rho = pi_theta / pi_old,  surrogate = min(rho A_i, clip(rho, 1 - eps, 1 + eps) A_i)
+             L = - mean_i mean_tok surrogate + beta mean_i mean_tok [pi_ref/pi_theta - log(pi_ref/pi_theta) - 1] + bc CE
+           (the k3 KL estimator of GRPO / DeepSeekMath), pi_ref = --ref (frozen; the BC SLM in the Dyna loop). With the
+           defaults (1 pass, 1 step, eps = beta = 0) this is the plain update above (rho = 1, same gradient).
 Online Dyna loop (dyna_loop.sh, user 2026-11-19): --online <traj dirs> makes --online-frac of the starts the states the
 planner itself reached in the environment (eval_slm_d4_env.py --save-traj; --death-frac of them from the last
 --death-window frames of its failed episodes), the rest stay dataset starts with the BC anchor; --critic fixes the value
@@ -83,6 +89,11 @@ def main():
     p.add_argument("--online", default="", help="comma-separated eval_slm_d4_env.py --save-traj dirs: --online-frac of the "
                    "starts are the states the planner reached in the environment (no BC label on them)")
     p.add_argument("--online-frac", type=float, default=0.75)
+    p.add_argument("--clip", type=float, default=0.0, help="PPO clip epsilon of the per-token ratio pi/pi_old (0: off)")
+    p.add_argument("--kl-coef", type=float, default=0.0, help="weight of the per-token k3 KL(pi || pi_ref) (0: off)")
+    p.add_argument("--ref", default="", help="reference SLM checkpoint of the KL (default --slm; the Dyna loop: the BC SLM)")
+    p.add_argument("--ppo-epochs", type=int, default=1, help="passes over each sampled group batch")
+    p.add_argument("--minibatches", type=int, default=1, help="gradient steps per pass")
     p.add_argument("--eval-every", type=int, default=100)
     p.add_argument("--eval-starts", type=int, default=512)
     p.add_argument("--save-every", type=int, default=250)
@@ -130,6 +141,14 @@ def main():
         assert cst["tasks"] == tasks, "critic and policy SLMs have different task lists"
         critic.load_state_dict(cst["model"]); critic.eval().requires_grad_(False)
         print("critic", a.critic, flush=True)
+    ref = None
+    if a.kl_coef > 0:   # frozen reference policy of the KL term
+        ref = copy.deepcopy(model).eval().requires_grad_(False)
+        if a.ref:
+            rst = torch.load(a.ref, map_location="cpu", weights_only=False)
+            ref.load_state_dict(rst["model"]); ref.eval().requires_grad_(False)
+        print("KL reference", a.ref or a.slm, "coef", a.kl_coef, "clip", a.clip, "epochs", a.ppo_epochs, "minibatches", a.minibatches,
+              flush=True)
 
     @torch.no_grad()
     def critic_value(W, g):
@@ -361,7 +380,7 @@ def main():
     log = open(out / "metrics.jsonl", "a")
     res = evaluate(0); log.write(json.dumps(res) + "\n"); log.flush(); print("[val]", json.dumps(res), flush=True)
     model.train()
-    t0 = time.time(); run = dict(score=0.0, adv=0.0, pg=0.0, bc=0.0, death=0.0, parsed=0.0, n=0)
+    t0 = time.time(); run = dict(score=0.0, adv=0.0, pg=0.0, bc=0.0, kl=0.0, clipfrac=0.0, ratio=0.0, death=0.0, parsed=0.0, n=0)
     for step in range(1, a.updates + 1):
         nO = int(round(a.online_frac * a.starts)) if rowsO else 0
         pick = choose(near, len(rowsT), a.starts - nO)        # dataset starts first: the BC rows index into them
@@ -383,37 +402,75 @@ def main():
         W = max(lens)
         tg = ids[:, :W]
         tm = (torch.arange(W, device=device)[None] < torch.tensor(lens, device=device)[:, None]).long()
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            _, logits, _ = model(ZG, pre, post_ids[gG], post_mask[gG], tg, tm)
-        lp = -F.cross_entropy(logits.float().transpose(1, 2), tg, reduction="none")
-        seq_lp = (lp * tm).sum(1) / tm.sum(1).clamp_min(1)
-        pg = -(adv.detach() * seq_lp).mean()
-        loss = pg
+
+        def token_lp(net, sel):   # log pi(y_tok | prefix) of the sampled answers, [len(sel), W]
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                _, lg_, _ = net(ZG[sel], pre, post_ids[gG[sel]], post_mask[gG[sel]], tg[sel], tm[sel])
+            return -F.cross_entropy(lg_.float().transpose(1, 2), tg[sel], reduction="none")
+
         bc_rows = [i for i, j in enumerate(pick) if rowsT[j][3] is not None]
-        bc = torch.zeros((), device=device)
         if a.bc_weight > 0 and bc_rows:
             tgts = [rowsT[pick[i]][3] for i in bc_rows]
             Wb = max(map(len, tgts))
             tb = torch.zeros(len(tgts), Wb, dtype=torch.long, device=device); mb = torch.zeros_like(tb)
             for i, t_ in enumerate(tgts):
                 tb[i, :len(t_)] = torch.tensor(t_, device=device); mb[i, :len(t_)] = 1
-            sel = torch.tensor(bc_rows, device=device)
+            sel_bc = torch.tensor(bc_rows, device=device)
+
+        def bc_loss():
+            if not (a.bc_weight > 0 and bc_rows):
+                return torch.zeros((), device=device)
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                _, lgb, _ = model(Zs[sel], pre, post_ids[g[sel]], post_mask[g[sel]], tb, mb)
+                _, lgb, _ = model(Zs[sel_bc], pre, post_ids[g[sel_bc]], post_mask[g[sel_bc]], tb, mb)
             ce = F.cross_entropy(lgb.float().transpose(1, 2), tb, reduction="none")
-            bc = (ce * mb).sum() / mb.sum()
-            loss = loss + a.bc_weight * bc
-        opt.zero_grad(set_to_none=True)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(params, 1.0)
-        opt.step()
-        run["score"] += float(sc.mean()); run["adv"] += float(adv.abs().mean()); run["pg"] += float(pg); run["bc"] += float(bc)
+            return (ce * mb).sum() / mb.sum()
+
+        n_rows = ZG.shape[0]
+        everything = torch.arange(n_rows, device=device)
+        with torch.no_grad():   # the sampling policy and the reference, fixed for all the epochs of this batch
+            model.eval()
+            lp_old = torch.cat([token_lp(model, everything[i:i + 128]) for i in range(0, n_rows, 128)])
+            lp_ref = (torch.cat([token_lp(ref, everything[i:i + 128]) for i in range(0, n_rows, 128)])
+                      if ref is not None else None)
+            model.train()
+        st = dict(pg=0.0, bc=0.0, kl=0.0, clipfrac=0.0, ratio=0.0); n_steps = 0
+        for _ep in range(a.ppo_epochs):
+            perm = everything[torch.randperm(n_rows, device=device)]
+            for mbi in perm.chunk(a.minibatches):
+                lp = token_lp(model, mbi)
+                m = tm[mbi].float(); A = adv[mbi].detach()[:, None]
+                ratio = torch.exp(lp - lp_old[mbi])
+                surr = ratio * A
+                if a.clip > 0:   # PPO clipped surrogate, per token
+                    surr = torch.minimum(surr, ratio.clamp(1 - a.clip, 1 + a.clip) * A)
+                per_seq = lambda x: (x * m).sum(1) / m.sum(1).clamp_min(1)   # mean over the tokens of an answer
+                pg = -per_seq(surr).mean()
+                loss = pg
+                kl = torch.zeros((), device=device)
+                if lp_ref is not None:   # k3 estimator of KL(pi_theta || pi_ref) per token (GRPO, DeepSeekMath)
+                    dlt = lp_ref[mbi] - lp
+                    kl = per_seq(torch.exp(dlt) - dlt - 1).mean()
+                    loss = loss + a.kl_coef * kl
+                bc = bc_loss()
+                loss = loss + a.bc_weight * bc
+                opt.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(params, 1.0)
+                opt.step()
+                with torch.no_grad():
+                    st["pg"] += float(pg); st["bc"] += float(bc); st["kl"] += float(kl)
+                    st["clipfrac"] += float(per_seq(((ratio - 1).abs() > a.clip).float()).mean()) if a.clip > 0 else 0.0
+                    st["ratio"] += float(per_seq(ratio).mean())
+                n_steps += 1
+        pg, bc = st["pg"] / n_steps, st["bc"] / n_steps
+        run["score"] += float(sc.mean()); run["adv"] += float(adv.abs().mean()); run["pg"] += pg; run["bc"] += bc
+        run["kl"] += st["kl"] / n_steps; run["clipfrac"] += st["clipfrac"] / n_steps; run["ratio"] += st["ratio"] / n_steps
         run["death"] += float(dead.mean()); run["parsed"] += float(np.mean(ok)); run["n"] += 1
         if step % 10 == 0:
             n = run.pop("n")
             print(f"update {step} " + " ".join(f"{k} {v / n:.4f}" for k, v in run.items()) + f" {step / (time.time() - t0):.3f} upd/s",
                   flush=True)
-            run = dict(score=0.0, adv=0.0, pg=0.0, bc=0.0, death=0.0, parsed=0.0, n=0)
+            run = dict(score=0.0, adv=0.0, pg=0.0, bc=0.0, kl=0.0, clipfrac=0.0, ratio=0.0, death=0.0, parsed=0.0, n=0)
         if step % a.eval_every == 0 or step == a.updates:
             res = evaluate(step); log.write(json.dumps(res) + "\n"); log.flush(); print("[val]", json.dumps(res), flush=True)
         if step % a.save_every == 0 or step == a.updates:

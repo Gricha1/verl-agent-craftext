@@ -18,6 +18,7 @@
 #
 #   bash crafter_dyna_loop.sh <run dir> <SLM run dir> <SLM checkpoint> [GPU]
 #   env: ITERS=4 SEEDS=64 CSTEPS=1000 WM_STEPS=2000 GRPO_UPDATES=200 BASE_EPS=3000 EVAL_SEEDS=128 EVAL_STEPS=2000 SMOKE=0
+#        GRPO_ARGS="--clip 0.2 --kl-coef 0.04 --ppo-epochs 2 --minibatches 2" (KL reference = the start SLM)
 set -eo pipefail   # a failed stage must stop the loop (its output is piped through grep / tee)
 D=$1; S0=$2; CK0=$3; GPU=${4:-3}
 ITERS=${ITERS:-4}; SEEDS=${SEEDS:-64}; CSTEPS=${CSTEPS:-1000}; WM_STEPS=${WM_STEPS:-2000}; GRPO_UPDATES=${GRPO_UPDATES:-200}
@@ -106,7 +107,7 @@ for i in $(seq $start_it $((ITERS - 1))); do
     dock grpo$i $Q/crafter64/train --entrypoint python3 $IMG /w/repo/vlm_pipeline/phase4_world_model/train_slm_imagine_grpo.py \
       --slm $SLM_RUN/run/checkpoints/$SLM_CK --dyn $DYN --heads /D/it$i/heads/checkpoints/latest.pt --critic $CRITIC \
       --online $TRAJS --online-frac 0.75 --frame-labels /ql --train /qd/train --val /qd/val --latent-cache /s0/latents \
-      --out /D/it$i/grpo --updates $U --starts 32 --group 8 --tail slm --seed $((7950 + i)) $GEXTRA \
+      --out /D/it$i/grpo --updates $U --starts 32 --group 8 --tail slm --seed $((7950 + i)) $GEXTRA $GRPO_ARGS ${GRPO_ARGS:+--ref $CRITIC} \
       2>&1 | grep --line-buffered -v -iE "warn|gym|numpy 2|upgrade to|migration" > $I/grpo.log
   fi
   grep "\[val\]" $I/grpo.log | sed -n '1p;$p' | tee -a $D/loop.log

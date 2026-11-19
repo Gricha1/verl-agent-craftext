@@ -17,6 +17,7 @@
 # After the last iteration: the standard 128-episode wood eval (seeds 20264000..031) of SLM_N with HEADS_N, same planner.
 #
 #   bash dyna_loop.sh <run dir> [GPU]      env: ITERS=4 SEEDS=32 WM_STEPS=2000 GRPO_UPDATES=200 SMOKE=0
+#        GRPO_ARGS="--clip 0.2 --kl-coef 0.04 --ppo-epochs 2 --minibatches 2" (KL reference = the start SLM)
 set -e
 D=$1; GPU=${2:-0}
 ITERS=${ITERS:-4}; SEEDS=${SEEDS:-32}; WM_STEPS=${WM_STEPS:-2000}; GRPO_UPDATES=${GRPO_UPDATES:-200}; SMOKE=${SMOKE:-0}
@@ -98,7 +99,7 @@ for i in $(seq $start_it $((ITERS - 1))); do
       /w/repo/vlm_pipeline/phase4_world_model/train_slm_imagine_grpo.py --slm $SLM_RUN/run/checkpoints/$SLM_CK \
       --dyn $DYN --heads /D/it$i/heads/checkpoints/latest.pt --critic $CRITIC --online $TRAJS --online-frac 0.75 \
       --raw-data /g/raw --reasoning /c/reason_wood2200 --train /g/wood2200_v3 --val /g/wood2200_d4/val --latent-cache /c/latents \
-      --out /D/it$i/grpo --updates $U --starts 32 --group 8 --tail slm --seed $((7950 + i)) $GEXTRA \
+      --out /D/it$i/grpo --updates $U --starts 32 --group 8 --tail slm --seed $((7950 + i)) $GEXTRA $GRPO_ARGS ${GRPO_ARGS:+--ref $CRITIC} \
       2>&1 | grep --line-buffered -v -iE "warn|gym" > $I/grpo.log
   fi
   grep "\[val\]" $I/grpo.log | sed -n '1p;$p' | tee -a $D/loop.log
