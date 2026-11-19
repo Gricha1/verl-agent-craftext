@@ -40,9 +40,9 @@ dock() {   # dock TAG DYN_DATA_DIR ARGS...: one stage in container ${NAME}_TAG (
     -v $Q4:/q4:ro -v $Q4:/r:ro -v $B/run/slm5m_recon_d4wood2200_init_20261118:/c:ro -v $Q/crafter64:/qd:ro -v $WD:/q/train:ro \
     -v $Q/slm_labels:/ql:ro -v $S0:/s0:ro -v $D/dreamer4:/code/dreamer4:ro -v $B/run:/runs:ro -v $D:/D "$@"
 }
-if [ ! -f $D/dreamer4/PATCHED ]; then   # dreamer4 of the Qwen heads + continue head + --init
+if [ ! -f $D/dreamer4/PATCHED ]; then   # dreamer4 of the Qwen heads + task-text (unused) + continue head + --init
   rm -rf $D/dreamer4; cp -r $CODE $D/dreamer4
-  for P in patch_dreamer4_heads_continue.py patch_dreamer4_heads_init.py; do
+  for P in patch_dreamer4_heads_text_task.py patch_dreamer4_heads_continue.py patch_dreamer4_heads_init.py; do   # continue needs text_task
     CUDA_VISIBLE_DEVICES=$GPU docker run --rm --user 1007:100 -v $REPO:/w:ro -v $D:/o --entrypoint python3 $IMG \
       /w/vlm_pipeline/phase4_world_model/$P /o/dreamer4/dreamer4
   done
