@@ -74,6 +74,8 @@ def main():
     p.add_argument("--imagine", action="store_true", help="choose the candidate by the value of its Dreamer 4 dream")
     p.add_argument("--horizon", type=int, default=0, help="imagined steps (0 = the plan length of the checkpoint)")
     p.add_argument("--score", choices=("max", "last", "mean", "reward"), default="max")
+    p.add_argument("--value-ensemble", default="", help="ensemble.pt of train_value_heads_d4_slm.py (needs --heads, the same "
+                   "phase-2 checkpoint): the value of an imagined window is the ridge-stacked multi-horizon heads")
     p.add_argument("--value-mix", type=lambda s: [float(x) for x in s.split(",")], default=None,
                    help="wS,wD,k,b (needs --heads): the value of an imagined window is wS v_SLM + wD clip(V_Dreamer, 0, 1)^k + b, "
                         "V_Dreamer the phase-2 value head on the same window (k = log gamma_SLM / log gamma_Dreamer puts it on "
@@ -137,6 +139,15 @@ def main():
         raise ValueError("--score reward needs --heads")
     if a.value_mix and not (a.heads and a.imagine):
         raise ValueError("--value-mix needs --heads and --imagine")
+    if a.value_ensemble:   # train_value_heads_d4_slm.py: heads on frozen SLM / Dreamer features + ridge weights
+        if not (a.heads and a.imagine) or a.value_mix:
+            raise ValueError("--value-ensemble needs --heads and --imagine, and excludes --value-mix")
+        from train_value_heads_d4_slm import ValueHeads
+        ens = torch.load(a.value_ensemble, map_location="cpu", weights_only=False)
+        ens_slm = ValueHeads(ens["d_slm"], len(ens["gammas"])).to(device).eval(); ens_slm.load_state_dict(ens["slm_head"])
+        ens_d4 = ValueHeads(ens["d_dreamer"], len(ens["gammas"])).to(device).eval(); ens_d4.load_state_dict(ens["dreamer_head"])
+        ens_w = torch.tensor(ens["weights"], dtype=torch.float32, device=device)
+        print("value ensemble", dict(zip(ens["names"], ens["weights"])), "bias", ens["bias"], flush=True)
 
     system = SYSTEM_PLAN.format(K) if K else SYSTEM
     pre = torch.tensor([enc("System:\n" + system + "\nUser:\n")], device=device)
@@ -222,15 +233,16 @@ def main():
         return out_rows
 
     @torch.no_grad()
-    def value_of(Z, gi, Hd=None):
-        vs = []
+    def value_of(Z, gi, Hd=None, hidden=False):
+        vs, hs = [], []
         for s in range(0, Z.shape[0], a.chunk):
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 emb, mask, _ = model.prefix(Z[s:s + a.chunk], pre, post_ids[gi[s:s + a.chunk]], post_mask[gi[s:s + a.chunk]],
                                             None if Hd is None else Hd[s:s + a.chunk])
                 hh = model.backbone(inputs_embeds=emb, attention_mask=mask).last_hidden_state
                 vs.append(model.value_head(hh[:, -1]).squeeze(-1).float())
-        return torch.cat(vs)
+            hs.append(hh[:, -1])
+        return (torch.cat(vs), torch.cat(hs)) if hidden else torch.cat(vs)
 
     @torch.no_grad()
     def dream(zc, acts):
@@ -366,7 +378,15 @@ def main():
                 into = torch.cat([into_real[lane_of], acts[:, ctx - 1:]], 1)    # actions into S[1..3 + H]
                 Himg, rk, pk = agent_scan(S, into, fresh_real + [True] * H, g_of_lane[idx][lane_of], list(range(1, H + 1)))
             v = value_of(Wk.flatten(0, 1), g_of_lane[idx][lane_of].repeat_interleave(H, 0),
-                         Himg.flatten(0, 1) if n_h else None).view(-1, H)
+                         Himg.flatten(0, 1) if n_h else None, hidden=bool(a.value_ensemble))
+            if a.value_ensemble:   # stacked multi-horizon heads on the SLM hidden state and the Dreamer agent tokens
+                v, hsS = v
+                hf = flatten_agent_out(Himg.flatten(0, 1).float())
+                vd0 = heads.value.mean(heads.value.at(hf, 0).float()).float()
+                with torch.no_grad():
+                    X = torch.cat([ens_slm(hsS.float()), ens_d4(hf), v[:, None], vd0.clamp(0, 1)[:, None] ** ens["kpow"]], 1)
+                v = X @ ens_w + ens["bias"]
+            v = v.view(-1, H)
             if a.value_mix:   # v = wS v_SLM + wD clip(V_Dreamer, 0, 1)^k + b on every imagined window
                 wS, wD, kk, b0 = a.value_mix
                 hf = flatten_agent_out(Himg.flatten(0, 1).float())
