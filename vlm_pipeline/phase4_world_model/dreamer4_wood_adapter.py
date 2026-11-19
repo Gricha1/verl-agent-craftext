@@ -6,7 +6,8 @@ Data dir: frames.npy uint8 [N, 63 or 64, 63 or 64, 3] (64 x 64 Crafter frames ar
 lengths, n_actions and optionally:
   tasks          per-episode task index -> episode_meta()["task"], the task indicator of the phase-2 agent tokens
   bc             per-episode 0/1 -> bc_weight(), which episodes behaviour cloning may imitate (default all)
-  terminal_rule  "reward": a frame is terminal iff its arriving reward is >= 0.5 (the wood tasks: the only +1 is the task
+  terminal_rule  "abs_reward": terminal iff |arriving reward| >= 0.5 (reward v2: +1 success, -1 death);
+                 "reward": a frame is terminal iff its arriving reward is >= 0.5 (the wood tasks: the only +1 is the task
                  success, which ends the episode); otherwise no frame is terminal from the reward (Qwen Crafter data,
                  where deaths pay nothing distinct)
 """
@@ -62,6 +63,8 @@ class WoodEpisodeDataset(EpisodeVideoDataset):
     def continues_from_reward(self, reward_pred):
         if self.manifest.get("terminal_rule") == "reward":
             return (reward_pred < 0.5).float()
+        if self.manifest.get("terminal_rule") == "abs_reward":   # reward v2: +1 success, -1 death, both end the episode
+            return (torch.as_tensor(reward_pred).abs() < 0.5).float()
         return torch.ones_like(torch.as_tensor(reward_pred, dtype=torch.float32))
 
     def _load_clip(self, i: int, start: int, length: int) -> dict:

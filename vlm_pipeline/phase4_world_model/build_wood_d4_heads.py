@@ -13,7 +13,11 @@ the +1 is put on the last transition that has an arrival frame:
   bc           = 1 for successful episodes (the ones behaviour cloning may imitate)
   terminal_rule = "reward"
 
-  python build_wood_d4_heads.py <raw collection> <wood2200_v3 dir> <out dir>
+With a 4th argument "death" (reward v2, 2026-11-19): -1 on the same last transition of an episode that ended with done
+and without success (the agent died: health 0 or lava; not the 2 episodes cut at 1000 steps), terminal_rule "abs_reward"
+(|r| >= 0.5 ends an imagined episode), so the world model's reward head sees dying.
+
+  python build_wood_d4_heads.py <raw collection> <wood2200_v3 dir> <out dir> [death]
 """
 import json
 import os
@@ -26,6 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from train_slm_world_model import load_episodes  # noqa: E402
 
 raw, v3, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+death = len(sys.argv) > 4 and sys.argv[4] == "death"
+deaths = 0
 out.mkdir(parents=True, exist_ok=True)
 episodes = load_episodes(raw, None, None)
 man = json.loads((v3 / "manifest.json").read_text())
@@ -40,7 +46,9 @@ for key, first, n in zip(man["episode_ids"], man["starts"], man["lengths"]):
     assert all(int(it["action"]) == int(actions[first + t]) for t, it in enumerate(ep))
     ok = bool(ep[-1]["success"])
     if n >= 2:
-        rewards[first + n - 2] = 1.0 if ok else 0.0
+        died = (not ok) and bool(ep[-1]["done"]) and n < 1000
+        rewards[first + n - 2] = 1.0 if ok else (-1.0 if death and died else 0.0)
+        deaths += died
         terminals[first + n - 2] = bool(ep[-1]["done"]) and n < 1000
     task_of.append(tasks.index(ep[0]["instruction"]))
     bc.append(int(ok))
@@ -51,7 +59,8 @@ if not (out / "frames.npy").exists():
     os.symlink((v3 / "frames.npy").resolve(), out / "frames.npy")
 (out / "wood_manifest.json").write_text(json.dumps(dict(
     starts=man["starts"], lengths=man["lengths"], episode_ids=man["episode_ids"], n_actions=17, tasks=task_of, bc=bc,
-    task_names=tasks, terminal_rule="reward",
-    reward_rule="+1 on the transition into x_{n-1} of a successful episode (one action before the task is done)")))
-print("episodes", len(task_of), "frames", N, "successes", sum(bc), "terminals", int(terminals.sum()),
+    task_names=tasks, terminal_rule="abs_reward" if death else "reward",
+    reward_rule="+1 on the transition into x_{n-1} of a successful episode (one action before the task is done)"
+                + ("; -1 there for an episode that ended in death" if death else ""))))
+print("episodes", len(task_of), "frames", N, "successes", sum(bc), "deaths", deaths, "terminals", int(terminals.sum()),
       "tasks", {t: task_of.count(i) for i, t in enumerate(tasks)}, flush=True)

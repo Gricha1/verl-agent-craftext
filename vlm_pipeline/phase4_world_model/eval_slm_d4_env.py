@@ -161,7 +161,10 @@ def main():
     def step_one(key, st, act):
         key, k = jax.random.split(key)
         obs, st, r, done, _ = env.step(k, st, act, params)
-        return key, obs, st, r, done, st.instruction_done
+        es = st.env_state   # Craftax state: why an episode ended (health <= 0; lava; food / drink at 0 drain health)
+        lava = es.map[es.player_position[0], es.player_position[1]] == 14   # BlockType.LAVA in Craftax-Classic
+        vit = jnp.stack([es.player_health, es.player_food, es.player_drink, es.player_energy]).astype(jnp.float32)
+        return key, obs, st, r, done, st.instruction_done, vit, lava
 
     step_v = jax.jit(jax.vmap(step_one))
     obs, est = reset_v(keys, jnp.array([ti for ti, _ in lanes], jnp.int32))
@@ -278,6 +281,7 @@ def main():
     previous = [None] * L               # rest of the chosen plan, for --keep-previous
     queue = [[] for _ in range(L)]      # actions of the chosen plan still to play (--execute)
     reward_terms = [[] for _ in range(L)]
+    last_vit, min_health, in_lava = np.zeros((L, 4)), np.full(L, 9.0), np.zeros(L, bool)
     N = max(1, a.plans)
     timing = collections.defaultdict(float)
     for t in range(a.max_steps):
@@ -390,11 +394,12 @@ def main():
             counts[lane][NAMES[acts_now[lane]]] += 1
         played.append(acts_now)
         t4 = time.time()
-        keys, obs, est, r, done, ok = step_v(keys, est, jnp.asarray(acts_now))
-        r, done, ok = np.asarray(r), np.asarray(done), np.asarray(ok)
+        keys, obs, est, r, done, ok, vit, lava = step_v(keys, est, jnp.asarray(acts_now))
+        r, done, ok, vit, lava = np.asarray(r), np.asarray(done), np.asarray(ok), np.asarray(vit), np.asarray(lava)
         timing["env"] += time.time() - t4
         for lane in live:
             ret[lane] += float(r[lane]); steps[lane] = t + 1
+            last_vit[lane] = vit[lane]; min_health[lane] = min(min_health[lane], float(vit[lane][0])); in_lava[lane] = bool(lava[lane])
             success[lane] |= bool(ok[lane])
             if done[lane]:
                 active[lane] = False
@@ -406,19 +411,25 @@ def main():
             break
     episodes = []
     for lane, (ti, seed) in enumerate(lanes):
+        h, f, dr, en = last_vit[lane]
+        end = ("success" if success[lane] else "lava" if in_lava[lane] else
+               ("death_starve" if min(f, dr) <= 0 else "death_damage") if h <= 0 else "timeout" if steps[lane] >= a.max_steps else "other")
         episodes.append(dict(task=instrs[ti], seed=seed, steps=int(steps[lane]), success=bool(success[lane]), ret=float(ret[lane]),
+                             end=end, final_health=float(h), final_food=float(f), final_drink=float(dr), final_energy=float(en),
+                             min_health=float(min_health[lane]),
                              top_actions=counts[lane].most_common(4), unparsed=int(unparsed[lane]), first_texts=texts[lane],
                              mean_best_score=float(np.mean(best_scores[lane])) if best_scores[lane] else None,
                              mean_value_now=float(np.mean(now_values[lane])) if now_values[lane] else None,
                              mean_reward_term=float(np.mean([x[0] for x in reward_terms[lane]])) if reward_terms[lane] else None,
                              mean_value_term=float(np.mean([x[1] for x in reward_terms[lane]])) if reward_terms[lane] else None))
     by_task = {instrs[ti]: float(np.mean([e["success"] for e in episodes if e["task"] == instrs[ti]])) for ti in task_ids}
-    res = dict(run=run.name, checkpoint=a.checkpoint, step=state["step"], args=vars(a), plan=K, horizon=H,
+    ends = dict(collections.Counter(e["end"] for e in episodes))
+    res = dict(run=run.name, checkpoint=a.checkpoint, step=state["step"], args=vars(a), plan=K, horizon=H, ends=ends,
                success_rate=float(success.mean()), successes=int(success.sum()), episodes_n=L, by_task=by_task,
                chosen=dict(chosen_stats), unparsed_share=float(unparsed.sum() / max(1, steps.sum() * N)),
                mean_steps=float(steps.mean()), seconds=time.time() - t_start, timing=dict(timing), episodes=episodes)
     Path(a.out).write_text(json.dumps(res, indent=1, ensure_ascii=False))
-    print(json.dumps({k: res[k] for k in ("run", "step", "success_rate", "successes", "episodes_n", "by_task", "chosen",
+    print(json.dumps({k: res[k] for k in ("run", "step", "success_rate", "successes", "episodes_n", "by_task", "ends", "chosen",
                                           "unparsed_share", "mean_steps", "seconds")}), flush=True)
     print("EVAL_DONE", flush=True)
 
