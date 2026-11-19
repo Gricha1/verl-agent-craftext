@@ -271,7 +271,7 @@ def main():
         N = len(acts)
         value, vmask = np.zeros(N, np.float32), np.zeros(N, np.float32)
         lab = {}
-        for line in open(Path(a.frame_labels) / f"{tag}.jsonl"):
+        for line in open(Path(a.frame_labels) / f"{root.name}.jsonl"):   # labels of this dir (train / val)
             r = json.loads(line); lab[r["row"]] = r["reasoning"]
         rows, texts = [], []
         for s, n in zip(man["starts"], man["lengths"]):
