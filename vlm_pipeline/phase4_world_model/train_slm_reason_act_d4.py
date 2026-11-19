@@ -27,6 +27,13 @@ Frames without a reasoning label (episodes the teacher failed, not labelled) tra
   model (task as text, reward / value / instruction heads) on the real window ending at frame t. They enter the prompt as
   n_agent more tokens after the latents, e_h = MLP(h) + slot: the SLM reads the world model's own task-aware state.
 
+--frame-labels DIR (Qwen-teacher Crafter data of Alexey, 2026-11-19): the episodes come from the --train / --val dirs of
+build_qwen_crafter64.py (actions.npy, rewards.npy, terminal_in.npy, manifest.json) and the reasoning from DIR/{train,val}.jsonl
+of build_qwen_slm_labels.py (the teacher Qwen's own <reasoning>, its memory dropped). There is one task (--task-text) and no
+instruction success, so the value is the return of the native Crafter reward, G_t = sum_k gamma^k r_{t+k}, trained where the
+episode ended in a death or at least --value-horizon steps remain before the collection cut it. Targets longer than
+--max-target tokens are left unlabelled (reconstruction and value only).
+
 Reasoning labels: rows of the phase-2 reasoning data dir of wood2200 (Gemma-4, label_reasoning.py --context;
 reason_wood2200_h200_20261106/data/{train,valid}.jsonl), cot_target "<reasoning>R</reasoning>\nACTION: X".
 
@@ -144,8 +151,8 @@ def main():
     p.add_argument("--tok", required=True)
     p.add_argument("--init-checkpoint", required=True, help="initial_random of the SLM (architecture and random weights)")
     p.add_argument("--text-tokenizer", required=True, help="dir with the tokenizer of the reasoning data (wood2200 SLM)")
-    p.add_argument("--raw-data", required=True)
-    p.add_argument("--reasoning", required=True)
+    p.add_argument("--raw-data", default="")
+    p.add_argument("--reasoning", default="")
     p.add_argument("--train", required=True)
     p.add_argument("--val", required=True)
     p.add_argument("--out", required=True)
@@ -166,6 +173,11 @@ def main():
     p.add_argument("--latent-cache", default="")
     p.add_argument("--plan", type=int, default=0, help="K > 0: target <plan> with the teacher's next K actions instead of <action>")
     p.add_argument("--accum", type=int, default=1, help="micro-batches per optimizer step (batch / accum examples each)")
+    p.add_argument("--frame-labels", default="", help="dir with {train,val}.jsonl of build_qwen_slm_labels.py (Qwen Crafter data)")
+    p.add_argument("--task-text", default="Unlock as many achievements as possible.")
+    p.add_argument("--value-horizon", type=int, default=300)
+    p.add_argument("--max-target", type=int, default=384)
+    p.add_argument("--gen-tokens", type=int, default=0, help="greedy generation length at eval (0: 80 + 6 * plan)")
     p.add_argument("--dreamer-h", default="", help="dir with h_train.pt / h_val.pt (cache_dreamer_h.py): Dreamer 4 h_t tokens")
     a = p.parse_args()
     sys.path.insert(0, f"{a.repo}/vlm_pipeline/phase4_world_model")
@@ -187,11 +199,14 @@ def main():
     enc = lambda s: text.encode(s, add_special_tokens=False)
     unk = text.convert_tokens_to_ids(text.unk_token) if text.unk_token else None
 
-    episodes = load_episodes(Path(a.raw_data), None, None)
-    add_value_targets(episodes, a.value_gamma)
-    tasks = sorted({ep[0]["instruction"] for ep in episodes.values()})
+    if a.frame_labels:
+        episodes, tasks = None, [a.task_text]
+    else:
+        episodes = load_episodes(Path(a.raw_data), None, None)
+        add_value_targets(episodes, a.value_gamma)
+        tasks = sorted({ep[0]["instruction"] for ep in episodes.values()})
     reasoning, mismatch = {}, 0
-    for split in ("train", "valid"):
+    for split in (() if a.frame_labels else ("train", "valid")):
         for line in open(Path(a.reasoning) / f"{split}.jsonl"):
             r = json.loads(line)
             m = re.match(r"<reasoning>(.*)</reasoning>\nACTION: (\S+)$", r["cot_target"], re.S)
@@ -230,26 +245,62 @@ def main():
                     targets.append(ids); has.append(1)
                 else:
                     targets.append([EOS]); has.append(0)
+        return pack(tag, task, value, vmask, targets, has, teacher)
+
+    def pack(tag, task, value, vmask, targets, has, teacher):
         T = max(map(len, targets))
-        tgt = torch.zeros(len(targets), T, dtype=torch.long)
-        tmask = torch.zeros(len(targets), T, dtype=torch.long)
+        tgt = np.zeros((len(targets), T), np.int16)   # token ids < 32768; int16 / bool keep 3M frames x 384 tokens small
+        tmask = np.zeros((len(targets), T), bool)
         for i, ids in enumerate(targets):
-            tgt[i, :len(ids)] = torch.tensor(ids); tmask[i, :len(ids)] = 1
+            tgt[i, :len(ids)] = ids; tmask[i, :len(ids)] = True
+        tgt, tmask = torch.from_numpy(tgt), torch.from_numpy(tmask)
         if unk is not None:
             print(tag, "unknown tokens in targets", int((tgt == unk).sum()), flush=True)
         lens = tmask.sum(1)[torch.tensor(has, dtype=torch.bool)].float()
         print(tag, "frames", len(task), "with reasoning", sum(has), "target tokens mean/max", round(float(lens.mean()), 1),
               int(lens.max()), flush=True)
-        return [x.to(device) for x in (torch.tensor(task), torch.tensor(value, dtype=torch.float32),
-                                       torch.tensor(vmask, dtype=torch.float32), tgt, tmask,
-                                       torch.tensor(has, dtype=torch.float32), torch.tensor(teacher))]
+        return [x.to(device) for x in (torch.as_tensor(task), torch.as_tensor(value, dtype=torch.float32),
+                                       torch.as_tensor(vmask, dtype=torch.float32), tgt, tmask,
+                                       torch.as_tensor(has, dtype=torch.float32), torch.as_tensor(teacher, dtype=torch.long))]
+
+    def frame_split_data(root, tag):   # --frame-labels: Qwen-teacher Crafter episodes, native-reward return as the value
+        root = Path(root)
+        man = json.loads((root / "manifest.json").read_text())
+        acts = np.load(root / "actions.npy").astype(np.int64); rew = np.load(root / "rewards.npy").astype(np.float64)
+        died = np.load(root / "terminal_in.npy")
+        N = len(acts)
+        value, vmask = np.zeros(N, np.float32), np.zeros(N, np.float32)
+        lab = {}
+        for line in open(Path(a.frame_labels) / f"{tag}.jsonl"):
+            r = json.loads(line); lab[r["row"]] = r["reasoning"]
+        rows, texts = [], []
+        for s, n in zip(man["starts"], man["lengths"]):
+            G, ended = 0.0, bool(died[s + n - 1])
+            for t in range(n - 2, -1, -1):   # rewards[s + t] is the reward of the action in frame t; the last frame has none
+                G = rew[s + t] + a.value_gamma * G
+                value[s + t] = G; vmask[s + t] = float(ended or n - 1 - t >= a.value_horizon)
+            for t in range(n - 1):
+                if s + t in lab:
+                    nxt = acts[s + t:min(s + t + max(a.plan, 1), s + n - 1)]
+                    act = (f"<plan>{', '.join(NAMES[x] for x in nxt)}</plan>" if a.plan else f"<action>{NAMES[nxt[0]]}</action>")
+                    rows.append(s + t); texts.append(f"<reasoning>\n{lab[s + t]}\n</reasoning>\n{act}")
+        ids = text(texts, add_special_tokens=False)["input_ids"]
+        targets, has = [[EOS] for _ in range(N)], np.zeros(N, np.float32)
+        long_ = 0
+        for r, x in zip(rows, ids):
+            if len(x) + 1 > a.max_target:
+                long_ += 1; continue
+            targets[r] = x + [EOS]; has[r] = 1
+        print(tag, "labels", len(rows), "longer than", a.max_target, "tokens", long_, "value targets", int(vmask.sum()),
+              "mean", round(float((value * vmask).sum() / max(vmask.sum(), 1)), 3), flush=True)
+        return pack(tag, np.zeros(N, np.int64), value, vmask, targets, has, acts)
 
     data = {}
     for tag, root in (("train", a.train), ("val", a.val)):
         frames, starts, lengths = load_split(root)
         cache = Path(a.latent_cache) / f"z_{tag}.pt" if a.latent_cache else None
         z, x, first = encode_split(tok, frames, starts, lengths, device, cache)
-        data[tag] = (z, x, first, *split_data(root, tag))
+        data[tag] = (z, x, first, *(frame_split_data if a.frame_labels else split_data)(root, tag))
         if tag == "val":   # end (exclusive) of each frame's episode, for the teacher's next actions
             vend = torch.cat([torch.full((n,), s + n, dtype=torch.long) for s, n in
                               zip(np.concatenate(([0], np.cumsum(lengths)[:-1])), lengths)]).to(device)
@@ -290,7 +341,7 @@ def main():
 
     def batch_inputs(idx, T, TM, g):
         w = int(TM[idx].sum(1).max())
-        return post_ids[g[idx]], post_mask[g[idx]], T[idx, :w], TM[idx, :w]
+        return post_ids[g[idx]], post_mask[g[idx]], T[idx, :w].long(), TM[idx, :w].long()
 
     @torch.no_grad()
     def evaluate(step):
@@ -331,7 +382,7 @@ def main():
             idx = gi[st:st + 128]
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 ids = model.generate(windows(zv, fv, idx), pre, post_ids[gv[idx]], post_mask[gv[idx]],
-                                     max_tokens=80 + 6 * a.plan, Hd=HD(hV, idx))
+                                     max_tokens=a.gen_tokens or 80 + 6 * a.plan, Hd=HD(hV, idx))
             for i, row in enumerate(ids.tolist()):
                 row = row[:row.index(EOS)] if EOS in row else row
                 txt = text.decode(row)
