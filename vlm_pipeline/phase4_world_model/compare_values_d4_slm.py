@@ -11,8 +11,12 @@ For every validation frame t of every episode (n frames, actions a_0..a_{n-1}):
 Both targets mark the same event (one action before the task is done) and differ only by the discount. Saved per frame:
 V_D, V_S, both targets, the frames to the end, success / death of the episode, task, episode index.
 
+The wood2200_d4/val split holds only successful episodes; --episodes takes any collector output instead (e.g. the teacher on
+the 128 evaluation episodes, seeds 20264000-031, with its deaths), whose frames are encoded here.
+
   python compare_values_d4_slm.py --slm <step.pt> --dyn <phase-1 dyn> --heads <phase-2 latest.pt> --raw-data <raw>
      --val <wood2200_d4/val> --latent-cache <dir with z_val.pt> --out values.npz
+  python compare_values_d4_slm.py --slm .. --dyn .. --heads .. --episodes <collector dir> --out values.npz
 """
 from __future__ import annotations
 
@@ -28,8 +32,13 @@ import torch.nn.functional as F
 
 def main():
     p = argparse.ArgumentParser()
-    for k in ("--slm", "--dyn", "--heads", "--raw-data", "--val", "--latent-cache", "--out"):
+    for k in ("--slm", "--dyn", "--heads", "--out"):
         p.add_argument(k, required=True)
+    p.add_argument("--raw-data", help="raw collection with the --val episodes")
+    p.add_argument("--val", help="wood2200_d4/val (manifest) with z_val.pt in --latent-cache")
+    p.add_argument("--latent-cache")
+    p.add_argument("--episodes", help="instead of --val: a collector output dir (train/val parquet + images); every episode, "
+                                      "frames encoded here with the SLM's frozen Dreamer 4 tokenizer")
     p.add_argument("--repo", default="/w/repo")
     p.add_argument("--chunk", type=int, default=512)
     a = p.parse_args()
@@ -71,14 +80,31 @@ def main():
     sig = min(int(round((1.0 - tau) * k_max)), k_max)
     gamma_d = float(hck["train_cfg"]["gamma"]); gamma_s = float(cfg.get("value_gamma", 0.99))
 
-    episodes = load_episodes(Path(a.raw_data), None, None)
+    if a.episodes:
+        from dreamer4.models.tokenizer import FrozenTokenizer
+        from train_slm_world_model import read_image
+        episodes = load_episodes(Path(a.episodes), None, None)
+        keys = sorted(episodes)
+        lengths = [len(episodes[k]) for k in keys]
+        tok = FrozenTokenizer(cfg["tok"], history=4, device=dev)
+        zs = []
+        with torch.no_grad():
+            for k in keys:     # the encode_split convention: history window of 4 frames inside the frozen encoder
+                x = torch.from_numpy(np.stack([np.round(np.moveaxis(read_image(Path(a.episodes), it["image"]), 0, -1)[:63, :63] * 255)
+                                               .astype(np.uint8) for it in episodes[k]]))
+                zs.append(torch.cat([tok.encode_frames(x[None, max(0, s - 3):s + 256].to(dev))[0, min(s, 3):]
+                                     for s in range(0, len(x), 256)]).half())
+        z = torch.cat(zs).to(dev)
+    else:
+        episodes = load_episodes(Path(a.raw_data), None, None)
+        root = Path(a.val)
+        man = json.loads(((root / "manifest.json") if (root / "manifest.json").exists() else (root / "wood_manifest.json")).read_text())
+        keys, lengths = man["episode_ids"], man["lengths"]
+        z = torch.load(Path(a.latent_cache) / "z_val.pt").to(dev)
     add_value_targets(episodes, gamma_s)
-    root = Path(a.val)
-    man = json.loads(((root / "manifest.json") if (root / "manifest.json").exists() else (root / "wood_manifest.json")).read_text())
-    z = torch.load(Path(a.latent_cache) / "z_val.pt").to(dev)
     cols = {k: [] for k in ("idx", "first", "t", "n", "g", "gd", "prev", "tS", "mS", "tD", "succ", "died", "ep")}
     first = 0
-    for e, (key, n) in enumerate(zip(man["episode_ids"], man["lengths"])):
+    for e, (key, n) in enumerate(zip(keys, lengths)):
         ep = episodes[int(key)]
         assert len(ep) == n
         ok, died = bool(ep[-1]["success"]), (not ep[-1]["success"]) and bool(ep[-1]["done"]) and n < 1000
