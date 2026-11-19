@@ -5,7 +5,10 @@ Hypothesis H-WM-GRPO (user, 2026-10-28) and the 2026-11-19 diagnosis: every fail
 almost every failed closed-loop episode of the SLM ends in death, and behaviour cloning cannot beat the teacher's ~84%; the
 world model has to tell the policy which plans die. Here the world model is a Dreamer 4 phase-2 checkpoint trained on reward
 v2 (build_wood_d4_heads.py death: +1 one frame before the task is done, -1 one frame before death; |r| >= 0.5 ends the
-episode), with a value head (gamma 0.99) and the task as text.
+episode), with a value head (gamma 0.99) and the task as text. Since 2026-11-19 (user: the environment's reward must not be
+changed) the heads learn the native reward (build_wood_d4_heads.py native, Craftax / 50) and the end of the episode from a
+continue head (patch_dreamer4_heads_continue.py); p_k below is then that head, and death / success in the logs are terminals
+with negative / positive arriving reward (the killing hit costs health, the finishing step pays its achievement).
 
 One update:
   starts   B frames t of training episodes (uniform, or --death-frac of them from the last --death-window frames of episodes
@@ -202,7 +205,9 @@ def main():
                 o = dyn(av, st, sg, (1 - tau) * S[:, k:k + 4], agent_tokens=ag)
             hh = o[-1][:, -1].float().flatten(1)
             lr_ = heads.reward.at(hh, 0).float()
-            rk.append(heads.reward.mean(lr_)); pk.append((lr_.softmax(-1) * term_bin).sum(-1))
+            rk.append(heads.reward.mean(lr_))
+            pk.append(torch.sigmoid(heads.cont(hh).squeeze(-1).float()) if hasattr(heads, "cont")
+                      else (lr_.softmax(-1) * term_bin).sum(-1))   # continue head (native reward) or reward bins
             vk.append(heads.value.mean(heads.value.at(hh, 0).float()))
         rk, pk, vk = torch.stack(rk, 1), torch.stack(pk, 1), torch.stack(vk, 1)
         valid = torch.arange(H, device=device)[None] < L[:, None]

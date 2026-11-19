@@ -26,7 +26,8 @@ At step t of an episode (frames x_0..x_t, executed actions a_0..a_{t-1}):
   --score mean: mean_k v_k.
   --score reward (needs --heads, a Dreamer 4 phase-2 checkpoint of train_heads.py: finetuned dynamics + reward head, which
   then also produces the dream): with r_k the expected reward that arrives with d_k (reward head, MTP distance 0, task g)
-  and p_k its terminal probability (the dataset's rule on the head's bins),
+  and p_k its terminal probability (the continue head if the heads have one, i.e. native reward; else the dataset's rule on
+  the reward head's bins),
           score = sum_{k<=L} gamma^(k-1) A_k r_k + gamma^L A_{L+1} v_L,   A_k = prod_{j<k} (1 - p_j),  L = plan length (<= H)
   i.e. Dreamer's predicted rewards along the plan plus the SLM value of the last imagined state.
 SLM checkpoints trained with --dreamer-h read the Dreamer agent tokens h too (needs --heads, the same phase-2 model): h of the
@@ -263,7 +264,9 @@ def main():
                     out = dyn(av[sl], st, sg, (1 - tau_ctx) * zw[sl], agent_tokens=ag)
                 hh = out[-1][:, -1].float()                         # (B, n_agent, d)
                 lr_ = heads.reward.at(flatten_agent_out(hh), 0).float()   # symexp two-hot: decode with mean()
-                out_h.append(hh); out_r.append(heads.reward.mean(lr_)); out_p.append((lr_.softmax(-1) * term_bin).sum(-1))
+                out_h.append(hh); out_r.append(heads.reward.mean(lr_))
+                out_p.append(torch.sigmoid(heads.cont(flatten_agent_out(hh)).squeeze(-1).float()) if hasattr(heads, "cont")
+                             else (lr_.softmax(-1) * term_bin).sum(-1))   # continue head (native reward) or reward bins
             hs.append(torch.cat(out_h)); rs.append(torch.cat(out_r)); ps.append(torch.cat(out_p))
         return torch.stack(hs, 1), torch.stack(rs, 1), torch.stack(ps, 1)
 
