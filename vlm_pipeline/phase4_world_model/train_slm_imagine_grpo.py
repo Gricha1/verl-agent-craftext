@@ -62,6 +62,9 @@ def main():
     p.add_argument("--bad-score", type=float, default=-1.0)
     p.add_argument("--death-frac", type=float, default=0.5, help="share of starts taken near the end of death episodes")
     p.add_argument("--death-window", type=int, default=30)
+    p.add_argument("--tail", choices=("dreamer", "slm"), default="dreamer",
+                   help="value of the last imagined state: Dreamer's value head, or the frozen start SLM's value (with a "
+                        "continue head also at every imagined end: the native reward does not pay for the task)")
     p.add_argument("--eval-every", type=int, default=100)
     p.add_argument("--eval-starts", type=int, default=512)
     p.add_argument("--save-every", type=int, default=250)
@@ -103,6 +106,14 @@ def main():
     max_tokens = 80 + 6 * K
     params = [q for n, q in model.named_parameters() if not n.startswith(("head.", "value_head."))]
     opt = torch.optim.AdamW(params, lr=a.lr, betas=(0.9, 0.95), weight_decay=0.0)
+    critic = copy.deepcopy(model).eval().requires_grad_(False) if a.tail == "slm" else None
+
+    @torch.no_grad()
+    def critic_value(W, g):
+        """SLM value V(g, W) of the frozen start checkpoint (G = gamma^(T-1-t) on success, 0 on failure)."""
+        emb, mask, _ = critic.prefix(W, pre, post_ids[g], post_mask[g])
+        h = critic.backbone(inputs_embeds=emb, attention_mask=mask).last_hidden_state[:, -1]
+        return critic.value_head(h).squeeze(-1).float()
 
     # ---------------- world model ----------------
     hck = torch.load(a.heads, map_location="cpu", weights_only=False)
@@ -214,7 +225,12 @@ def main():
         alive = torch.cumprod(torch.cat([torch.ones_like(pk[:, :1]), 1 - pk], 1), 1)
         disc = a.gamma ** torch.arange(H, device=device, dtype=torch.float32)
         last = (L - 1).clamp_min(0)
+        if a.tail == "slm":   # value of the frozen start SLM on the imagined windows S[k..k+3] instead of Dreamer's value
+            W = torch.stack([S[:, k:k + 4] for k in range(1, H + 1)], 1).flatten(0, 1)
+            vk = torch.cat([critic_value(W[i:i + 512], g.repeat_interleave(H)[i:i + 512]) for i in range(0, W.shape[0], 512)]).view(C, H)
         sc = (disc * alive[:, :H] * rk * valid).sum(1) + a.gamma ** L.float() * alive.gather(1, L[:, None])[:, 0] * vk.gather(1, last[:, None])[:, 0]
+        if a.tail == "slm" and hasattr(heads, "cont"):   # an imagined end is worth the SLM value of its frame (~1 success, ~0 death)
+            sc = sc + (a.gamma * disc * alive[:, :H] * pk * vk * valid).sum(1)
         dead = (alive[:, :H] * pk * (rk < 0) * valid).sum(1)
         won = (alive[:, :H] * pk * (rk > 0) * valid).sum(1)
         return sc, dead, won

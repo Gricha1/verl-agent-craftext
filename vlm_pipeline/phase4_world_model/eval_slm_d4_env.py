@@ -29,7 +29,10 @@ At step t of an episode (frames x_0..x_t, executed actions a_0..a_{t-1}):
   and p_k its terminal probability (the continue head if the heads have one, i.e. native reward; else the dataset's rule on
   the reward head's bins),
           score = sum_{k<=L} gamma^(k-1) A_k r_k + gamma^L A_{L+1} v_L,   A_k = prod_{j<k} (1 - p_j),  L = plan length (<= H)
-  i.e. Dreamer's predicted rewards along the plan plus the SLM value of the last imagined state.
+  i.e. Dreamer's predicted rewards along the plan plus the SLM value of the last imagined state. Heads with a continue head
+  (native env reward, Craftax / 50: the task and death have no reward of their own, both only end the episode) add
+  sum_{k<=L} gamma^k A_k p_k v_k: an imagined end is worth the SLM value of its frame (G = gamma^(T-1-t) on success, so ~1
+  one action before the task is done and ~0 before a death), otherwise finishing the task would cost the plan its tail.
 SLM checkpoints trained with --dreamer-h read the Dreamer agent tokens h too (needs --heads, the same phase-2 model): h of the
 real window ending at t when writing the plan, h of each imagined window for its value (cache_dreamer_h.py conventions).
 
@@ -372,6 +375,8 @@ def main():
                 rsum = (disc * alive[:, :H] * rk * valid).sum(1)
                 vl = v.gather(1, last[:, None])[:, 0]
                 tail = a.gamma ** (last + 1).float() * alive.gather(1, (last + 1)[:, None])[:, 0] * vl
+                if hasattr(heads, "cont"):   # native reward: an imagined end is valued by the SLM value of its frame
+                    tail = tail + (a.gamma * disc * alive[:, :H] * pk * v.masked_fill(~valid, 0) * valid).sum(1)
                 sc = rsum + tail
                 for j, (jj, c) in enumerate(flat):
                     if c == 0:
