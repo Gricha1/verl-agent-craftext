@@ -7,7 +7,7 @@
 #   0 base     the start SLM and heads with the planner on the ZeroHero eval worlds (seeds 150000000..127, 2000 steps):
 #              the number the loop has to beat (score = distinct achievements per episode, unlock rate per achievement)
 # Iteration i (one GPU, each stage in its own container):
-#   1 collect  eval_slm_d4_env.py --env crafter: SLM_i writes 8 plans (top-20 sampling), Dreamer HEADS_i dreams 8 steps of
+#   1 collect  eval_slm_d4_env.py --game crafter: SLM_i writes 8 plans (top-20 sampling), Dreamer HEADS_i dreams 8 steps of
 #              each, score = native reward + continue head (from iteration 1) + value of the critic (the start SLM, fixed);
 #              the first action of the best plan is played; $SEEDS fresh worlds (170000000 + 1000 i ..), $CSTEPS steps at most
 #   2 replay   build_online_d4.py: all episodes played so far, repeated to --share 0.3, + $BASE_EPS random Qwen episodes
@@ -50,7 +50,7 @@ if [ ! -f $D/dreamer4/PATCHED ]; then   # dreamer4 of the Qwen heads + task-text
 fi
 DYN=/r/dyn/checkpoints/latest.pt
 CRITIC=/s0/run/checkpoints/$CK0
-PLAN="--env crafter --plans 8 --decode topk --top-k 20 --score reward --dyn $DYN --imagine --horizon 8 --K 1 --critic $CRITIC"
+PLAN="--game crafter --plans 8 --decode topk --top-k 20 --score reward --dyn $DYN --imagine --horizon 8 --K 1 --critic $CRITIC"
 EV="--entrypoint python3 $IMG /w/repo/vlm_pipeline/phase4_world_model/eval_slm_d4_env.py"
 if [ $SMOKE = 1 ]; then EVAL_SEEDS=4; EVAL_STEPS=20; SEEDS=4; CSTEPS=30; fi
 E0=150000000; E1=$((E0 + EVAL_SEEDS))

@@ -40,7 +40,7 @@ moves the policy's backbone, its value head is not trained); --save-traj <dir> w
 WoodEpisodeDataset with the native reward (frames 64 x 64, actions, rewards, terminals = done, wood_manifest.json, the
 build_wood_d4_heads.py native conventions) plus z.pt, the per-frame latents the SLM saw, for GRPO starts.
 
---env crafter (Qwen-teacher Crafter data of Alexey, 2026-11-19): stock Crafter 1.8.3 (crafter.Env(size=(64, 64)), the
+--game crafter (Qwen-teacher Crafter data of Alexey, 2026-11-19): stock Crafter 1.8.3 (crafter.Env(size=(64, 64)), the
   63 x 63 view of its 64 x 64 frame as in build_qwen_crafter64.py), one world per seed of --seeds, the one task of the SLM,
   native reward (+1 per new achievement, +-0.1 per health point); an episode ends at death or --max-steps. Result: score =
   mean number of distinct achievements per episode (ZeroHero protocol: seeds 150000000..150000127, 2000 steps), the
@@ -72,7 +72,8 @@ def main():
     p.add_argument("--out", required=True)
     p.add_argument("--dyn", default="", help="Dreamer 4 dynamics checkpoint (for --imagine)")
     p.add_argument("--teacher-root", default="/w/repo/caged_craftext")
-    p.add_argument("--env", choices=("craftax", "crafter"), default="craftax")
+    p.add_argument("--game", choices=("craftax", "crafter"), default="craftax",
+                   help="not --env: the aicenter3 docker wrapper strips -e / --env from every docker run")
     p.add_argument("--settings", default="achievements_wood")
     p.add_argument("--seeds", default="20264000:20264032")
     p.add_argument("--tasks", default="", help="comma-separated task indices (default all)")
@@ -186,7 +187,7 @@ def main():
     max_tokens = cfg.get("gen_tokens") or (80 + 6 * K if K else 96)
 
     # ---------------- environment: all episodes in one vmapped batch ----------------
-    crafter_env = a.env == "crafter"
+    crafter_env = a.game == "crafter"
     if crafter_env:   # stock Crafter, one python env per world seed, stepped in a loop
         import crafter
         instrs = list(tasks)
