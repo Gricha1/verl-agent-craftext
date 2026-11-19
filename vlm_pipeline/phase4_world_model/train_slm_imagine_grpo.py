@@ -22,6 +22,10 @@ One update:
   update   A_i = (R_i - mean_G R) / (std_G R + 1e-4);  L = - mean_i A_i * mean_tokens log pi(answer_i | Z_t, g)
            + --bc-weight * CE(teacher reasoning + next K teacher actions | Z_t, g) on labelled starts
            (the BC anchor keeps the policy near the demonstrations it started from)
+Online Dyna loop (dyna_loop.sh, user 2026-11-19): --online <traj dirs> makes --online-frac of the starts the states the
+planner itself reached in the environment (eval_slm_d4_env.py --save-traj; --death-frac of them from the last
+--death-window frames of its failed episodes), the rest stay dataset starts with the BC anchor; --critic fixes the value
+SLM (the first SLM of the loop) while the policy moves from iteration to iteration.
 The SLM keeps its reconstruction / value heads untouched (not in the loss). Checkpoints in the train_slm_reason_act_d4.py
 format (eval_slm_d4_env.py reads them). Every --eval-every updates: on held-out validation starts, mean score, death share
 (sum_k A_k p_k with r_k < 0) and success share of the greedy plan, and the same for the start checkpoint at update 0.
@@ -65,6 +69,11 @@ def main():
     p.add_argument("--tail", choices=("dreamer", "slm"), default="dreamer",
                    help="value of the last imagined state: Dreamer's value head, or the frozen start SLM's value (with a "
                         "continue head also at every imagined end: the native reward does not pay for the task)")
+    p.add_argument("--critic", default="", help="--tail slm: SLM checkpoint whose value is the critic (default: a frozen copy "
+                   "of --slm); the Dyna loop keeps the first SLM's value through all iterations")
+    p.add_argument("--online", default="", help="comma-separated eval_slm_d4_env.py --save-traj dirs: --online-frac of the "
+                   "starts are the states the planner reached in the environment (no BC label on them)")
+    p.add_argument("--online-frac", type=float, default=0.75)
     p.add_argument("--eval-every", type=int, default=100)
     p.add_argument("--eval-starts", type=int, default=512)
     p.add_argument("--save-every", type=int, default=250)
@@ -107,6 +116,11 @@ def main():
     params = [q for n, q in model.named_parameters() if not n.startswith(("head.", "value_head."))]
     opt = torch.optim.AdamW(params, lr=a.lr, betas=(0.9, 0.95), weight_decay=0.0)
     critic = copy.deepcopy(model).eval().requires_grad_(False) if a.tail == "slm" else None
+    if critic is not None and a.critic:
+        cst = torch.load(a.critic, map_location="cpu", weights_only=False)
+        assert cst["tasks"] == tasks, "critic and policy SLMs have different task lists"
+        critic.load_state_dict(cst["model"]); critic.eval().requires_grad_(False)
+        print("critic", a.critic, flush=True)
 
     @torch.no_grad()
     def critic_value(W, g):
@@ -166,6 +180,31 @@ def main():
     zV, fV, rowsV = split(a.val, "val")
     near = [i for i, r in enumerate(rowsT) if r[4]]
     print(f"train starts {len(rowsT)} ({len(near)} near death), val {len(rowsV)}", flush=True)
+    rowsO, nearO = [], []
+    if a.online:   # states the planner reached in the environment: (frame, task, a_{t-3..t-1}, no BC label, near death, t)
+        zs_, f0 = [], 0
+        for d in a.online.split(","):
+            d = Path(d)
+            m = json.loads((d / "wood_manifest.json").read_text())
+            eps = json.loads((d / "episodes.json").read_text())
+            acts = np.load(d / "actions.npy")
+            z = torch.load(d / "z.pt")
+            assert len(z) == len(acts) == sum(m["lengths"]) and len(eps) == len(m["lengths"]), d
+            for s, n, e in zip(m["starts"], m["lengths"], eps):
+                moves = acts[s:s + n].tolist()
+                failed = (not e["success"]) and e["end"] != "timeout"
+                for t in range(n):
+                    prev = [moves[t - 3 + i] if t - 3 + i >= 0 else 0 for i in range(3)]
+                    rowsO.append((f0 + s + t, tasks.index(e["task"]), prev, None, failed and t >= n - a.death_window, t))
+            zs_.append(z); f0 += len(z)
+        zO = torch.cat(zs_).to(device)
+        fO = torch.tensor([r[0] - r[5] for r in rowsO], device=device)
+        nearO = [i for i, r in enumerate(rowsO) if r[4]]
+        print(f"online starts {len(rowsO)} ({len(nearO)} near a failed end) from {a.online}", flush=True)
+
+    def choose(near_rows, n_rows, k):
+        nd = int(round(a.death_frac * k)) if near_rows else 0
+        return list(rng.choice(near_rows, nd)) + list(rng.choice(n_rows, k - nd)) if k else []
     val_pick = rng.choice(len(rowsV), min(a.eval_starts, len(rowsV)), replace=False)
 
     # ---------------- helpers ----------------
@@ -274,9 +313,12 @@ def main():
     model.train()
     t0 = time.time(); run = dict(score=0.0, adv=0.0, pg=0.0, bc=0.0, death=0.0, parsed=0.0, n=0)
     for step in range(1, a.updates + 1):
-        nd = int(round(a.death_frac * a.starts)) if near else 0
-        pick = list(rng.choice(near, nd)) + list(rng.choice(len(rowsT), a.starts - nd))
+        nO = int(round(a.online_frac * a.starts)) if rowsO else 0
+        pick = choose(near, len(rowsT), a.starts - nO)        # dataset starts first: the BC rows index into them
         Zs, g, prev = batch_of(rowsT, zT, fT, pick)
+        if nO:
+            Zo, go, po = batch_of(rowsO, zO, fO, choose(nearO, len(rowsO), nO))
+            Zs, g, prev = torch.cat([Zs, Zo]), torch.cat([g, go]), torch.cat([prev, po])
         G = a.group
         ZG, gG, pG = Zs.repeat_interleave(G, 0), g.repeat_interleave(G, 0), prev.repeat_interleave(G, 0)
         model.eval()

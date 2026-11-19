@@ -35,6 +35,10 @@ At step t of an episode (frames x_0..x_t, executed actions a_0..a_{t-1}):
   one action before the task is done and ~0 before a death), otherwise finishing the task would cost the plan its tail.
 SLM checkpoints trained with --dreamer-h read the Dreamer agent tokens h too (needs --heads, the same phase-2 model): h of the
 real window ending at t when writing the plan, h of each imagined window for its value (cache_dreamer_h.py conventions).
+Online Dyna loop (dyna_loop.sh): --critic <SLM .pt> takes every value from that frozen SLM instead of the acting one (GRPO
+moves the policy's backbone, its value head is not trained); --save-traj <dir> writes the played episodes as a Dreamer 4
+WoodEpisodeDataset with the native reward (frames 64 x 64, actions, rewards, terminals = done, wood_manifest.json, the
+build_wood_d4_heads.py native conventions) plus z.pt, the per-frame latents the SLM saw, for GRPO starts.
 
   python eval_slm_d4_env.py --run <SLM run dir> --checkpoint step_030000.pt --out <json> [--plans 8 --decode sample --imagine
      --dyn <dreamer4 dyn>/checkpoints/latest.pt]
@@ -86,6 +90,10 @@ def main():
     p.add_argument("--K", type=int, default=4, help="denoising steps per imagined frame")
     p.add_argument("--chunk", type=int, default=1024, help="rows per forward pass")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--critic", default="", help="SLM checkpoint (.pt) whose value head scores the imagined windows instead "
+                   "of the acting SLM's (the Dyna loop keeps the value of the start SLM while GRPO moves the policy)")
+    p.add_argument("--save-traj", default="", help="dir: the played episodes in the WoodEpisodeDataset format with the native "
+                   "reward (build_wood_d4_heads.py native conventions) + per-frame latents z.pt + episodes.json")
     a = p.parse_args()
     t_start = time.time()
     torch.manual_seed(a.seed)
@@ -111,6 +119,15 @@ def main():
     d_h = int(state["model"]["h_adapter.0.weight"].shape[1]) if n_h else 0
     model = SLMReasonAct(lm, cfg["readout"], n_h=n_h, d_h=d_h).to(device)
     model.load_state_dict(state["model"]); model.eval()
+    critic = model
+    if a.critic:   # frozen value SLM (same architecture and text tokenizer as the acting one)
+        cst = torch.load(a.critic, map_location="cpu", weights_only=False)
+        clm = AutoModelForCausalLM.from_pretrained(cst["args"]["init_checkpoint"], dtype=torch.float32)
+        clm.resize_token_embeddings(len(text)); clm.tie_weights()
+        critic = SLMReasonAct(clm, cst["args"]["readout"], n_h=n_h, d_h=d_h).to(device)
+        critic.load_state_dict(cst["model"]); critic.eval()
+        assert cst["tasks"] == state["tasks"], "critic and policy SLMs have different task lists"
+        print("value from the critic", a.critic, flush=True)
     if n_h and not a.heads:
         raise ValueError("this SLM reads Dreamer h tokens: pass --heads (and --dyn) of the phase-2 model it was trained on")
     tasks = state["tasks"]
@@ -237,10 +254,10 @@ def main():
         vs, hs = [], []
         for s in range(0, Z.shape[0], a.chunk):
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                emb, mask, _ = model.prefix(Z[s:s + a.chunk], pre, post_ids[gi[s:s + a.chunk]], post_mask[gi[s:s + a.chunk]],
-                                            None if Hd is None else Hd[s:s + a.chunk])
-                hh = model.backbone(inputs_embeds=emb, attention_mask=mask).last_hidden_state
-                vs.append(model.value_head(hh[:, -1]).squeeze(-1).float())
+                emb, mask, _ = critic.prefix(Z[s:s + a.chunk], pre, post_ids[gi[s:s + a.chunk]], post_mask[gi[s:s + a.chunk]],
+                                             None if Hd is None else Hd[s:s + a.chunk])
+                hh = critic.backbone(inputs_embeds=emb, attention_mask=mask).last_hidden_state
+                vs.append(critic.value_head(hh[:, -1]).squeeze(-1).float())
             hs.append(hh[:, -1])
         return (torch.cat(vs), torch.cat(hs)) if hidden else torch.cat(vs)
 
@@ -293,6 +310,7 @@ def main():
 
     # ---------------- closed loop ----------------
     xs, zs, played = [], [], []       # per step: frames [L,63,63,3], latents [L,64,16], actions [L]
+    rews, dones = [], []              # per step: env reward of the action, done after it [L]
     active = np.ones(L, bool)
     success = np.zeros(L, bool)
     steps = np.zeros(L, int)
@@ -435,6 +453,7 @@ def main():
         t4 = time.time()
         keys, obs, est, r, done, ok, vit, lava = step_v(keys, est, jnp.asarray(acts_now))
         r, done, ok, vit, lava = np.asarray(r), np.asarray(done), np.asarray(ok), np.asarray(vit), np.asarray(lava)
+        rews.append(r.astype(np.float32)); dones.append(done.copy())
         timing["env"] += time.time() - t4
         for lane in live:
             ret[lane] += float(r[lane]); steps[lane] = t + 1
@@ -468,6 +487,36 @@ def main():
                chosen=dict(chosen_stats), unparsed_share=float(unparsed.sum() / max(1, steps.sum() * N)),
                mean_steps=float(steps.mean()), seconds=time.time() - t_start, timing=dict(timing), episodes=episodes)
     Path(a.out).write_text(json.dumps(res, indent=1, ensure_ascii=False))
+    if a.save_traj:   # build_wood_d4_heads.py native conventions: frame x_t, action a_t, reward of a_t on t -> t+1
+        sd = Path(a.save_traj); sd.mkdir(parents=True, exist_ok=True)
+        names = sorted(instrs)
+        fr, zz, ac, rw, tm, starts, lengths, task_idx, bc = [], [], [], [], [], [], [], [], []
+        first = 0
+        for lane, e in enumerate(episodes):
+            n = e["steps"]
+            x = torch.stack([xs[t][lane] for t in range(n)]).cpu().numpy()
+            fr.append(np.pad(x, ((0, 0), (0, 1), (0, 1), (0, 0))))          # 64 x 64 like wood2200 (black row / column)
+            zz.append(torch.stack([zs[t][lane] for t in range(n)]).half().cpu())
+            ac.append(np.array([played[t][lane] for t in range(n)], np.int64))
+            r_ep = np.array([rews[t][lane] for t in range(n)], np.float32)
+            rr = np.zeros(n, np.float32); tt = np.zeros(n, bool)
+            if n >= 2:
+                rr[:n - 1] = r_ep[:n - 1]; rr[n - 2] += r_ep[n - 1]
+                tt[n - 2] = bool(dones[n - 1][lane])                        # ended with done (task or death), not a timeout
+            rw.append(rr); tm.append(tt)
+            starts.append(first); lengths.append(n); first += n
+            task_idx.append(names.index(e["task"])); bc.append(int(e["success"]))
+        np.save(sd / "frames.npy", np.concatenate(fr)); np.save(sd / "actions.npy", np.concatenate(ac))
+        np.save(sd / "rewards.npy", np.concatenate(rw)); np.save(sd / "terminals.npy", np.concatenate(tm))
+        torch.save(torch.cat(zz), sd / "z.pt")
+        (sd / "wood_manifest.json").write_text(json.dumps(dict(
+            starts=starts, lengths=lengths, episode_ids=[-(1 + i) for i in range(len(episodes))], n_actions=17, tasks=task_idx,
+            bc=bc, task_names=names, terminal_rule="native",
+            reward_rule="native environment reward (Craftax / 50), last action's reward added to the transition into x_{n-1}",
+            source=dict(run=run.name, checkpoint=a.checkpoint, seeds=a.seeds, heads=a.heads, critic=a.critic))))
+        (sd / "episodes.json").write_text(json.dumps([dict(task=e["task"], seed=e["seed"], steps=e["steps"], success=e["success"],
+                                                           end=e["end"]) for e in episodes]))
+        print("saved", len(episodes), "episodes", first, "frames to", sd, flush=True)
     print(json.dumps({k: res[k] for k in ("run", "step", "success_rate", "successes", "episodes_n", "by_task", "ends", "chosen",
                                           "unparsed_share", "mean_steps", "seconds")}), flush=True)
     print("EVAL_DONE", flush=True)
