@@ -69,7 +69,10 @@ for d, m in order:
         frames[pos + s:pos + min(n, s + 20000)] = f[s:s + 20000]
     acts[pos:pos + n] = np.load(d / "actions.npy"); rews[pos:pos + n] = np.load(d / "rewards.npy")
     terms[pos:pos + n] = np.load(d / "terminals.npy")
-    starts += [pos + s for s in m["starts"]]; lengths += m["lengths"]; ids += m["episode_ids"]; tasks += m["tasks"]; bc += m["bc"]
+    for s, L_, e, k, b in zip(m["starts"], m["lengths"], m["episode_ids"], m["tasks"], m["bc"]):
+        if L_ < 2:   # a task done by the first action (Collect wood facing a tree): no transition, train_heads cannot sample it
+            continue  # (its frames stay in the arrays, unreferenced)
+        starts.append(pos + s); lengths.append(L_); ids.append(e); tasks.append(k); bc.append(b)
     pos += n
 frames.flush()
 np.save(out / "actions.npy", acts); np.save(out / "rewards.npy", rews); np.save(out / "terminals.npy", terms)
