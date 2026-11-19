@@ -74,6 +74,10 @@ def main():
     p.add_argument("--imagine", action="store_true", help="choose the candidate by the value of its Dreamer 4 dream")
     p.add_argument("--horizon", type=int, default=0, help="imagined steps (0 = the plan length of the checkpoint)")
     p.add_argument("--score", choices=("max", "last", "mean", "reward"), default="max")
+    p.add_argument("--value-mix", type=lambda s: [float(x) for x in s.split(",")], default=None,
+                   help="wS,wD,k,b (needs --heads): the value of an imagined window is wS v_SLM + wD clip(V_Dreamer, 0, 1)^k + b, "
+                        "V_Dreamer the phase-2 value head on the same window (k = log gamma_SLM / log gamma_Dreamer puts it on "
+                        "the SLM's discount); weights by least squares on held-out teacher frames (compare_values_d4_slm.py)")
     p.add_argument("--execute", type=int, default=1, help="actions of the chosen plan played before planning again")
     p.add_argument("--heads", default="", help="Dreamer 4 phase-2 checkpoint (train_heads.py) for --score reward")
     p.add_argument("--gamma", type=float, default=0.99)
@@ -131,6 +135,8 @@ def main():
             head_task = {g: i for i, g in enumerate(world.dataset.manifest["task_names"])}
     if a.score == "reward" and not a.heads:
         raise ValueError("--score reward needs --heads")
+    if a.value_mix and not (a.heads and a.imagine):
+        raise ValueError("--value-mix needs --heads and --imagine")
 
     system = SYSTEM_PLAN.format(K) if K else SYSTEM
     pre = torch.tensor([enc("System:\n" + system + "\nUser:\n")], device=device)
@@ -361,6 +367,11 @@ def main():
                 Himg, rk, pk = agent_scan(S, into, fresh_real + [True] * H, g_of_lane[idx][lane_of], list(range(1, H + 1)))
             v = value_of(Wk.flatten(0, 1), g_of_lane[idx][lane_of].repeat_interleave(H, 0),
                          Himg.flatten(0, 1) if n_h else None).view(-1, H)
+            if a.value_mix:   # v = wS v_SLM + wD clip(V_Dreamer, 0, 1)^k + b on every imagined window
+                wS, wD, kk, b0 = a.value_mix
+                hf = flatten_agent_out(Himg.flatten(0, 1).float())
+                vd = heads.value.mean(heads.value.at(hf, 0).float()).float().view(-1, H)
+                v = wS * v + wD * vd.clamp(0, 1) ** kk + b0
             v = v.masked_fill(~valid, float("-inf"))
             last = valid.long().sum(1) - 1
             if a.score == "max":
