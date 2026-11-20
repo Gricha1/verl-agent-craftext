@@ -89,8 +89,9 @@ def main():
     p.add_argument("--online", default="", help="comma-separated eval_slm_d4_env.py --save-traj dirs: --online-frac of the "
                    "starts are the states the planner reached in the environment (no BC label on them)")
     p.add_argument("--online-frac", type=float, default=0.75)
-    p.add_argument("--reencode", action="store_true", help="encode the train / val / online frames with the tokenizer of --dyn "
-                   "(cached in <out>/latents) instead of --latent-cache and the traj dirs' z.pt: the Dyna loop with tokenizer finetuning")
+    p.add_argument("--reencode", choices=("", "online", "all"), default="", help="encode frames with the tokenizer of --dyn "
+                   "(cached in <out>/latents) instead of the traj dirs' z.pt (online) and also --latent-cache (all): the Dyna loop "
+                   "with tokenizer finetuning; 'online' for the 3M-frame Qwen data, whose latents the anchor keeps")
     p.add_argument("--clip", type=float, default=0.0, help="PPO clip epsilon of the per-token ratio pi/pi_old (0: off)")
     p.add_argument("--kl-coef", type=float, default=0.0, help="weight of the per-token k3 KL(pi || pi_ref) (0: off)")
     p.add_argument("--ref", default="", help="reference SLM checkpoint of the KL (default --slm; the Dyna loop: the BC SLM)")
@@ -172,7 +173,7 @@ def main():
     @torch.no_grad()
     def latents(root, tag, fallback):
         """z of every frame of a dataset / traj dir: the cache (fallback path), or with --reencode the --dyn tokenizer."""
-        if not a.reencode:
+        if not a.reencode or (a.reencode == "online" and not tag.startswith("online_")):
             return torch.load(fallback)
         path = out / "latents" / f"z_{tag}.pt"
         if path.exists():

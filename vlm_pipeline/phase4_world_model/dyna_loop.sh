@@ -116,7 +116,7 @@ for i in $(seq $start_it $((ITERS - 1))); do
   if [ ! -f $I/grpo/checkpoints/step_$(printf %06d $U).pt ]; then
     dock grpo$i $V/wood2200_native -v $G:/g:ro -e PYTHONPATH=/code/dreamer4:/d/pylibs --entrypoint python3 $IMG \
       /w/repo/vlm_pipeline/phase4_world_model/train_slm_imagine_grpo.py --slm $SLM_RUN/run/checkpoints/$SLM_CK \
-      --dyn $DYN $([ $TOK_FT = 1 ] && echo --reencode) --heads /D/it$i/heads/checkpoints/latest.pt --critic $CRITIC --online $TRAJS --online-frac 0.75 \
+      --dyn $DYN $([ $TOK_FT = 1 ] && echo --reencode all) --heads /D/it$i/heads/checkpoints/latest.pt --critic $CRITIC --online $TRAJS --online-frac 0.75 \
       --raw-data /g/raw --reasoning /c/reason_wood2200 --train /g/wood2200_v3 --val /g/wood2200_d4/val --latent-cache /c/latents \
       --out /D/it$i/grpo --updates $U --starts 32 --group 8 --tail slm --seed $((7950 + i)) $GEXTRA $GRPO_ARGS ${GRPO_ARGS:+--ref $CRITIC} \
       2>&1 | grep --line-buffered -v -iE "warn|gym" > $I/grpo.log

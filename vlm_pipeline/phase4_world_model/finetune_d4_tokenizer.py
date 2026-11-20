@@ -40,8 +40,8 @@ def episodes(d):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--tok", required=True, help="tokenizer checkpoint to start from (the previous iteration's)")
-    p.add_argument("--ref", default="", help="anchor tokenizer (default --tok): the phase-1 one, so drift does not add up")
+    p.add_argument("--tok", default="", help="tokenizer checkpoint to start from (the previous iteration's; default: the one of --dyn)")
+    p.add_argument("--ref", default="", help="anchor tokenizer (default: the one of --dyn, i.e. phase 1, so drift does not add up)")
     p.add_argument("--dyn", required=True, help="phase-1 dynamics checkpoint; dyn_tok.pt = this one pointed at the new tokenizer")
     p.add_argument("--base", required=True)
     p.add_argument("--online", required=True)
@@ -66,8 +66,10 @@ def main():
     torch.manual_seed(a.seed); rng = np.random.default_rng(a.seed)
     dev = torch.device("cuda")
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
+    tok0 = torch.load(a.dyn, map_location="cpu", weights_only=False)["config"]["tokenizer"]["ckpt"]   # phase-1 tokenizer
+    a.tok = a.tok or tok0; a.ref = a.ref or tok0
     tok, ck = load_tokenizer_checkpoint(a.tok, device=dev)
-    ref, _ = load_tokenizer_checkpoint(a.ref or a.tok, device=dev)
+    ref, _ = load_tokenizer_checkpoint(a.ref, device=dev)
     ref.requires_grad_(False)
     ps = ck["config"]["model"]["patch_size"]; Hh, Ww, C = ck["frame_meta"]["H"], ck["frame_meta"]["W"], ck["frame_meta"]["C"]
     W = 4

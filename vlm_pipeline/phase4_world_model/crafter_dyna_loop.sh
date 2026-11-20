@@ -18,11 +18,15 @@
 #
 #   bash crafter_dyna_loop.sh <run dir> <SLM run dir> <SLM checkpoint> [GPU]
 #   env: ITERS=4 SEEDS=64 CSTEPS=1000 WM_STEPS=2000 GRPO_UPDATES=200 BASE_EPS=3000 EVAL_SEEDS=128 EVAL_STEPS=2000 SMOKE=0
+#        TOK_FT=0 TOK_STEPS=3000 TOK_ANCHOR=10 TOK_LPIPS=0.2 DYN_LR=2e-5: TOK_FT=1 (user 2026-11-20) finetunes the tokenizer's
+#        encoder + decoder after each replay (finetune_d4_tokenizer.py, see dyna_loop.sh 2b); GRPO re-encodes only the played
+#        episodes (the 3M Qwen frames keep their cached latents, the anchor holds them)
 #        GRPO_ARGS="--clip 0.2 --kl-coef 0.04 --ppo-epochs 2 --minibatches 2" (KL reference = the start SLM)
 set -eo pipefail   # a failed stage must stop the loop (its output is piped through grep / tee)
 D=$1; S0=$2; CK0=$3; GPU=${4:-3}
 ITERS=${ITERS:-4}; SEEDS=${SEEDS:-64}; CSTEPS=${CSTEPS:-1000}; WM_STEPS=${WM_STEPS:-2000}; GRPO_UPDATES=${GRPO_UPDATES:-200}
 BASE_EPS=${BASE_EPS:-3000}; EVAL_SEEDS=${EVAL_SEEDS:-128}; EVAL_STEPS=${EVAL_STEPS:-2000}; SMOKE=${SMOKE:-0}
+TOK_FT=${TOK_FT:-0}; TOK_STEPS=${TOK_STEPS:-3000}; TOK_ANCHOR=${TOK_ANCHOR:-10}; TOK_LPIPS=${TOK_LPIPS:-0.2}; DYN_LR=${DYN_LR:-2e-5}
 B=/mnt/aicenter1-datasets/gorbov_gv/modern_verl_reasoning_rl_a3_20261016
 REPO=$B/repo/verl-agent-craftext
 Q=$B/data/zerohero_crafter_memory_20261106
@@ -49,7 +53,7 @@ if [ ! -f $D/dreamer4/PATCHED ]; then   # dreamer4 of the Qwen heads + task-text
   done
   touch $D/dreamer4/PATCHED
 fi
-DYN=/r/dyn/checkpoints/latest.pt
+DYN0=/r/dyn/checkpoints/latest.pt; DYN=$DYN0; TOK=""   # TOK empty: the phase-1 tokenizer (the SLM's own)
 CRITIC=/s0/run/checkpoints/$CK0
 PLAN="--game crafter --plans 8 --decode topk --top-k 20 --score reward --dyn $DYN --imagine --horizon 8 --K 1 --critic $CRITIC"
 EV="--entrypoint python3 $IMG /w/repo/vlm_pipeline/phase4_world_model/eval_slm_d4_env.py"
@@ -68,22 +72,23 @@ start_it=0
 for i in $(seq 0 $((ITERS - 1))); do   # resume
   [ -f $D/it$i/DONE ] || break
   SLM_RUN=/D/it$i/grpo; SLM_CK=$(cat $D/it$i/DONE); HEADS=$D/it$i/heads/checkpoints/latest.pt; start_it=$((i + 1))
+  [ -f $D/it$i/tok/dyn_tok.pt ] && { DYN=/D/it$i/tok/dyn_tok.pt; TOK=/D/it$i/tok/latest.pt; }
 done
 TRAJS=""
 for i in $(seq 0 $((start_it - 1))); do TRAJS="$TRAJS${TRAJS:+,}/D/it$i/traj"; done
 if [ $SMOKE = 1 ]; then
-  HEXTRA="--eval_every 20 --eval_n 0 --final_eval_n 0"; GEXTRA="--eval-every 4 --eval-starts 64 --save-every 4"
+  HEXTRA="--eval_every 20 --eval_n 0 --final_eval_n 0"; TOK_STEPS=20; GEXTRA="--eval-every 4 --eval-starts 64 --save-every 4"
 else
   HEXTRA="--eval_every $WM_STEPS"; GEXTRA="--eval-every 100 --save-every $GRPO_UPDATES"
 fi
 hpath() { case $1 in $D/*) echo /D/${1#$D/};; *) echo /runs/${1#$B/run/};; esac; }
 for i in $(seq $start_it $((ITERS - 1))); do
   I=$D/it$i; mkdir -p $I
-  echo "== iteration $i $(date -u) SLM $SLM_RUN/$SLM_CK HEADS $HEADS" | tee -a $D/loop.log
+  echo "== iteration $i $(date -u) SLM $SLM_RUN/$SLM_CK HEADS $HEADS DYN $DYN TOK ${TOK:-phase1}" | tee -a $D/loop.log
   s0=$((170000000 + 1000 * i)); hd=$(hpath $HEADS)
   # 1 collect
   if [ ! -f $I/traj/z.pt ]; then
-    dock collect$i $Q/crafter64/train $EV --run $SLM_RUN --checkpoint $SLM_CK --heads $hd $PLAN --seeds $s0:$((s0 + SEEDS)) \
+    dock collect$i $Q/crafter64/train $EV --run $SLM_RUN --checkpoint $SLM_CK --heads $hd $PLAN --dyn $DYN ${TOK:+--tok $TOK} --seeds $s0:$((s0 + SEEDS)) \
       --max-steps $CSTEPS --seed $((i + 1)) --out /D/it$i/collect.json --save-traj /D/it$i/traj > $I/collect.log 2>&1
   fi
   python3 -c "import json; r = json.load(open('$I/collect.json')); print('collect it$i score', round(r['score'], 3), 'return', round(r['mean_return'], 2), r['ends'], 'steps', round(r['mean_steps'], 1))" | tee -a $D/loop.log
@@ -94,18 +99,26 @@ for i in $(seq $start_it $((ITERS - 1))); do
     dock replay$i $Q/crafter64/train --entrypoint python3 $IMG /w/repo/vlm_pipeline/phase4_world_model/build_online_d4.py \
       /qd/train /D/it$i/replay $(echo $TRAJS | tr , ' ') --share 0.3 --base-episodes $([ $SMOKE = 1 ] && echo 40 || echo $BASE_EPS) \
       --seed $i | tee -a $D/loop.log
+    if [ $TOK_FT = 1 ] && [ ! -f $I/tok/dyn_tok.pt ]; then   # 2b tokenizer: encoder + decoder on the played frames
+      dock tok$i $Q/crafter64/train --entrypoint python3 $IMG /w/repo/vlm_pipeline/phase4_world_model/finetune_d4_tokenizer.py \
+        ${TOK:+--tok $TOK} --dyn $DYN0 --base /qd/train --online $TRAJS --out /D/it$i/tok --steps $TOK_STEPS --anchor $TOK_ANCHOR \
+        --perceptual $TOK_LPIPS --seed $((7950 + i)) > $I/tok.log 2>&1
+      grep -E "TOK-FT (before|after)" $I/tok.log | tee -a $D/loop.log
+    fi
+    if [ $TOK_FT = 1 ]; then DYN=/D/it$i/tok/dyn_tok.pt; TOK=/D/it$i/tok/latest.pt; fi
     dock heads$i $I/replay -w /code/dreamer4 --entrypoint python3 $IMG -m dreamer4.train.train_heads --dyn $DYN --init $hd \
-      --out /D/it$i/heads --steps $([ $SMOKE = 1 ] && echo 20 || echo $WM_STEPS) --lr 1e-4 --dyn_lr 2e-5 --n_tasks 1 \
+      --out /D/it$i/heads --steps $([ $SMOKE = 1 ] && echo 20 || echo $WM_STEPS) --lr 1e-4 --dyn_lr $DYN_LR --n_tasks 1 \
       --cont_head 1 --seed $((7950 + i)) $HEXTRA > $I/heads.log 2>&1
     grep -E "init|HEADS-EVAL|HEADS-DONE" $I/heads.log | tail -3 | tee -a $D/loop.log
     rm -rf $I/replay
   fi
   HEADS=$I/heads/checkpoints/latest.pt
+  if [ $TOK_FT = 1 ]; then DYN=/D/it$i/tok/dyn_tok.pt; TOK=/D/it$i/tok/latest.pt; fi   # (a resumed iteration skipped 2b)
   # 4 policy
   U=$([ $SMOKE = 1 ] && echo 4 || echo $GRPO_UPDATES)
   if [ ! -f $I/grpo/checkpoints/step_$(printf %06d $U).pt ]; then
     dock grpo$i $Q/crafter64/train --entrypoint python3 $IMG /w/repo/vlm_pipeline/phase4_world_model/train_slm_imagine_grpo.py \
-      --slm $SLM_RUN/run/checkpoints/$SLM_CK --dyn $DYN --heads /D/it$i/heads/checkpoints/latest.pt --critic $CRITIC \
+      --slm $SLM_RUN/run/checkpoints/$SLM_CK --dyn $DYN $([ $TOK_FT = 1 ] && echo --reencode online) --heads /D/it$i/heads/checkpoints/latest.pt --critic $CRITIC \
       --online $TRAJS --online-frac 0.75 --frame-labels /ql --train /qd/train --val /qd/val --latent-cache /s0/latents \
       --out /D/it$i/grpo --updates $U --starts 32 --group 8 --tail slm --seed $((7950 + i)) $GEXTRA $GRPO_ARGS ${GRPO_ARGS:+--ref $CRITIC} \
       2>&1 | grep --line-buffered -v -iE "warn|gym|numpy 2|upgrade to|migration" > $I/grpo.log
@@ -117,7 +130,7 @@ for i in $(seq $start_it $((ITERS - 1))); do
 done
 # final: the base eval with the last SLM and world model
 if [ ! -f $D/final_eval.json ]; then
-  dock final $Q/crafter64/train $EV --run $SLM_RUN --checkpoint $SLM_CK --heads $(hpath $HEADS) $PLAN --seeds $E0:$E1 \
+  dock final $Q/crafter64/train $EV --run $SLM_RUN --checkpoint $SLM_CK --heads $(hpath $HEADS) $PLAN --dyn $DYN ${TOK:+--tok $TOK} --seeds $E0:$E1 \
     --max-steps $EVAL_STEPS --seed 0 --out /D/final_eval.json > $D/final_eval.log 2>&1
 fi
 python3 -c "import json; r = json.load(open('$D/final_eval.json')); print('FINAL eval score', round(r['score'], 3), 'return', round(r['mean_return'], 2), r['ends'], {k: round(v, 2) for k, v in r['achievement_rates'].items()})" | tee -a $D/loop.log
