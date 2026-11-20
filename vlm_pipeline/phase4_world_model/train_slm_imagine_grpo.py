@@ -98,6 +98,10 @@ def main():
     p.add_argument("--eval-starts", type=int, default=512)
     p.add_argument("--save-every", type=int, default=250)
     p.add_argument("--seed", type=int, default=7950)
+    p.add_argument("--diag-out", default="", help="diagnostic only: sample GRPO groups on held-out starts, write their raw "
+                   "scores, advantages and plan diversity at every --diag-horizons to this json, no training")
+    p.add_argument("--diag-starts", type=int, default=256)
+    p.add_argument("--diag-horizons", default="8,16")
     a = p.parse_args()
     sys.path.insert(0, f"{a.repo}/vlm_pipeline/phase4_world_model")
     from train_slm_reason_act_d4 import EOS, NAMES, SYSTEM_PLAN, SLMReasonAct, parse_plan
@@ -299,9 +303,9 @@ def main():
         return ids, lens
 
     @torch.no_grad()
-    def score(Zs, prev, g, plans):
-        """Zs [C,4,64,16], prev [C,3] actions a_{t-3..t-1}, g [C] SLM task ids, plans list of action lists
-        -> score [C], death mass [C], success mass [C]."""
+    def score(Zs, prev, g, plans, H=H):
+        """Zs [C,4,64,16], prev [C,3] actions a_{t-3..t-1}, g [C] SLM task ids, plans list of action lists, H the dream
+        horizon (--horizon; --diag-out also scores at other horizons) -> score [C], death mass [C], success mass [C]."""
         C = Zs.shape[0]
         L = torch.tensor([min(len(pl), H) for pl in plans], device=device)
         pa = torch.tensor([pl[:H] + [0] * (H - min(len(pl), H)) for pl in plans], device=device)
@@ -376,6 +380,46 @@ def main():
     def save(step, res):
         args = dict(cfg); args.update(grpo=vars(a), grpo_from=a.slm)
         torch.save(dict(model=model.state_dict(), step=step, args=args, val=res, tasks=tasks), out / "checkpoints" / f"step_{step:06d}.pt")
+
+    if a.diag_out:   # how different are the G answers of a group, and how much of their score difference is real
+        G, Hs = a.group, [int(x) for x in a.diag_horizons.split(",")]
+        pick_all = val_pick[:a.diag_starts]
+        Rs = {h: [] for h in Hs}; okm, plan_rows = [], []
+        model.eval()
+        for s0 in range(0, len(pick_all), 32):
+            Zs, g, prev = batch_of(rowsV, zV, fV, pick_all[s0:s0 + 32])
+            ZG, gG, pG = Zs.repeat_interleave(G, 0), g.repeat_interleave(G, 0), prev.repeat_interleave(G, 0)
+            with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+                ids, lens = sample(ZG, gG, greedy=False)
+            plans, ok = parse(ids, lens)
+            for h in Hs:
+                sc, _, _ = score(ZG, pG, gG, plans, H=h)
+                sc = torch.where(torch.tensor(ok, device=device), sc, torch.full_like(sc, a.bad_score))
+                Rs[h] += sc.view(-1, G).cpu().tolist()
+            okm += torch.tensor(ok).view(-1, G).tolist(); plan_rows += [plans[i:i + G] for i in range(0, len(plans), G)]
+            print(f"diag {s0 + len(Zs)}/{len(pick_all)} starts", flush=True)
+        okm = np.array(okm, bool)
+        res = dict(slm=a.slm, heads=a.heads, starts=len(okm), group=G, temperature=a.temperature, parsed=float(okm.mean()),
+                   distinct_first_action=float(np.mean([len({p[0] for p in ps}) for ps in plan_rows])),
+                   distinct_first8=float(np.mean([len({tuple(p[:8]) for p in ps}) for ps in plan_rows])),
+                   distinct_plan16=float(np.mean([len({tuple(p) for p in ps}) for ps in plan_rows])), horizons={})
+        for h in Hs:
+            R = np.array(Rs[h]); full = okm.all(1)   # groups with all G answers parsed: their spread is the plans' own
+            sd, rng_ = R.std(1, ddof=1), R.max(1) - R.min(1)
+            adv = (R - R.mean(1, keepdims=True)) / (sd[:, None] + 1e-4)
+            res["horizons"][h] = dict(
+                score_mean=float(R[okm].mean()), group_std_all=sd.tolist(), group_std_parsed_groups=sd[full].tolist(),
+                group_range_parsed_groups=rng_[full].tolist(),
+                share_std_below={str(t): float((sd[full] < t).mean()) for t in (0.001, 0.01, 0.03, 0.1)},
+                adv_abs_mean=float(np.abs(adv).mean()), R=R.tolist())
+            print(f"H={h}", json.dumps({k: v for k, v in res["horizons"][h].items() if not isinstance(v, list)}), flush=True)
+        if len(Hs) > 1:   # does the longer dream pick the same best plan?
+            b = [np.array(Rs[h]).argmax(1) for h in Hs]
+            res["same_best_plan"] = float(np.mean(b[0] == b[-1]))
+        print("diversity", {k: res[k] for k in ("parsed", "distinct_first_action", "distinct_first8", "distinct_plan16")},
+              "same best", res.get("same_best_plan"), flush=True)
+        Path(a.diag_out).write_text(json.dumps(res))
+        return
 
     log = open(out / "metrics.jsonl", "a")
     res = evaluate(0); log.write(json.dumps(res) + "\n"); log.flush(); print("[val]", json.dumps(res), flush=True)

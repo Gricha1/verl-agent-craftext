@@ -101,7 +101,9 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--critic", default="", help="SLM checkpoint (.pt) whose value head scores the imagined windows instead "
                    "of the acting SLM's (the Dyna loop keeps the value of the start SLM while GRPO moves the policy)")
-    p.add_argument("--save-traj", default="", help="dir: the played episodes in the WoodEpisodeDataset format with the native "
+    p.add_argument("--dump-dir", default="", help="dir: per episode (written when it ends) every step's real frame, all N plan "
+                   "texts with their scores, the chosen one, and the decoded Dreamer dreams of the best and the worst plan")
+    p.add_argument("--save-traj", default="",help="dir: the played episodes in the WoodEpisodeDataset format with the native "
                    "reward (build_wood_d4_heads.py native conventions) + per-frame latents z.pt + episodes.json")
     a = p.parse_args()
     t_start = time.time()
@@ -362,6 +364,7 @@ def main():
     last_vit, min_health, in_lava = np.zeros((L, 4)), np.full(L, 9.0), np.zeros(L, bool)
     N = max(1, a.plans)
     timing = collections.defaultdict(float)
+    dump = [dict(frame=[], dream_best=[], dream_worst=[], steps=[]) for _ in range(L)]
     for t in range(a.max_steps):
         t0 = time.time()
         xs.append(to_frame(obs))
@@ -473,6 +476,15 @@ def main():
             for j, cl in enumerate(cands):
                 part = sc[pos:pos + len(cl)]
                 choice[j] = int(np.argmax(part))
+                if a.dump_dir:   # the real frame, every candidate and the dreams of the best and the worst plan
+                    lane = act_lanes[j]; fb, fw = pos + choice[j], pos + int(np.argmin(part))
+                    with torch.no_grad():
+                        img = tok.decode_latents(S[[fb, fw]]).float()[:, 4:].permute(0, 1, 3, 4, 2).clamp(0, 1)
+                    img = (img * 255).round().to(torch.uint8).cpu().numpy()            # [2, H, 63, 63, 3]
+                    dump[lane]["frame"].append(xs[t][lane].cpu().numpy()); dump[lane]["dream_best"].append(img[0])
+                    dump[lane]["dream_worst"].append(img[1])
+                    dump[lane]["steps"].append(dict(t=t, choice=choice[j], worst=int(np.argmin(part)), scores=part,
+                                                    texts=[c[2] for c in cl], plans=[[NAMES[x] for x in c[0]] for c in cl]))
                 best_scores[act_lanes[j]].append(float(part[choice[j]]))
                 now_values[act_lanes[j]].append(float(v_now[j]))
                 pos += len(cl)
@@ -505,6 +517,18 @@ def main():
             if done[lane]:
                 active[lane] = False
                 queue[lane] = []
+                if a.dump_dir and dump[lane]["frame"]:   # written at once, so the first finished episodes can be looked at
+                    dd = Path(a.dump_dir); dd.mkdir(parents=True, exist_ok=True)
+                    ti, seed = lanes[lane]
+                    tag = f"{'ok' if success[lane] else 'fail'}_{instrs[ti].split()[-1].strip('.').lower()}_{seed}"
+                    np.savez_compressed(dd / f"{tag}.npz", frame=np.stack(dump[lane]["frame"]),
+                                        dream_best=np.stack(dump[lane]["dream_best"]), dream_worst=np.stack(dump[lane]["dream_worst"]),
+                                        actions=np.array([p[lane] for p in played]))
+                    (dd / f"{tag}.json").write_text(json.dumps(dict(task=instrs[ti], seed=seed, success=bool(success[lane]),
+                                                                    steps=t + 1, vitals=[float(x) for x in vit[lane]],
+                                                                    lava=bool(lava[lane]) if not crafter_env else False,
+                                                                    per_step=dump[lane]["steps"]), ensure_ascii=False))
+                    dump[lane] = None
         if t % 20 == 0 or not active.any():
             print(json.dumps(dict(t=t, active=int(active.sum()), success=int(success.sum()) if not crafter_env else
                                   round(float(np.mean([len(u) for u in unlocked])), 3), lanes=L,
