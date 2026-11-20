@@ -134,4 +134,11 @@ if [ ! -f $D/final_eval.json ]; then
     --max-steps $EVAL_STEPS --seed 0 --out /D/final_eval.json > $D/final_eval.log 2>&1
 fi
 python3 -c "import json; r = json.load(open('$D/final_eval.json')); print('FINAL eval score', round(r['score'], 3), 'return', round(r['mean_return'], 2), r['ends'], {k: round(v, 2) for k, v in r['achievement_rates'].items()})" | tee -a $D/loop.log
+# keep only the final weights (user 2026-11-20: "промежуточные веса удаляй ток финальные оставляй"): after the final eval the
+# checkpoints of every iteration but the last go, and the re-encoded latent caches of all iterations; traj z.pt stay
+if [ -f $D/final_eval.json ]; then
+  for j in $(seq 0 $((ITERS - 2))); do find $D/it$j -type f \( -name '*.pt' -o -name '*.pth' \) ! -name 'z*.pt' -delete 2>/dev/null; done
+  rm -rf $D/it*/grpo/latents 2>/dev/null
+  echo "intermediate weights deleted, kept it$((ITERS - 1))" | tee -a $D/loop.log
+fi
 echo "CDYNA_DONE $(date -u)" | tee -a $D/loop.log

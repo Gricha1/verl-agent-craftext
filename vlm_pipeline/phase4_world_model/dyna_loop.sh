@@ -16,7 +16,7 @@
 #              starts; $GRPO_UPDATES updates -> SLM_{i+1}.
 # After the last iteration: the standard 128-episode wood eval (seeds 20264000..031) of SLM_N with HEADS_N, same planner.
 #
-#   2b tok     TOK_FT=1 (user 2026-11-20, "размораживаем энкодер декодер у дримера"): finetune_d4_tokenizer.py trains the
+#   2b tok     TOK_FT=1 (user 2026-11-20, "СЂР°Р·РјРѕСЂР°Р¶РёРІР°РµРј СЌРЅРєРѕРґРµСЂ РґРµРєРѕРґРµСЂ Сѓ РґСЂРёРјРµСЂР°"): finetune_d4_tokenizer.py trains the
 #              tokenizer's encoder and decoder on all played episodes + wood2200 (MSE + LPIPS, latent anchor to the phase-1
 #              tokenizer on the wood2200 clips), $TOK_STEPS steps, from the previous iteration's tokenizer -> TOK_{i+1} and a
 #              dynamics checkpoint pointing at it (dyn_tok.pt), which stages 3, 4 and the next collect use as --dyn (the heads
@@ -136,5 +136,12 @@ if [ $SMOKE != 1 ] && [ ! -f $D/final_eval.json ]; then
     --plans 8 --decode topk --top-k 20 --score reward --dyn $DYN --heads $hd --imagine --horizon 8 --K 1 \
     --critic $CRITIC --tok $TOK --seed 0 --out /D/final_eval.json > $D/final_eval.log 2>&1
   python3 -c "import json; r = json.load(open('$D/final_eval.json')); print('FINAL eval seeds success', r['success_rate'], r['successes'], r['ends'], r['by_task'])" | tee -a $D/loop.log
+fi
+# keep only the final weights (user 2026-11-20: "промежуточные веса удаляй ток финальные оставляй"): after the final eval the
+# checkpoints of every iteration but the last go, and the re-encoded latent caches of all iterations; traj z.pt stay
+if [ -f $D/final_eval.json ]; then
+  for j in $(seq 0 $((ITERS - 2))); do find $D/it$j -type f \( -name '*.pt' -o -name '*.pth' \) ! -name 'z*.pt' -delete 2>/dev/null; done
+  rm -rf $D/it*/grpo/latents 2>/dev/null
+  echo "intermediate weights deleted, kept it$((ITERS - 1))" | tee -a $D/loop.log
 fi
 echo "DYNA_DONE $(date -u)" | tee -a $D/loop.log
