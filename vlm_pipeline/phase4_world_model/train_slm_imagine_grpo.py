@@ -89,6 +89,8 @@ def main():
     p.add_argument("--online", default="", help="comma-separated eval_slm_d4_env.py --save-traj dirs: --online-frac of the "
                    "starts are the states the planner reached in the environment (no BC label on them)")
     p.add_argument("--online-frac", type=float, default=0.75)
+    p.add_argument("--reencode", action="store_true", help="encode the train / val / online frames with the tokenizer of --dyn "
+                   "(cached in <out>/latents) instead of --latent-cache and the traj dirs' z.pt: the Dyna loop with tokenizer finetuning")
     p.add_argument("--clip", type=float, default=0.0, help="PPO clip epsilon of the per-token ratio pi/pi_old (0: off)")
     p.add_argument("--kl-coef", type=float, default=0.0, help="weight of the per-token k3 KL(pi || pi_ref) (0: off)")
     p.add_argument("--ref", default="", help="reference SLM checkpoint of the KL (default --slm; the Dyna loop: the BC SLM)")
@@ -166,6 +168,25 @@ def main():
     world = WorldModel(a.dyn, device=device, n_agent=int(hck["n_agent"]))
     world.load_dynamics_weights(hck["dyn"])
     dyn = world.dyn.eval()
+
+    @torch.no_grad()
+    def latents(root, tag, fallback):
+        """z of every frame of a dataset / traj dir: the cache (fallback path), or with --reencode the --dyn tokenizer."""
+        if not a.reencode:
+            return torch.load(fallback)
+        path = out / "latents" / f"z_{tag}.pt"
+        if path.exists():
+            return torch.load(path)
+        frames, st, ln = load_split(root)
+        zs = []
+        for s0, n in zip(st, ln):
+            x = torch.from_numpy(np.ascontiguousarray(frames[s0:s0 + n, :63, :63]))
+            zs.append(torch.cat([world.tok.encode_frames(x[None, max(0, c - 3):c + 256].to(device))[0, min(c, 3):]
+                                 for c in range(0, n, 256)]).half().cpu())
+        z = torch.cat(zs)
+        path.parent.mkdir(parents=True, exist_ok=True); torch.save(z, path)
+        print(f"re-encoded {root} ({len(z)} frames) with the tokenizer of --dyn", flush=True)
+        return z
     heads = build_agent_heads(hck["agent_cfg"]).to(device).eval()
     heads.load_state_dict(hck["agent"])
     term_bin = terminal_bins(heads.reward, world.continues_from_reward, device)
@@ -188,7 +209,7 @@ def main():
 
     def split(root, tag):
         frames, starts, lengths = load_split(root)
-        z = torch.load(Path(a.latent_cache) / f"z_{tag}.pt").to(device)
+        z = latents(root, tag, Path(a.latent_cache) / f"z_{tag}.pt").to(device)
         man = json.loads(((Path(root) / "manifest.json") if (Path(root) / "manifest.json").exists()
                           else (Path(root) / "wood_manifest.json")).read_text())
         rows = []          # (global frame, task, a_{t-3..t-1}, BC target ids or None, near death)
@@ -242,7 +263,7 @@ def main():
 
     def frame_split(root, tag):
         rows = FrameRows(root)
-        z = torch.load(Path(a.latent_cache) / f"z_{tag}.pt").to(device)
+        z = latents(root, tag, Path(a.latent_cache) / f"z_{tag}.pt").to(device)
         assert len(z) == len(rows), (len(z), len(rows))
         return z, torch.from_numpy(np.arange(len(rows)) - rows.t).to(device), rows
 
@@ -261,7 +282,7 @@ def main():
             m = json.loads((d / "wood_manifest.json").read_text())
             eps = json.loads((d / "episodes.json").read_text())
             acts = np.load(d / "actions.npy")
-            z = torch.load(d / "z.pt")
+            z = latents(d, "online_" + "_".join(d.parts[-2:]), d / "z.pt")
             assert len(z) == len(acts) == sum(m["lengths"]) and len(eps) == len(m["lengths"]), d
             for s, n, e in zip(m["starts"], m["lengths"], eps):
                 moves = acts[s:s + n].tolist()

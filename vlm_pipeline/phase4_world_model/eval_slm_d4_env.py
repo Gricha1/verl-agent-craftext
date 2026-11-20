@@ -71,6 +71,8 @@ def main():
     p.add_argument("--checkpoint", default="latest.pt")
     p.add_argument("--out", required=True)
     p.add_argument("--dyn", default="", help="Dreamer 4 dynamics checkpoint (for --imagine)")
+    p.add_argument("--tok", default="", help="Dreamer 4 tokenizer checkpoint that encodes the env frames (default: the one the "
+                   "SLM was trained with; the Dyna loop with tokenizer finetuning passes the current one)")
     p.add_argument("--teacher-root", default="/w/repo/caged_craftext")
     p.add_argument("--game", choices=("craftax", "crafter"), default="craftax",
                    help="not --env: the aicenter3 docker wrapper strips -e / --env from every docker run")
@@ -142,7 +144,7 @@ def main():
     if n_h and not a.heads:
         raise ValueError("this SLM reads Dreamer h tokens: pass --heads (and --dyn) of the phase-2 model it was trained on")
     tasks = state["tasks"]
-    tok = FrozenTokenizer(cfg["tok"], history=4, device=device)
+    tok = FrozenTokenizer(a.tok or cfg["tok"], history=4, device=device)
     if need_world:
         from dreamer4.dynamics_eval import windowed_rollout
         from dreamer4.train.train_dynamics import load_dynamics_checkpoint
