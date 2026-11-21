@@ -52,7 +52,8 @@ ZeroHero recipe (user 2026-11-21: their critic, and the planner learning from re
   --real-weight w  the real-step term: every played frame t of the --online episodes carries the plan the Dreamer planner
            chose there (plans.json of eval_slm_d4_env.py --save-traj) and its real advantage A_t = G^lambda_t - V(x_t)
            (hl_critic.online_targets with the --critic; real rewards, real deaths); the loss adds
-              w * mean_i  min(exp(A_i / (beta std A)), --real-wmax) * CE(chosen plan_i | Z_i, g)      (AWR, Peng et al. 2019)
+              w * mean_i  w_i * CE(chosen plan_i | Z_i, g),  w_i = min(exp(A_i / (beta std A)), --real-wmax) / mean w
+           (AWR, Peng et al. 2019; A from --real-critic, the critic the episodes were played with)
            i.e. the proposal SLM is distilled toward the planner's choices that turned out well in the real game and away
            from the ones that did not (weights below 1), while GRPO in imagination keeps training it on dataset and online
            starts.
@@ -117,6 +118,8 @@ def main():
     p.add_argument("--real-wmax", type=float, default=20.0)
     p.add_argument("--real-batch", type=int, default=32)
     p.add_argument("--lam", type=float, default=0.95, help="GAE lambda of the real returns")
+    p.add_argument("--real-critic", default="", help="critic of the real advantages (default --critic); the Dyna loop passes "
+                   "the one the episodes were collected with, V_old, as PPO computes GAE before its value update")
     p.add_argument("--kl-coef", type=float, default=0.0, help="weight of the per-token k3 KL(pi || pi_ref) (0: off)")
     p.add_argument("--ref", default="", help="reference SLM checkpoint of the KL (default --slm; the Dyna loop: the BC SLM)")
     p.add_argument("--ppo-epochs", type=int, default=1, help="passes over each sampled group batch")
@@ -329,8 +332,20 @@ def main():
         from hl_critic import online_targets
         assert critic is not None and all(r[0] == i for i, r in enumerate(rowsO))
         gall = torch.tensor([r[1] for r in rowsO], device=device)
-        vO = torch.cat([critic_value(windows(zO, fO, torch.arange(s, min(s + 512, len(rowsO)), device=device)),
-                                     gall[s:s + 512]) for s in range(0, len(rowsO), 512)]).cpu()
+        vnet = critic
+        if a.real_critic:
+            vnet = copy.deepcopy(critic)
+            rst = torch.load(a.real_critic, map_location="cpu", weights_only=False)
+            from hl_critic import attach_for
+            attach_for(vnet, rst).load_state_dict(rst["model"]); vnet.eval().requires_grad_(False)
+            print("real advantages from", a.real_critic, flush=True)
+
+        @torch.no_grad()
+        def v_of(W, g):
+            emb, mask, _ = vnet.prefix(W, pre, post_ids[g], post_mask[g])
+            return vnet.value_head(vnet.backbone(inputs_embeds=emb, attention_mask=mask).last_hidden_state[:, -1]).squeeze(-1).float()
+        vO = torch.cat([v_of(windows(zO, fO, torch.arange(s, min(s + 512, len(rowsO)), device=device)), gall[s:s + 512])
+                        for s in range(0, len(rowsO), 512)]).cpu()
         for md in metaO:
             if md["plans"] is None:
                 print("no plans.json in an online dir: its frames have no real-step term", flush=True); continue
@@ -344,6 +359,7 @@ def main():
         Ar = torch.tensor([x[2] for x in realO])
         sd_A = float(Ar.std()) + 1e-6
         wR = (Ar / (a.real_beta * sd_A)).exp().clamp(max=a.real_wmax)
+        wR = wR / wR.mean()   # mean weight 1: the term's size does not depend on the critic's bias
         print(f"real-step term: {len(realO)} chosen plans, advantage mean {float(Ar.mean()):.4f} std {sd_A:.4f}, "
               f"AWR weight mean {float(wR.mean()):.3f} max {float(wR.max()):.2f}", flush=True)
 

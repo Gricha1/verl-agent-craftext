@@ -122,7 +122,9 @@ for i in $(seq $start_it $((ITERS - 1))); do
   HEADS=$I/heads/checkpoints/latest.pt
   if [ $TOK_FT = 1 ]; then DYN=/D/it$i/tok/dyn_tok.pt; TOK=/D/it$i/tok/latest.pt; fi   # (a resumed iteration skipped 2b)
   # 3c critic: the HL-Gauss critic on the real returns of the planner
+  REAL_CRITIC=""
   if [ -n "$CRITIC_HL" ]; then
+    REAL_CRITIC=$CRITIC   # the critic these episodes were played with: V_old of the real advantages
     if [ ! -f $I/critic/critic.pt ]; then
       dock critic$i $V/wood2200_native -v $G:/g:ro -e PYTHONPATH=/code/dreamer4:/d/pylibs --entrypoint python3 $IMG \
         /w/repo/vlm_pipeline/phase4_world_model/finetune_slm_critic_real.py --critic $CRITIC --online $TRAJS --game wood \
@@ -139,7 +141,7 @@ for i in $(seq $start_it $((ITERS - 1))); do
       /w/repo/vlm_pipeline/phase4_world_model/train_slm_imagine_grpo.py --slm $SLM_RUN/run/checkpoints/$SLM_CK \
       --dyn $DYN $([ $TOK_FT = 1 ] && echo --reencode all) --heads /D/it$i/heads/checkpoints/latest.pt --critic $CRITIC --online $TRAJS --online-frac 0.75 \
       --raw-data /g/raw --reasoning /c/reason_wood2200 --train /g/wood2200_v3 --val /g/wood2200_d4/val --latent-cache /c/latents \
-      --out /D/it$i/grpo --updates $U --starts 32 --group 8 --tail slm --seed $((7950 + i)) $GEXTRA $GRPO_ARGS ${GRPO_ARGS:+--ref $SLM0_CK} \
+      --out /D/it$i/grpo --updates $U --starts 32 --group 8 --tail slm --seed $((7950 + i)) $GEXTRA $GRPO_ARGS ${REAL_CRITIC:+--real-critic $REAL_CRITIC} ${GRPO_ARGS:+--ref $SLM0_CK} \
       2>&1 | grep --line-buffered -v -iE "warn|gym" > $I/grpo.log
   fi
   grep "\[val\]" $I/grpo.log | sed -n '1p;$p' | tee -a $D/loop.log
