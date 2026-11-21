@@ -31,10 +31,16 @@
 #              previous iteration's critic; GRPO and the next collect use it. With GRPO_ARGS="--real-weight 1 ..." GRPO also
 #              distills the planner's real choices weighted by their real advantage (train_slm_imagine_grpo.py doc).
 #        CRITIC_HL="" CRIT_STEPS=1500
+#   3d dream   DREAM_HEADS=1 (user 2026-11-22): train_heads_on_dreams.py trains the reward / continue heads and the critic on
+#              dreamed windows of real actions (teacher data + every played episode) against the real outcomes, from the heads
+#              of step 3 and the current critic; GRPO and the next collect score plans with them. DH0_HEADS / DH0_CRITIC: the
+#              Stage-1 dream-trained scorer used from the start. EVAL_EXTRA: extra planner args of the evals.
+#        DREAM_HEADS=0 DH_STEPS=1500 DH0_HEADS="" DH0_CRITIC="" EVAL_EXTRA=""
 set -e
 D=$1; GPU=${2:-0}
 ITERS=${ITERS:-4}; SEEDS=${SEEDS:-32}; WM_STEPS=${WM_STEPS:-2000}; GRPO_UPDATES=${GRPO_UPDATES:-200}; SMOKE=${SMOKE:-0}
 CRITIC_HL=${CRITIC_HL:-}; CRIT_STEPS=${CRIT_STEPS:-1500}
+DREAM_HEADS=${DREAM_HEADS:-0}; DH_STEPS=${DH_STEPS:-1500}; DH0_HEADS=${DH0_HEADS:-}; DH0_CRITIC=${DH0_CRITIC:-}; EVAL_EXTRA=${EVAL_EXTRA:-}
 TOK_FT=${TOK_FT:-0}; TOK_STEPS=${TOK_STEPS:-3000}; TOK_ANCHOR=${TOK_ANCHOR:-10}; TOK_LPIPS=${TOK_LPIPS:-0.2}; DYN_LR=${DYN_LR:-2e-5}
 M=$HOME/runs/slm_d4_env_eval_20261119
 V=$HOME/runs/dreamer4_heads_texttask_native_wood2200_itlgpu1_20261119_r1
@@ -67,12 +73,16 @@ SLM_RUN=/o/slm/$(basename $SLM0_RUN); SLM_CK=step_060000.pt
 SLM0_CK=$SLM_RUN/run/checkpoints/step_060000.pt
 CRITIC=${CRITIC_HL:-$SLM0_CK}   # the stage-1 critic: the start SLM's value, or the HL-Gauss critic
 HEADS=$V/heads/checkpoints/latest.pt
+[ -n "$DH0_HEADS" ] && HEADS=$DH0_HEADS            # the Stage-1 heads trained on dreams (host path)
+[ -n "$DH0_CRITIC" ] && CRITIC=$DH0_CRITIC         # and the Stage-1 critic trained on dreams (container path)
+hpath() { case $1 in $D/*) echo /D/${1#$D/};; $M/*) echo /o/${1#$M/};; $V/*) echo /V/${1#$V/};; *) echo $1;; esac; }
 start_it=0
 for i in $(seq 0 $((ITERS - 1))); do   # resume: skip finished iterations
   [ -f $D/it$i/DONE ] || break
   SLM_RUN=/D/it$i/grpo; SLM_CK=$(cat $D/it$i/DONE); HEADS=$D/it$i/heads/checkpoints/latest.pt; start_it=$((i + 1))
   [ -f $D/it$i/tok/dyn_tok.pt ] && { DYN=/D/it$i/tok/dyn_tok.pt; TOK=/D/it$i/tok/latest.pt; }
   [ -f $D/it$i/critic/critic.pt ] && CRITIC=/D/it$i/critic/critic.pt
+  [ -f $D/it$i/dheads/heads.pt ] && { HEADS=$D/it$i/dheads/heads.pt; CRITIC=/D/it$i/dheads/critic.pt; }
 done
 TRAJS=""
 for i in $(seq 0 $((start_it - 1))); do TRAJS="$TRAJS${TRAJS:+,}/D/it$i/traj"; done
@@ -86,7 +96,7 @@ for i in $(seq $start_it $((ITERS - 1))); do
   I=$D/it$i; mkdir -p $I
   echo "== iteration $i $(date -u) SLM $SLM_RUN/$SLM_CK HEADS $HEADS DYN $DYN TOK $TOK" | tee -a $D/loop.log
   s0=$((30000000 + 1000 * i))
-  hd=/D/${HEADS#$D/}; [ "${HEADS#$D/}" = "$HEADS" ] && hd=/V/heads/checkpoints/latest.pt
+  hd=$(hpath $HEADS)
   # 1 collect
   if [ ! -f $I/traj/z.pt ]; then
     dock collect$i $V/wood2200_native -v $V:/V:ro -w /o/hf -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 -e JAX_PLATFORMS=cuda \
@@ -94,7 +104,7 @@ for i in $(seq $start_it $((ITERS - 1))); do
       -e PYTHONPATH=/o/jaxlibs:/o/jaxcuda:/d/pylibs:/code/dreamer4 --entrypoint python3 $IMG \
       /w/repo/vlm_pipeline/phase4_world_model/eval_slm_d4_env.py --run $SLM_RUN --checkpoint $SLM_CK \
       --plans 8 --decode topk --top-k 20 --score reward --dyn $DYN --heads $hd --imagine --horizon 8 --K 1 \
-      --critic $CRITIC --tok $TOK --seeds $s0:$((s0 + SEEDS)) --seed $i --out /D/it$i/collect.json --save-traj /D/it$i/traj $CEXTRA \
+      --critic $CRITIC --tok $TOK $EVAL_EXTRA --seeds $s0:$((s0 + SEEDS)) --seed $i --out /D/it$i/collect.json --save-traj /D/it$i/traj $CEXTRA \
       > $I/collect.log 2>&1
   fi
   python3 -c "import json; r = json.load(open('$I/collect.json')); print('collect it$i success', r['success_rate'], r['successes'], '/', r['episodes_n'], r['ends'], r['by_task'])" | tee -a $D/loop.log
@@ -134,12 +144,24 @@ for i in $(seq $start_it $((ITERS - 1))); do
     grep -E "CRITIC-FT (before|after)" $I/critic.log | tee -a $D/loop.log
     CRITIC=/D/it$i/critic/critic.pt
   fi
+  # 3d the scorer on dreams of real actions (teacher data + all played episodes)
+  if [ "$DREAM_HEADS" = 1 ]; then
+    if [ ! -f $I/dheads/heads.pt ]; then
+      dock dheads$i $V/wood2200_native -v $V:/V:ro -e PYTHONPATH=/code/dreamer4:/d/pylibs --entrypoint python3 $IMG \
+        /w/repo/vlm_pipeline/phase4_world_model/train_heads_on_dreams.py --dyn $DYN --heads /D/it$i/heads/checkpoints/latest.pt \
+        --critic $CRITIC --game wood --data /V/wood2200_native --latents /o/dream_heads/latents_wood2200_native_phase1tok.pt \
+        --online $TRAJS --out /D/it$i/dheads --steps $([ $SMOKE = 1 ] && echo 20 || echo $DH_STEPS) \
+        $([ $SMOKE = 1 ] && echo --eval-batches 2) --seed $((7950 + i)) > $I/dheads.log 2>&1
+    fi
+    grep -E "DREAM-HEADS (before|after)" $I/dheads.log | tee -a $D/loop.log
+    HEADS=$I/dheads/heads.pt; CRITIC=/D/it$i/dheads/critic.pt
+  fi
   # 4 policy
   U=$([ $SMOKE = 1 ] && echo 4 || echo $GRPO_UPDATES)
   if [ ! -f $I/grpo/checkpoints/step_$(printf %06d $U).pt ]; then
     dock grpo$i $V/wood2200_native -v $G:/g:ro -e PYTHONPATH=/code/dreamer4:/d/pylibs --entrypoint python3 $IMG \
       /w/repo/vlm_pipeline/phase4_world_model/train_slm_imagine_grpo.py --slm $SLM_RUN/run/checkpoints/$SLM_CK \
-      --dyn $DYN $([ $TOK_FT = 1 ] && echo --reencode all) --heads /D/it$i/heads/checkpoints/latest.pt --critic $CRITIC --online $TRAJS --online-frac 0.75 \
+      --dyn $DYN $([ $TOK_FT = 1 ] && echo --reencode all) --heads $(hpath $HEADS) --critic $CRITIC --online $TRAJS --online-frac 0.75 \
       --raw-data /g/raw --reasoning /c/reason_wood2200 --train /g/wood2200_v3 --val /g/wood2200_d4/val --latent-cache /c/latents \
       --out /D/it$i/grpo --updates $U --starts 32 --group 8 --tail slm --seed $((7950 + i)) $GEXTRA $GRPO_ARGS ${REAL_CRITIC:+--real-critic $REAL_CRITIC} ${GRPO_ARGS:+--ref $SLM0_CK} \
       2>&1 | grep --line-buffered -v -iE "warn|gym" > $I/grpo.log
@@ -151,13 +173,13 @@ for i in $(seq $start_it $((ITERS - 1))); do
 done
 # final: the standard eval seeds with the last SLM and world model
 if [ $SMOKE != 1 ] && [ ! -f $D/final_eval.json ]; then
-  hd=/D/${HEADS#$D/}
+  hd=$(hpath $HEADS)
   dock final $V/wood2200_native -v $V:/V:ro -w /o/hf -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 -e JAX_PLATFORMS=cuda \
     -e XLA_PYTHON_CLIENT_PREALLOCATE=false -e XLA_PYTHON_CLIENT_MEM_FRACTION=0.05 -e LD_LIBRARY_PATH=$NV \
     -e PYTHONPATH=/o/jaxlibs:/o/jaxcuda:/d/pylibs:/code/dreamer4 --entrypoint python3 $IMG \
     /w/repo/vlm_pipeline/phase4_world_model/eval_slm_d4_env.py --run $SLM_RUN --checkpoint $SLM_CK \
     --plans 8 --decode topk --top-k 20 --score reward --dyn $DYN --heads $hd --imagine --horizon 8 --K 1 \
-    --critic $CRITIC --tok $TOK --seed 0 --out /D/final_eval.json > $D/final_eval.log 2>&1
+    --critic $CRITIC --tok $TOK $EVAL_EXTRA --seed 0 --out /D/final_eval.json > $D/final_eval.log 2>&1
   python3 -c "import json; r = json.load(open('$D/final_eval.json')); print('FINAL eval seeds success', r['success_rate'], r['successes'], r['ends'], r['by_task'])" | tee -a $D/loop.log
 fi
 # keep only the final weights (user 2026-11-20: "промежуточные веса удаляй ток финальные оставляй"): after the final eval the

@@ -29,11 +29,17 @@
 #              previous iteration's critic; GRPO and the next collect use it. With GRPO_ARGS="--real-weight 1 ..." GRPO also
 #              distills the planner's real choices weighted by their real advantage (train_slm_imagine_grpo.py doc).
 #        CRITIC_HL="" CRIT_STEPS=1500
+#   3d dream   DREAM_HEADS=1 (user 2026-11-22): train_heads_on_dreams.py trains the reward / continue heads and the critic on
+#              dreamed windows of real actions (teacher data + every played episode) against the real outcomes, from the heads
+#              of step 3 and the current critic; GRPO and the next collect score plans with them. DH0_HEADS / DH0_CRITIC: the
+#              Stage-1 dream-trained scorer used from the start. EVAL_EXTRA: extra planner args of the evals.
+#        DREAM_HEADS=0 DH_STEPS=1500 DH0_HEADS="" DH0_CRITIC="" EVAL_EXTRA=""
 set -eo pipefail   # a failed stage must stop the loop (its output is piped through grep / tee)
 D=$1; S0=$2; CK0=$3; GPU=${4:-3}
 ITERS=${ITERS:-4}; SEEDS=${SEEDS:-64}; CSTEPS=${CSTEPS:-1000}; WM_STEPS=${WM_STEPS:-2000}; GRPO_UPDATES=${GRPO_UPDATES:-200}
 BASE_EPS=${BASE_EPS:-3000}; EVAL_SEEDS=${EVAL_SEEDS:-128}; EVAL_STEPS=${EVAL_STEPS:-2000}; SMOKE=${SMOKE:-0}
 CRITIC_HL=${CRITIC_HL:-}; CRIT_STEPS=${CRIT_STEPS:-1500}
+DREAM_HEADS=${DREAM_HEADS:-0}; DH_STEPS=${DH_STEPS:-1500}; DH0_HEADS=${DH0_HEADS:-}; DH0_CRITIC=${DH0_CRITIC:-}; EVAL_EXTRA=${EVAL_EXTRA:-}
 TOK_FT=${TOK_FT:-0}; TOK_STEPS=${TOK_STEPS:-3000}; TOK_ANCHOR=${TOK_ANCHOR:-10}; TOK_LPIPS=${TOK_LPIPS:-0.2}; DYN_LR=${DYN_LR:-2e-5}
 B=/mnt/aicenter1-datasets/gorbov_gv/modern_verl_reasoning_rl_a3_20261016
 REPO=${REPO:-$B/repo/verl-agent-craftext}   # override: a second checkout while a loop runs from this one
@@ -63,6 +69,8 @@ if [ ! -f $D/dreamer4/PATCHED ]; then   # dreamer4 of the Qwen heads + task-text
 fi
 DYN0=/r/dyn/checkpoints/latest.pt; DYN=$DYN0; TOK=""   # TOK empty: the phase-1 tokenizer (the SLM's own)
 CRITIC=${CRITIC_HL:-/s0/run/checkpoints/$CK0}   # the stage-1 critic: the start SLM's value, or the HL-Gauss critic
+[ -n "$DH0_CRITIC" ] && CRITIC=$DH0_CRITIC        # the Stage-1 critic trained on dreams
+[ -n "$DH0_HEADS" ] && H0=$DH0_HEADS              # the Stage-1 heads trained on dreams
 PLAN="--game crafter --plans 8 --decode topk --top-k 20 --score reward --dyn $DYN --imagine --horizon 8 --K 1 --critic $CRITIC"
 EV="--entrypoint python3 $IMG /w/repo/vlm_pipeline/phase4_world_model/eval_slm_d4_env.py"
 if [ $SMOKE = 1 ]; then EVAL_SEEDS=4; EVAL_STEPS=20; SEEDS=4; CSTEPS=30; fi
@@ -70,7 +78,7 @@ E0=150000000; E1=$((E0 + EVAL_SEEDS))
 # 0 base
 if [ ! -f $D/base_eval.json ]; then
   echo "== base eval $(date -u) SLM $S0/$CK0 HEADS $H0" | tee -a $D/loop.log
-  dock base $Q/crafter64/train $EV --run /s0 --checkpoint $CK0 --heads /runs/${H0#$B/run/} $PLAN --seeds $E0:$E1 \
+  dock base $Q/crafter64/train $EV --run /s0 --checkpoint $CK0 --heads /runs/${H0#$B/run/} $PLAN $EVAL_EXTRA --seeds $E0:$E1 \
     --max-steps $EVAL_STEPS --seed 0 --out /D/base_eval.json > $D/base_eval.log 2>&1
 fi
 python3 -c "import json; r = json.load(open('$D/base_eval.json')); print('BASE eval score', round(r['score'], 3), 'return', round(r['mean_return'], 2), r['ends'], {k: round(v, 2) for k, v in r['achievement_rates'].items()})" | tee -a $D/loop.log
@@ -82,6 +90,7 @@ for i in $(seq 0 $((ITERS - 1))); do   # resume
   SLM_RUN=/D/it$i/grpo; SLM_CK=$(cat $D/it$i/DONE); HEADS=$D/it$i/heads/checkpoints/latest.pt; start_it=$((i + 1))
   [ -f $D/it$i/tok/dyn_tok.pt ] && { DYN=/D/it$i/tok/dyn_tok.pt; TOK=/D/it$i/tok/latest.pt; }
   [ -f $D/it$i/critic/critic.pt ] && CRITIC=/D/it$i/critic/critic.pt
+  [ -f $D/it$i/dheads/heads.pt ] && { HEADS=$D/it$i/dheads/heads.pt; CRITIC=/D/it$i/dheads/critic.pt; }
 done
 TRAJS=""
 for i in $(seq 0 $((start_it - 1))); do TRAJS="$TRAJS${TRAJS:+,}/D/it$i/traj"; done
@@ -97,7 +106,7 @@ for i in $(seq $start_it $((ITERS - 1))); do
   s0=$((170000000 + 1000 * i)); hd=$(hpath $HEADS)
   # 1 collect
   if [ ! -f $I/traj/z.pt ]; then
-    dock collect$i $Q/crafter64/train $EV --run $SLM_RUN --checkpoint $SLM_CK --heads $hd $PLAN --dyn $DYN ${TOK:+--tok $TOK} --critic $CRITIC --seeds $s0:$((s0 + SEEDS)) \
+    dock collect$i $Q/crafter64/train $EV --run $SLM_RUN --checkpoint $SLM_CK --heads $hd $PLAN --dyn $DYN ${TOK:+--tok $TOK} --critic $CRITIC $EVAL_EXTRA --seeds $s0:$((s0 + SEEDS)) \
       --max-steps $CSTEPS --seed $((i + 1)) --out /D/it$i/collect.json --save-traj /D/it$i/traj > $I/collect.log 2>&1
   fi
   python3 -c "import json; r = json.load(open('$I/collect.json')); print('collect it$i score', round(r['score'], 3), 'return', round(r['mean_return'], 2), r['ends'], 'steps', round(r['mean_steps'], 1))" | tee -a $D/loop.log
@@ -135,11 +144,22 @@ for i in $(seq $start_it $((ITERS - 1))); do
     grep -E "CRITIC-FT (before|after)" $I/critic.log | tee -a $D/loop.log
     CRITIC=/D/it$i/critic/critic.pt
   fi
+  # 3d the scorer on dreams of real actions (teacher data + all played episodes)
+  if [ "$DREAM_HEADS" = 1 ]; then
+    if [ ! -f $I/dheads/heads.pt ]; then
+      dock dheads$i $Q/crafter64/train --entrypoint python3 $IMG /w/repo/vlm_pipeline/phase4_world_model/train_heads_on_dreams.py \
+        --dyn $DYN --heads /D/it$i/heads/checkpoints/latest.pt --critic $CRITIC --game crafter --data /qd/train \
+        --latents /s0/latents/z_train.pt --online $TRAJS --out /D/it$i/dheads --steps $([ $SMOKE = 1 ] && echo 20 || echo $DH_STEPS) \
+        $([ $SMOKE = 1 ] && echo --eval-batches 2) --seed $((7950 + i)) > $I/dheads.log 2>&1
+    fi
+    grep -E "DREAM-HEADS (before|after)" $I/dheads.log | tee -a $D/loop.log
+    HEADS=$I/dheads/heads.pt; CRITIC=/D/it$i/dheads/critic.pt
+  fi
   # 4 policy
   U=$([ $SMOKE = 1 ] && echo 4 || echo $GRPO_UPDATES)
   if [ ! -f $I/grpo/checkpoints/step_$(printf %06d $U).pt ]; then
     dock grpo$i $Q/crafter64/train --entrypoint python3 $IMG /w/repo/vlm_pipeline/phase4_world_model/train_slm_imagine_grpo.py \
-      --slm $SLM_RUN/run/checkpoints/$SLM_CK --dyn $DYN $([ $TOK_FT = 1 ] && echo --reencode online) --heads /D/it$i/heads/checkpoints/latest.pt --critic $CRITIC \
+      --slm $SLM_RUN/run/checkpoints/$SLM_CK --dyn $DYN $([ $TOK_FT = 1 ] && echo --reencode online) --heads $(hpath $HEADS) --critic $CRITIC \
       --online $TRAJS --online-frac 0.75 --frame-labels /ql --train /qd/train --val /qd/val --latent-cache /s0/latents \
       --out /D/it$i/grpo --updates $U --starts 32 --group 8 --tail slm --seed $((7950 + i)) $GEXTRA $GRPO_ARGS ${REAL_CRITIC:+--real-critic $REAL_CRITIC} ${GRPO_ARGS:+--ref /s0/run/checkpoints/$CK0} \
       2>&1 | grep --line-buffered -v -iE "warn|gym|numpy 2|upgrade to|migration" > $I/grpo.log
@@ -151,7 +171,7 @@ for i in $(seq $start_it $((ITERS - 1))); do
 done
 # final: the base eval with the last SLM and world model
 if [ ! -f $D/final_eval.json ]; then
-  dock final $Q/crafter64/train $EV --run $SLM_RUN --checkpoint $SLM_CK --heads $(hpath $HEADS) $PLAN --dyn $DYN ${TOK:+--tok $TOK} --critic $CRITIC --seeds $E0:$E1 \
+  dock final $Q/crafter64/train $EV --run $SLM_RUN --checkpoint $SLM_CK --heads $(hpath $HEADS) $PLAN --dyn $DYN ${TOK:+--tok $TOK} --critic $CRITIC $EVAL_EXTRA --seeds $E0:$E1 \
     --max-steps $EVAL_STEPS --seed 0 --out /D/final_eval.json > $D/final_eval.log 2>&1
 fi
 python3 -c "import json; r = json.load(open('$D/final_eval.json')); print('FINAL eval score', round(r['score'], 3), 'return', round(r['mean_return'], 2), r['ends'], {k: round(v, 2) for k, v in r['achievement_rates'].items()})" | tee -a $D/loop.log
