@@ -105,6 +105,11 @@ def main():
                    "of the acting SLM's (the Dyna loop keeps the value of the start SLM while GRPO moves the policy)")
     p.add_argument("--dump-dir", default="", help="dir: per episode (written when it ends) every step's real frame, all N plan "
                    "texts with their scores, the chosen one, and the decoded Dreamer dreams of the best and the worst plan")
+    p.add_argument("--counterfactual", type=int, default=0, help="N > 0 (with --imagine --score reward): every N-th step each "
+                   "candidate plan of every planning lane is also played in a copy of the real environment (Craftax state / deep-"
+                   "copied Crafter env) and scored by the same formula with real rewards, real ends and the critic on the real "
+                   "frames; <out>.cf.json holds dream vs real scores per group (does the dream rank the plans of one state like "
+                   "reality, i.e. are GRPO's group advantages right?)")
     p.add_argument("--save-traj", default="",help="dir: the played episodes in the WoodEpisodeDataset format with the native "
                    "reward (build_wood_d4_heads.py native conventions) + per-frame latents z.pt + episodes.json")
     a = p.parse_args()
@@ -369,6 +374,65 @@ def main():
     N = max(1, a.plans)
     timing = collections.defaultdict(float)
     dump = [dict(frame=[], dream_best=[], dream_worst=[], steps=[]) for _ in range(L)]
+    cf_log = []
+
+    @torch.no_grad()
+    def counterfactual(t, act_lanes, flat, pa, valid, sc, rsum, tail):
+        """Every candidate of the planning lanes played in a copy of the real environment from the current state: real rewards
+        r_k, the real end (wood: 1 on the task, 0 on a death; Crafter: 0 on a death) and otherwise the critic V on the real
+        window at the plan's last step, in the dream's score formula
+            real = sum_{k<=e} gamma^(k-1) r_k + (gamma^e end_value  if the episode ended at step e  else  gamma^L V(real x_{t+L}))"""
+        C = len(flat); lanes_c = [int(act_lanes[j]) for j, _ in flat]
+        Ls = valid.long().sum(1).tolist(); pa_np = pa.cpu().numpy()
+        frames = [[xs[max(0, t - 3 + i)][l] for i in range(4)] for l in lanes_c]
+        r_real = np.zeros((C, H), np.float32); end_k = np.full(C, -1); end_val = np.zeros(C, np.float32)
+        if crafter_env:
+            import copy
+            for f, l in enumerate(lanes_c):
+                e = copy.deepcopy(envs[l])
+                for k in range(Ls[f]):
+                    o, rr, dd, info = e.step(int(pa_np[f, k]))
+                    r_real[f, k] = rr; frames[f].append(torch.from_numpy(np.ascontiguousarray(o[:63, :63])).to(device))
+                    if dd:
+                        end_k[f] = k; end_val[f] = 0.0
+                        break
+        else:
+            rows = np.array(lanes_c)
+            sub = jax.tree_util.tree_map(lambda x: x[rows], est); kk = keys[rows]
+            live_ = np.ones(C, bool)
+            for k in range(H):
+                kk, ob, sub, r, done, ok, _, _ = step_v(kk, sub, jnp.asarray(pa_np[:, k].astype(np.int32)))
+                r, done, ok, obn = np.asarray(r), np.asarray(done), np.asarray(ok), np.asarray(ob)
+                for f in range(C):
+                    if live_[f] and k < Ls[f]:
+                        r_real[f, k] = r[f]
+                        frames[f].append(torch.from_numpy(np.round(obn[f] * 255).astype(np.uint8)).to(device))
+                        if done[f]:
+                            live_[f] = False; end_k[f] = k; end_val[f] = 1.0 if ok[f] else 0.0
+        n_real = [len(fr) - 4 for fr in frames]
+        seq = torch.stack([torch.stack(fr + [fr[-1]] * (4 + H - len(fr))) for fr in frames])     # [C, 4 + H, 63, 63, 3]
+        lat = torch.cat([tok.encode_frames(seq[s0:s0 + 128]).float() for s0 in range(0, C, 128)])   # [C, 4 + H, 64, 16]
+        for f, l in enumerate(lanes_c):   # the real past frames keep the latents the planner saw (full history)
+            lat[f, :4] = torch.stack([zs[max(0, t - 3 + i)][l] for i in range(4)])
+        Zw = torch.stack([lat[f, n_real[f]:n_real[f] + 4] for f in range(C)])
+        gi = g_of_lane[torch.tensor(lanes_c, device=device)]
+        Vr = value_of(Zw, gi).cpu().numpy()
+        disc = a.gamma ** np.arange(H)
+        out = []
+        for j in sorted({j for j, _ in flat}):
+            fs = [f for f, (jj, _) in enumerate(flat) if jj == j]
+            rec = dict(t=t, lane=lanes_c[fs[0]], dream=[float(sc[f]) for f in fs], dream_r=[float(rsum[f]) for f in fs],
+                       dream_tail=[float(tail[f]) for f in fs], real=[], real_r=[], real_tail=[], end=[], plan_len=[Ls[f] for f in fs],
+                       first=[int(pa_np[f, 0]) for f in fs])
+            for f in fs:
+                e = end_k[f]; n = (e + 1) if e >= 0 else Ls[f]
+                rr = float((disc[:n] * r_real[f, :n]).sum())
+                tl = float(a.gamma ** (e + 1) * end_val[f]) if e >= 0 else float(a.gamma ** Ls[f] * Vr[f])
+                rec["real"].append(rr + tl); rec["real_r"].append(rr); rec["real_tail"].append(tl)
+                rec["end"].append("none" if e < 0 else ("success" if end_val[f] > 0 else "death"))
+            out.append(rec)
+        return out
+
     for t in range(a.max_steps):
         t0 = time.time()
         xs.append(to_frame(obs))
@@ -475,6 +539,10 @@ def main():
                         reward_terms[act_lanes[jj]].append((float(rsum[j]), float(tail[j])))
             v_now = value_of(Zt, g_of_lane[idx], Hnow)
             timing["value"] += time.time() - t3
+            if a.counterfactual and a.score == "reward" and t % a.counterfactual == 0:
+                t5 = time.time()
+                cf_log.extend(counterfactual(t, act_lanes, flat, acts[:, ctx - 1:], valid, sc, rsum, tail))
+                timing["counterfactual"] += time.time() - t5
             sc = sc.tolist()
             pos = 0
             for j, cl in enumerate(cands):
@@ -571,6 +639,27 @@ def main():
                chosen=dict(chosen_stats), unparsed_share=float(unparsed.sum() / max(1, steps.sum() * N)),
                mean_steps=float(steps.mean()), seconds=time.time() - t_start, timing=dict(timing), episodes=episodes)
     Path(a.out).write_text(json.dumps(res, indent=1, ensure_ascii=False))
+    if cf_log:   # dream vs real ranking of the plans of one state
+        def avg_rank(x):
+            r = np.empty(len(x)); r[np.argsort(x, kind="mergesort")] = np.arange(len(x))
+            for u in np.unique(x):
+                r[x == u] = r[x == u].mean()
+            return r
+        rho, top1, regret, adv_corr, n_g = [], [], [], [], 0
+        for rec in cf_log:
+            d, r = np.array(rec["dream"]), np.array(rec["real"])
+            if len(d) < 2 or r.std() < 1e-6 or d.std() < 1e-9:
+                continue
+            n_g += 1
+            rho.append(float(np.corrcoef(avg_rank(d), avg_rank(r))[0, 1])); top1.append(float(r[d.argmax()] >= r.max() - 1e-6))
+            regret.append(float(r.max() - r[d.argmax()]))
+            adv_corr.append(float(np.corrcoef((d - d.mean()) / d.std(), (r - r.mean()) / r.std())[0, 1]))
+        summ = dict(groups=len(cf_log), groups_with_real_spread=n_g, spearman_mean=float(np.nanmean(rho)) if rho else None,
+                    top1_agree=float(np.mean(top1)) if top1 else None, regret_mean=float(np.mean(regret)) if regret else None,
+                    adv_corr_mean=float(np.nanmean(adv_corr)) if adv_corr else None,
+                    share_groups_real_tied=1 - n_g / max(1, len(cf_log)))
+        Path(a.out + ".cf.json").write_text(json.dumps(dict(summary=summ, groups=cf_log)))
+        print("COUNTERFACTUAL", json.dumps(summ), flush=True)
     if a.save_traj:   # build_wood_d4_heads.py native conventions: frame x_t, action a_t, reward of a_t on t -> t+1
         sd = Path(a.save_traj); sd.mkdir(parents=True, exist_ok=True)
         names = sorted(instrs)
