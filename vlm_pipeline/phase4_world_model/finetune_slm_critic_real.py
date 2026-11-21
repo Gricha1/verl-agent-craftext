@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dyna loop step 3b (user 2026-11-21, the ZeroHero recipe): the HL-Gauss critic (hl_critic.py; stage 1:
+"""Dyna loop step 3c (user 2026-11-21, the ZeroHero recipe): the HL-Gauss critic (hl_critic.py; stage 1:
 train_slm_reason_act_d4.py --critic-from) moves from the teacher's returns to the returns of OUR planner in the real
 environment, before the policy update uses it (their actor warmup: the critic adapts first).
 
@@ -8,7 +8,8 @@ environment, before the policy update uses it (their actor warmup: the critic ad
            (computed once, as PPO does per batch); the end of an episode is worth 0 at a death, 1 at a finished wood task,
            V_old at a timeout. Base frames (the BC dataset, --base-frac of every batch): the teacher's returns of stage 1, an
            anchor against forgetting the states the planner has not reached yet.
-  loss     HL-Gauss cross-entropy, AdamW lr --lr (their critic lr ~1e-4), cosine to 0, grad clip 1.
+  loss     HL-Gauss cross-entropy (an SLM checkpoint without "critic_hl": its scalar value head, MSE, user 2026-11-21 "поставь рл
+           запуск где критик тут тоже дообучаться будет"), AdamW lr --lr (their critic lr ~1e-4), cosine to 0, grad clip 1.
   output   <out>/critic.pt (the input checkpoint with the new weights and a "finetune" record) and critic_ft.json: CE / MSE /
            correlation on held-out online episodes (--val-frac) and on the base val split, before and after.
 
@@ -25,6 +26,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 
 def main():
@@ -59,7 +61,8 @@ def main():
     dev = torch.device("cuda")
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     cst = torch.load(a.critic, map_location="cpu", weights_only=False)
-    assert cst.get("critic_hl") is not None, "needs an HL-Gauss critic checkpoint (train_slm_reason_act_d4.py --critic-from)"
+    HL = cst.get("critic_hl") is not None   # HL-Gauss critic (cross-entropy) or the SLM's own scalar value head (MSE)
+    print("critic", a.critic, "HL-Gauss head" if HL else "scalar value head of the SLM (MSE)", flush=True)
     cfg = cst["args"]; tasks = cst["tasks"]
     text = PreTrainedTokenizerFast(tokenizer_file=str(Path(cfg["text_tokenizer"]) / "tokenizer.json"))
     enc = lambda s: text.encode(s, add_special_tokens=False)
@@ -77,7 +80,14 @@ def main():
 
     def logits_of(net, z, first, idx, g):
         emb, mask, _ = net.prefix(windows(z, first, idx), pre, post_ids[g], post_mask[g])
-        return net.value_head.logits(net.backbone(inputs_embeds=emb, attention_mask=mask).last_hidden_state[:, -1])
+        h = net.backbone(inputs_embeds=emb, attention_mask=mask).last_hidden_state[:, -1]
+        return net.value_head.logits(h) if HL else net.value_head(h).squeeze(-1).float()
+
+    def mean_of(net, out):
+        return net.value_head.mean(out) if HL else out.float()
+
+    def loss_of(net, out, G):
+        return net.value_head.loss(out, G) if HL else F.mse_loss(out.float(), G.float())
 
     @torch.no_grad()
     def values(net, z, first, g):
@@ -85,7 +95,7 @@ def main():
         for s in range(0, len(z), 512):
             idx = torch.arange(s, min(s + 512, len(z)), device=dev)
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                vs.append(net.value_head.mean(logits_of(net, z, first, idx, g[idx])))
+                vs.append(mean_of(net, logits_of(net, z, first, idx, g[idx])))
         return torch.cat(vs)
 
     def first_of(starts, lengths):
@@ -152,7 +162,7 @@ def main():
                 idx = rows[s:s + 512]
                 with torch.autocast("cuda", dtype=torch.bfloat16):
                     lg = logits_of(net, z, first, idx, g[idx])
-                ce += float(net.value_head.loss(lg, G[idx])) * len(idx); v = net.value_head.mean(lg)
+                ce += float(loss_of(net, lg, G[idx])) * len(idx); v = mean_of(net, lg)
                 se += float(((v - G[idx]) ** 2).sum()); ps.append(v)
             pr = torch.cat(ps); y = G[rows]
             res[name] = dict(ce=ce / len(rows), mse=se / len(rows), mse_const=float(((y - y.mean()) ** 2).mean()),
@@ -172,12 +182,12 @@ def main():
         io = oT[torch.randint(0, len(oT), (no,), device=dev)]
         with torch.autocast("cuda", dtype=torch.bfloat16):
             lo = logits_of(model, oz, of, io, og[io])
-        loss = model.value_head.loss(lo, oG[io]) * no / a.batch
+        loss = loss_of(model, lo, oG[io]) * no / a.batch
         if nb:
             ib = bT["rows"][torch.randint(0, len(bT["rows"]), (nb,), device=dev)]
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 lb = logits_of(model, bT["z"], bT["first"], ib, bT["g"][ib])
-            loss = loss + model.value_head.loss(lb, bT["G"][ib]) * nb / a.batch
+            loss = loss + loss_of(model, lb, bT["G"][ib]) * nb / a.batch
         opt.zero_grad(set_to_none=True); loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); opt.step(); run += float(loss)
         if step % 100 == 0:
