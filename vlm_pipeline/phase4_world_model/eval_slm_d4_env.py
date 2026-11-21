@@ -110,6 +110,10 @@ def main():
                    "copied Crafter env) and scored by the same formula with real rewards, real ends and the critic on the real "
                    "frames; <out>.cf.json holds dream vs real scores per group (does the dream rank the plans of one state like "
                    "reality, i.e. are GRPO's group advantages right?)")
+    p.add_argument("--cf-dump", default="", help="dir: with --counterfactual, the decoded dream frames and the real frames of all "
+                   "candidates of the first --cf-dump-max groups (npz) + plan texts and score parts (json)")
+    p.add_argument("--cf-dump-max", type=int, default=64)
+    p.add_argument("--cf-dump-per-check", type=int, default=3, help="groups dumped per counterfactual step (spread over time)")
     p.add_argument("--save-traj", default="",help="dir: the played episodes in the WoodEpisodeDataset format with the native "
                    "reward (build_wood_d4_heads.py native conventions) + per-frame latents z.pt + episodes.json")
     a = p.parse_args()
@@ -375,9 +379,12 @@ def main():
     timing = collections.defaultdict(float)
     dump = [dict(frame=[], dream_best=[], dream_worst=[], steps=[]) for _ in range(L)]
     cf_log = []
+    cf_dumped = [0, 0]   # groups dumped in total, in this counterfactual step
+    rng_dump = np.random.default_rng(a.seed + 99)
 
     @torch.no_grad()
-    def counterfactual(t, act_lanes, flat, pa, valid, sc, rsum, tail):
+    def counterfactual(t, act_lanes, flat, pa, valid, sc, rsum, tail, S=None, cands=None):
+        cf_dumped[1] = 0
         """Every candidate of the planning lanes played in a copy of the real environment from the current state: real rewards
         r_k, the real end (wood: 1 on the task, 0 on a death; Crafter: 0 on a death) and otherwise the critic V on the real
         window at the plan's last step, in the dream's score formula
@@ -424,12 +431,31 @@ def main():
             rec = dict(t=t, lane=lanes_c[fs[0]], dream=[float(sc[f]) for f in fs], dream_r=[float(rsum[f]) for f in fs],
                        dream_tail=[float(tail[f]) for f in fs], real=[], real_r=[], real_tail=[], end=[], plan_len=[Ls[f] for f in fs],
                        first=[int(pa_np[f, 0]) for f in fs])
+            rec["V_real_last"] = [float(Vr[f]) for f in fs]
             for f in fs:
                 e = end_k[f]; n = (e + 1) if e >= 0 else Ls[f]
                 rr = float((disc[:n] * r_real[f, :n]).sum())
                 tl = float(a.gamma ** (e + 1) * end_val[f]) if e >= 0 else float(a.gamma ** Ls[f] * Vr[f])
                 rec["real"].append(rr + tl); rec["real_r"].append(rr); rec["real_tail"].append(tl)
                 rec["end"].append("none" if e < 0 else ("success" if end_val[f] > 0 else "death"))
+            if (a.cf_dump and S is not None and cf_dumped[0] < a.cf_dump_max and cf_dumped[1] < a.cf_dump_per_check
+                    and np.std(rec["real"]) > 1e-6 and rng_dump.random() < 0.25):   # groups whose 8 plans really differ
+                cf_dumped[0] += 1; cf_dumped[1] += 1
+                dd = Path(a.cf_dump); dd.mkdir(parents=True, exist_ok=True)
+                tag = f"t{t:04d}_lane{lanes_c[fs[0]]:03d}"
+                img = tok.decode_latents(S[fs]).float()[:, 4:].permute(0, 1, 3, 4, 2).clamp(0, 1)        # [8, H, 63, 63, 3]
+                dream_u8 = (img * 255).round().to(torch.uint8).cpu().numpy()
+                real_u8 = np.zeros_like(dream_u8)
+                for q, f in enumerate(fs):
+                    for k, fr in enumerate(frames[f][4:4 + H]):
+                        real_u8[q, k] = fr.cpu().numpy()
+                start = torch.stack(frames[fs[0]][:4]).cpu().numpy()
+                np.savez_compressed(dd / f"{tag}.npz", dream=dream_u8, real=real_u8, start=start,
+                                    n_real=np.array([len(frames[f]) - 4 for f in fs]))
+                j_ = flat[fs[0]][0]
+                meta = dict(rec, texts=[cands[j_][c][2] for _, c in [flat[f] for f in fs]],
+                            plans=[[NAMES[x] for x in pa_np[f, :Ls[f]]] for f in fs])
+                (dd / f"{tag}.json").write_text(json.dumps(meta, ensure_ascii=False))
             out.append(rec)
         return out
 
@@ -541,7 +567,7 @@ def main():
             timing["value"] += time.time() - t3
             if a.counterfactual and a.score == "reward" and t % a.counterfactual == 0:
                 t5 = time.time()
-                cf_log.extend(counterfactual(t, act_lanes, flat, acts[:, ctx - 1:], valid, sc, rsum, tail))
+                cf_log.extend(counterfactual(t, act_lanes, flat, acts[:, ctx - 1:], valid, sc, rsum, tail, S, cands))
                 timing["counterfactual"] += time.time() - t5
             sc = sc.tolist()
             pos = 0
