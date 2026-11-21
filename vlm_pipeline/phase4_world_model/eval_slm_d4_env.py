@@ -105,6 +105,9 @@ def main():
                    "of the acting SLM's (the Dyna loop keeps the value of the start SLM while GRPO moves the policy)")
     p.add_argument("--dump-dir", default="", help="dir: per episode (written when it ends) every step's real frame, all N plan "
                    "texts with their scores, the chosen one, and the decoded Dreamer dreams of the best and the worst plan")
+    p.add_argument("--extra-critics", default="", help="comma-separated SLM critic checkpoints (scalar or HL-Gauss) whose values "
+                   "are averaged with --critic's: a composition of critics (their std is the disagreement)")
+    p.add_argument("--critic-pessimism", type=float, default=0.0, help="value = mean over the critics - this * their std")
     p.add_argument("--dream-samples", type=int, default=1, help="M dreams per plan (Dreamer 4 samples a new noise each time): "
                    "score = mean_m S - --pessimism * std_m S (user 2026-11-22: the dream invents what is off-screen; one dream is one "
                    "random world)")
@@ -155,6 +158,17 @@ def main():
         attach_for(critic, cst).load_state_dict(cst["model"]); critic.eval()
         assert cst["tasks"] == state["tasks"], "critic and policy SLMs have different task lists"
         print("value from the critic", a.critic, flush=True)
+    critics = [critic]
+    for cp in [x for x in a.extra_critics.split(",") if x]:   # composition of critics
+        est_ = torch.load(cp, map_location="cpu", weights_only=False)
+        elm = AutoModelForCausalLM.from_pretrained(est_["args"]["init_checkpoint"], dtype=torch.float32)
+        elm.resize_token_embeddings(len(text)); elm.tie_weights()
+        from hl_critic import attach_for
+        ec = attach_for(SLMReasonAct(elm, est_["args"]["readout"], n_h=n_h, d_h=d_h).to(device), est_)
+        ec.load_state_dict(est_["model"]); ec.eval()
+        assert est_["tasks"] == state["tasks"], "critic and policy SLMs have different task lists"
+        critics.append(ec)
+        print("extra critic", cp, "HL-Gauss" if est_.get("critic_hl") is not None else "scalar", flush=True)
     if n_h and not a.heads:
         raise ValueError("this SLM reads Dreamer h tokens: pass --heads (and --dyn) of the phase-2 model it was trained on")
     tasks = state["tasks"]
@@ -314,12 +328,17 @@ def main():
     def value_of(Z, gi, Hd=None, hidden=False):
         vs, hs = [], []
         for s in range(0, Z.shape[0], a.chunk):
-            with torch.autocast("cuda", dtype=torch.bfloat16):
-                emb, mask, _ = critic.prefix(Z[s:s + a.chunk], pre, post_ids[gi[s:s + a.chunk]], post_mask[gi[s:s + a.chunk]],
+            vk = []
+            for ci, cr in enumerate(critics):
+                with torch.autocast("cuda", dtype=torch.bfloat16):
+                    emb, mask, _ = cr.prefix(Z[s:s + a.chunk], pre, post_ids[gi[s:s + a.chunk]], post_mask[gi[s:s + a.chunk]],
                                              None if Hd is None else Hd[s:s + a.chunk])
-                hh = critic.backbone(inputs_embeds=emb, attention_mask=mask).last_hidden_state
-                vs.append(critic.value_head(hh[:, -1]).squeeze(-1).float())
-            hs.append(hh[:, -1])
+                    hh = cr.backbone(inputs_embeds=emb, attention_mask=mask).last_hidden_state
+                    vk.append(cr.value_head(hh[:, -1]).squeeze(-1).float())
+                if ci == 0:
+                    hs.append(hh[:, -1])
+            vk = torch.stack(vk)
+            vs.append(vk.mean(0) - a.critic_pessimism * vk.std(0) if len(critics) > 1 else vk[0])
         return (torch.cat(vs), torch.cat(hs)) if hidden else torch.cat(vs)
 
     @torch.no_grad()

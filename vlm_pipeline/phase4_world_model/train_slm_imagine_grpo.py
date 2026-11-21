@@ -109,6 +109,8 @@ def main():
                    "(cached in <out>/latents) instead of the traj dirs' z.pt (online) and also --latent-cache (all): the Dyna loop "
                    "with tokenizer finetuning; 'online' for the 3M-frame Qwen data, whose latents the anchor keeps")
     p.add_argument("--dream-samples", type=int, default=1, help="M dreams per plan: score = mean - --pessimism * std over them")
+    p.add_argument("--extra-critics", default="", help="comma-separated critic checkpoints averaged with --critic (composition)")
+    p.add_argument("--critic-pessimism", type=float, default=0.0, help="value = mean over the critics - this * their std")
     p.add_argument("--pessimism", type=float, default=0.0)
     p.add_argument("--adv-norm", choices=("std", "none"), default="std", help="group advantage (R - mean) / std, or R - mean "
                    "(Dr. GRPO: no division, a group of near-equal plans gives a near-zero signal instead of +-1 noise)")
@@ -191,12 +193,24 @@ def main():
         print("KL reference", a.ref or a.slm, "coef", a.kl_coef, "clip", a.clip, "epochs", a.ppo_epochs, "minibatches", a.minibatches,
               flush=True)
 
+    critics = [critic] if critic is not None else []
+    for cp in [x for x in a.extra_critics.split(",") if x]:   # composition of critics
+        ec = copy.deepcopy(model).eval().requires_grad_(False)
+        est_ = torch.load(cp, map_location="cpu", weights_only=False)
+        from hl_critic import attach_for
+        attach_for(ec, est_).load_state_dict(est_["model"]); ec.eval().requires_grad_(False)
+        critics.append(ec); print("extra critic", cp, flush=True)
+
     @torch.no_grad()
     def critic_value(W, g):
-        """SLM value V(g, W) of the frozen start checkpoint (G = gamma^(T-1-t) on success, 0 on failure)."""
-        emb, mask, _ = critic.prefix(W, pre, post_ids[g], post_mask[g])
-        h = critic.backbone(inputs_embeds=emb, attention_mask=mask).last_hidden_state[:, -1]
-        return critic.value_head(h).squeeze(-1).float()
+        """Value V(g, W): the --critic, or the mean (- --critic-pessimism * std) over it and the --extra-critics."""
+        vk = []
+        for cr in critics:
+            emb, mask, _ = cr.prefix(W, pre, post_ids[g], post_mask[g])
+            h = cr.backbone(inputs_embeds=emb, attention_mask=mask).last_hidden_state[:, -1]
+            vk.append(cr.value_head(h).squeeze(-1).float())
+        vk = torch.stack(vk)
+        return vk.mean(0) - a.critic_pessimism * vk.std(0) if len(vk) > 1 else vk[0]
 
     # ---------------- world model ----------------
     hck = torch.load(a.heads, map_location="cpu", weights_only=False)
