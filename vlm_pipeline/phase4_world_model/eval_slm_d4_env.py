@@ -259,12 +259,16 @@ def main():
         to_frame = lambda o: torch.from_numpy(np.round(np.asarray(o) * 255).astype(np.uint8)).to(device)   # [L, 63, 63, 3]
 
     # ---------------- SLM helpers ----------------
+    answer_entropy = []   # per answer of the last sample_text call: mean token entropy (nats)
+
     @torch.no_grad()
     def sample_text(Z, gi, greedy_rows, Hd=None):
         """Decode one answer per row; rows flagged in greedy_rows are greedy, the others follow --decode."""
         out_rows = []
+        answer_entropy.clear()
         for s in range(0, Z.shape[0], a.chunk):
             Zc, gc, gr = Z[s:s + a.chunk], gi[s:s + a.chunk], greedy_rows[s:s + a.chunk]
+            ent_sum = torch.zeros(Zc.shape[0], device=device); ent_n = torch.zeros(Zc.shape[0], device=device)
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 emb, mask, _ = model.prefix(Zc, pre, post_ids[gc], post_mask[gc], None if Hd is None else Hd[s:s + a.chunk])
                 o = model.backbone(inputs_embeds=emb, attention_mask=mask, use_cache=True)
@@ -275,6 +279,8 @@ def main():
             for _ in range(max_tokens):
                 logits = model.lm_head(h).float()
                 greedy = logits.argmax(-1)
+                lsm = (logits / a.temperature).log_softmax(-1)
+                ent_sum += torch.where(done, torch.zeros_like(ent_sum), -(lsm.exp() * lsm).sum(-1)); ent_n += (~done).float()
                 if a.decode == "greedy":
                     tk = greedy
                 else:
@@ -297,6 +303,7 @@ def main():
             for row in torch.stack(written, 1).tolist():
                 row = row[:row.index(EOS)] if EOS in row else row
                 out_rows.append(text.decode(row))
+            answer_entropy.extend((ent_sum / ent_n.clamp_min(1)).tolist())
         return out_rows
 
     @torch.no_grad()
@@ -383,7 +390,7 @@ def main():
     rng_dump = np.random.default_rng(a.seed + 99)
 
     @torch.no_grad()
-    def counterfactual(t, act_lanes, flat, pa, valid, sc, rsum, tail, S=None, cands=None):
+    def counterfactual(t, act_lanes, flat, pa, valid, sc, rsum, tail, S=None, cands=None, rk=None, pk=None, vv=None, ents=None):
         cf_dumped[1] = 0
         """Every candidate of the planning lanes played in a copy of the real environment from the current state: real rewards
         r_k, the real end (wood: 1 on the task, 0 on a death; Crafter: 0 on a death) and otherwise the critic V on the real
@@ -425,6 +432,25 @@ def main():
         gi = g_of_lane[torch.tensor(lanes_c, device=device)]
         Vr = value_of(Zw, gi).cpu().numpy()
         disc = a.gamma ** np.arange(H)
+        # V of the real window ending at the k-th real frame, k = 1..H (meaningless after the end; not used there)
+        Vall = value_of(torch.stack([lat[f, k:k + 4] for f in range(C) for k in range(1, H + 1)]), gi.repeat_interleave(H)).view(C, H).cpu().numpy()
+        KS = [k for k in (1, 4, 8, 16) if k <= H]
+        rk_, pk_, vd_ = rk.cpu().numpy(), pk.cpu().numpy(), vv.masked_fill(~valid, 0).cpu().numpy()
+        alive_d = np.cumprod(np.concatenate([np.ones((C, 1)), 1 - pk_], 1), 1)
+        cont = hasattr(heads, "cont")
+
+        def dream_at(f, k):   # the dream score of the first k steps of the plan (its own formula, truncated)
+            k = min(k, Ls[f]); j = np.arange(k)
+            v_ = (disc[j] * alive_d[f, j] * rk_[f, j]).sum() + a.gamma ** k * alive_d[f, k] * vd_[f, k - 1]
+            if cont:
+                v_ += (a.gamma * disc[j] * alive_d[f, j] * pk_[f, j] * vd_[f, j]).sum()
+            return float(v_)
+
+        def real_at(f, k):
+            k = min(k, Ls[f]); e = end_k[f]
+            if 0 <= e < k:
+                return float((disc[:e + 1] * r_real[f, :e + 1]).sum() + a.gamma ** (e + 1) * end_val[f])
+            return float((disc[:k] * r_real[f, :k]).sum() + a.gamma ** k * Vall[f, k - 1])
         out = []
         for j in sorted({j for j, _ in flat}):
             fs = [f for f, (jj, _) in enumerate(flat) if jj == j]
@@ -432,6 +458,20 @@ def main():
                        dream_tail=[float(tail[f]) for f in fs], real=[], real_r=[], real_tail=[], end=[], plan_len=[Ls[f] for f in fs],
                        first=[int(pa_np[f, 0]) for f in fs])
             rec["V_real_last"] = [float(Vr[f]) for f in fs]
+            rec["ks"] = KS
+            rec["dream_k"] = [[dream_at(f, k) for k in KS] for f in fs]
+            rec["real_k"] = [[real_at(f, k) for k in KS] for f in fs]
+            rec["dream_death_k"] = [[float((alive_d[f, :min(k, Ls[f])] * pk_[f, :min(k, Ls[f])] * (rk_[f, :min(k, Ls[f])] < 0)).sum())
+                                     for k in KS] for f in fs]
+            rec["real_death_k"] = [[float(0 <= end_k[f] < min(k, Ls[f]) and end_val[f] == 0) for k in KS] for f in fs]
+            rec["dream_r_k"] = [[float((disc[:min(k, Ls[f])] * alive_d[f, :min(k, Ls[f])] * rk_[f, :min(k, Ls[f])]).sum()) for k in KS] for f in fs]
+            rec["real_r_k"] = [[float((disc[:min(k, Ls[f], (end_k[f] + 1) if end_k[f] >= 0 else 99)] *
+                                       r_real[f, :min(k, Ls[f], (end_k[f] + 1) if end_k[f] >= 0 else 99)]).sum()) for k in KS] for f in fs]
+            rec["v_dream_k"] = [[float(vd_[f, min(k, Ls[f]) - 1]) for k in KS] for f in fs]
+            rec["v_real_k"] = [[(float(Vall[f, min(k, Ls[f]) - 1]) if not (0 <= end_k[f] < min(k, Ls[f])) else None) for k in KS] for f in fs]
+            rec["plan_actions"] = [[int(x) for x in pa_np[f, :Ls[f]]] for f in fs]
+            if ents is not None:
+                rec["entropy"] = [ents[f] for f in fs]
             for f in fs:
                 e = end_k[f]; n = (e + 1) if e >= 0 else Ls[f]
                 rr = float((disc[:n] * r_real[f, :n]).sum())
@@ -488,6 +528,7 @@ def main():
         answers = sample_text(rows_Z, rows_g, greedy_rows, None if Hnow is None else Hnow.repeat_interleave(N, 0)) if A else []
         timing["text"] += time.time() - t1
         cands = []                                                              # per active lane: list of (plan, source)
+        cand_ent = [answer_entropy[j * N:(j + 1) * N] for j in range(A)] if A else []
         for j, lane in enumerate(act_lanes):
             cl = []
             for n in range(N):
@@ -567,7 +608,8 @@ def main():
             timing["value"] += time.time() - t3
             if a.counterfactual and a.score == "reward" and t % a.counterfactual == 0:
                 t5 = time.time()
-                cf_log.extend(counterfactual(t, act_lanes, flat, acts[:, ctx - 1:], valid, sc, rsum, tail, S, cands))
+                ent_f = [cand_ent[j][c] if c < len(cand_ent[j]) else None for j, c in flat]
+                cf_log.extend(counterfactual(t, act_lanes, flat, acts[:, ctx - 1:], valid, sc, rsum, tail, S, cands, rk, pk, v, ent_f))
                 timing["counterfactual"] += time.time() - t5
             sc = sc.tolist()
             pos = 0
