@@ -40,7 +40,7 @@ M=$HOME/runs/slm_d4_env_eval_20261119
 V=$HOME/runs/dreamer4_heads_texttask_native_wood2200_itlgpu1_20261119_r1
 P=$HOME/runs/dreamer4_heads_wood2200_taskreward_itlgpu1_20261119_r1
 G=$M/grpo_data
-REPO=$HOME/verl-agent-craftext
+REPO=${REPO:-$HOME/verl-agent-craftext}   # override: a second checkout while a loop runs from this one
 IMG=gorbov-wm-verl-tf59:20261103
 SLM0_RUN=$M/slm/slm5m_plan16_value_d4wood2200_r64_scratch_a3gpu2_20261118_r1
 DYN0=/d/dreamer4_wood2200_h200gpu1_20261107_r1/dyn/checkpoints/latest.pt; DYN=$DYN0

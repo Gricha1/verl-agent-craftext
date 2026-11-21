@@ -36,7 +36,7 @@ BASE_EPS=${BASE_EPS:-3000}; EVAL_SEEDS=${EVAL_SEEDS:-128}; EVAL_STEPS=${EVAL_STE
 CRITIC_HL=${CRITIC_HL:-}; CRIT_STEPS=${CRIT_STEPS:-1500}
 TOK_FT=${TOK_FT:-0}; TOK_STEPS=${TOK_STEPS:-3000}; TOK_ANCHOR=${TOK_ANCHOR:-10}; TOK_LPIPS=${TOK_LPIPS:-0.2}; DYN_LR=${DYN_LR:-2e-5}
 B=/mnt/aicenter1-datasets/gorbov_gv/modern_verl_reasoning_rl_a3_20261016
-REPO=$B/repo/verl-agent-craftext
+REPO=${REPO:-$B/repo/verl-agent-craftext}   # override: a second checkout while a loop runs from this one
 Q=$B/data/zerohero_crafter_memory_20261106
 Q4=$B/run/dreamer4_qwen_crafter64_a3gpu3_20261118_r1
 H0=$B/run/dreamer4_heads_qwen_crafter64_reward_a3gpu3_20261119_r1/heads/checkpoints/latest.pt
