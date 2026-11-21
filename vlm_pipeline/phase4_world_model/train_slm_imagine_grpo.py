@@ -42,6 +42,21 @@ the BC target of a start is the teacher Qwen's reasoning (DIR/{train,val}.jsonl 
 actions, and "near death" are the last --death-window frames of the episodes a death ended; --raw-data / --reasoning unused.
 The rows are built lazily (3M frames). Answers are decoded up to the SLM's --gen-tokens (Qwen reasoning is longer).
 
+ZeroHero recipe (user 2026-11-21: their critic, and the planner learning from real steps while it keeps planning in Dreamer):
+  --critic an HL-Gauss critic (hl_critic.py; stage 1 train_slm_reason_act_d4.py --critic-from, stage 2
+           finetune_slm_critic_real.py on the real returns of the planner): its mean V is the tail value of every dream.
+  --ratio seq  the GSPO ratio of a whole answer, rho_i = exp(mean_tok(log pi_theta - log pi_old)) (their length-normalised
+           response ratio; the per-token product of ~100 ratios explodes), clipped at --clip (theirs 0.02);
+  --target-kl  once the k3 estimate mean(rho - 1 - log rho) of a minibatch exceeds it (theirs 5e-4), the rest of the batch
+           makes no policy step.
+  --real-weight w  the real-step term: every played frame t of the --online episodes carries the plan the Dreamer planner
+           chose there (plans.json of eval_slm_d4_env.py --save-traj) and its real advantage A_t = G^lambda_t - V(x_t)
+           (hl_critic.online_targets with the --critic; real rewards, real deaths); the loss adds
+              w * mean_i  min(exp(A_i / (beta std A)), --real-wmax) * CE(chosen plan_i | Z_i, g)      (AWR, Peng et al. 2019)
+           i.e. the proposal SLM is distilled toward the planner's choices that turned out well in the real game and away
+           from the ones that did not (weights below 1), while GRPO in imagination keeps training it on dataset and online
+           starts.
+
   python train_slm_imagine_grpo.py --slm <run>/run/checkpoints/step_060000.pt --dyn <phase-1 dyn> --heads <phase-2 latest.pt>
      --raw-data <wood2200 raw> --reasoning <dir> --train <wood2200_v3> --val <wood2200_d4/val> --latent-cache <dir> --out <dir>
 """
@@ -92,7 +107,16 @@ def main():
     p.add_argument("--reencode", choices=("", "online", "all"), default="", help="encode frames with the tokenizer of --dyn "
                    "(cached in <out>/latents) instead of the traj dirs' z.pt (online) and also --latent-cache (all): the Dyna loop "
                    "with tokenizer finetuning; 'online' for the 3M-frame Qwen data, whose latents the anchor keeps")
-    p.add_argument("--clip", type=float, default=0.0, help="PPO clip epsilon of the per-token ratio pi/pi_old (0: off)")
+    p.add_argument("--clip", type=float, default=0.0, help="PPO clip epsilon of the ratio pi/pi_old (0: off)")
+    p.add_argument("--ratio", choices=("token", "seq"), default="token", help="per-token ratio, or GSPO length-normalised "
+                   "ratio of the whole answer (ZeroHero)")
+    p.add_argument("--target-kl", type=float, default=0.0, help="stop the batch's policy steps once the k3 KL estimate of the "
+                   "ratio exceeds this (0: off; ZeroHero 5e-4)")
+    p.add_argument("--real-weight", type=float, default=0.0, help="weight of the AWR term on the planner's real chosen plans")
+    p.add_argument("--real-beta", type=float, default=1.0, help="AWR temperature, in units of the std of the real advantages")
+    p.add_argument("--real-wmax", type=float, default=20.0)
+    p.add_argument("--real-batch", type=int, default=32)
+    p.add_argument("--lam", type=float, default=0.95, help="GAE lambda of the real returns")
     p.add_argument("--kl-coef", type=float, default=0.0, help="weight of the per-token k3 KL(pi || pi_ref) (0: off)")
     p.add_argument("--ref", default="", help="reference SLM checkpoint of the KL (default --slm; the Dyna loop: the BC SLM)")
     p.add_argument("--ppo-epochs", type=int, default=1, help="passes over each sampled group batch")
@@ -146,7 +170,8 @@ def main():
     if critic is not None and a.critic:
         cst = torch.load(a.critic, map_location="cpu", weights_only=False)
         assert cst["tasks"] == tasks, "critic and policy SLMs have different task lists"
-        critic.load_state_dict(cst["model"]); critic.eval().requires_grad_(False)
+        from hl_critic import attach_for
+        attach_for(critic, cst).load_state_dict(cst["model"]); critic.eval().requires_grad_(False)
         print("critic", a.critic, flush=True)
     ref = None
     if a.kl_coef > 0:   # frozen reference policy of the KL term
@@ -275,7 +300,7 @@ def main():
         zV, fV, rowsV = split(a.val, "val")
     near = rowsT.near if a.frame_labels else [i for i, r in enumerate(rowsT) if r[4]]
     print(f"train starts {len(rowsT)} ({len(near)} near death), val {len(rowsV)}", flush=True)
-    rowsO, nearO = [], []
+    rowsO, nearO, metaO = [], [], []
     if a.online:   # states the planner reached in the environment: (frame, task, a_{t-3..t-1}, no BC label, near death, t)
         zs_, f0 = [], 0
         for d in a.online.split(","):
@@ -291,11 +316,51 @@ def main():
                 for t in range(n):
                     prev = [moves[t - 3 + i] if t - 3 + i >= 0 else 0 for i in range(3)]
                     rowsO.append((f0 + s + t, tasks.index(e["task"]), prev, None, failed and t >= n - a.death_window, t))
+            pf = d / "plans.json"
+            metaO.append(dict(f0=f0, starts=m["starts"], lengths=m["lengths"], eps=eps, rew=np.load(d / "rewards.npy"),
+                              plans=json.loads(pf.read_text()) if pf.exists() else None))
             zs_.append(z); f0 += len(z)
         zO = torch.cat(zs_).to(device)
         fO = torch.tensor([r[0] - r[5] for r in rowsO], device=device)
         nearO = [i for i, r in enumerate(rowsO) if r[4]]
         print(f"online starts {len(rowsO)} ({len(nearO)} near a failed end) from {a.online}", flush=True)
+    realO = []   # (online frame, ids of the plan the planner chose there, its real advantage)
+    if a.real_weight > 0:
+        from hl_critic import online_targets
+        assert critic is not None and all(r[0] == i for i, r in enumerate(rowsO))
+        gall = torch.tensor([r[1] for r in rowsO], device=device)
+        vO = torch.cat([critic_value(windows(zO, fO, torch.arange(s, min(s + 512, len(rowsO)), device=device)),
+                                     gall[s:s + 512]) for s in range(0, len(rowsO), 512)]).cpu()
+        for md in metaO:
+            if md["plans"] is None:
+                print("no plans.json in an online dir: its frames have no real-step term", flush=True); continue
+            n_all = sum(md["lengths"]); f0 = md["f0"]
+            G = online_targets(vO[f0:f0 + n_all], md["rew"], md["starts"], md["lengths"], md["eps"],
+                               "crafter" if a.frame_labels else "wood", a.gamma, a.lam)
+            Adv = G - vO[f0:f0 + n_all]
+            for k, txt in enumerate(md["plans"]):
+                if txt and parse_plan(txt):
+                    realO.append((f0 + k, enc(txt) + [EOS], float(Adv[k])))
+        Ar = torch.tensor([x[2] for x in realO])
+        sd_A = float(Ar.std()) + 1e-6
+        wR = (Ar / (a.real_beta * sd_A)).exp().clamp(max=a.real_wmax)
+        print(f"real-step term: {len(realO)} chosen plans, advantage mean {float(Ar.mean()):.4f} std {sd_A:.4f}, "
+              f"AWR weight mean {float(wR.mean()):.3f} max {float(wR.max()):.2f}", flush=True)
+
+    def real_loss():
+        pick = rng.choice(len(realO), a.real_batch)
+        idx = torch.tensor([realO[i][0] for i in pick], device=device)
+        tg_ = [realO[i][1] for i in pick]
+        Wr = max(map(len, tg_))
+        tb_ = torch.zeros(len(tg_), Wr, dtype=torch.long, device=device); mb_ = torch.zeros_like(tb_)
+        for i, t_ in enumerate(tg_):
+            tb_[i, :len(t_)] = torch.tensor(t_, device=device); mb_[i, :len(t_)] = 1
+        gr = gall[idx]
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            _, lgr, _ = model(windows(zO, fO, idx), pre, post_ids[gr], post_mask[gr], tb_, mb_)
+        ce = F.cross_entropy(lgr.float().transpose(1, 2), tb_, reduction="none")
+        ce = (ce * mb_).sum(1) / mb_.sum(1)
+        return (wR[torch.as_tensor(pick)].to(device) * ce).mean()
 
     def choose(near_rows, n_rows, k):
         nd = int(round(a.death_frac * k)) if near_rows else 0
@@ -446,7 +511,7 @@ def main():
     log = open(out / "metrics.jsonl", "a")
     res = evaluate(0); log.write(json.dumps(res) + "\n"); log.flush(); print("[val]", json.dumps(res), flush=True)
     model.train()
-    t0 = time.time(); run = dict(score=0.0, adv=0.0, pg=0.0, bc=0.0, kl=0.0, clipfrac=0.0, ratio=0.0, death=0.0, parsed=0.0, n=0)
+    t0 = time.time(); run = dict(score=0.0, adv=0.0, pg=0.0, bc=0.0, kl=0.0, clipfrac=0.0, ratio=0.0, real=0.0, kl_old=0.0, stopped=0.0, death=0.0, parsed=0.0, n=0)
     for step in range(1, a.updates + 1):
         nO = int(round(a.online_frac * a.starts)) if rowsO else 0
         pick = choose(near, len(rowsT), a.starts - nO)        # dataset starts first: the BC rows index into them
@@ -499,17 +564,29 @@ def main():
             lp_ref = (torch.cat([token_lp(ref, everything[i:i + 128]) for i in range(0, n_rows, 128)])
                       if ref is not None else None)
             model.train()
-        st = dict(pg=0.0, bc=0.0, kl=0.0, clipfrac=0.0, ratio=0.0); n_steps = 0
+        st = dict(pg=0.0, bc=0.0, kl=0.0, clipfrac=0.0, ratio=0.0, real=0.0, kl_old=0.0, stopped=0.0); n_steps = 0
+        stopped = False
         for _ep in range(a.ppo_epochs):
+            if stopped:
+                break
             perm = everything[torch.randperm(n_rows, device=device)]
             for mbi in perm.chunk(a.minibatches):
                 lp = token_lp(model, mbi)
                 m = tm[mbi].float(); A = adv[mbi].detach()[:, None]
-                ratio = torch.exp(lp - lp_old[mbi])
-                surr = ratio * A
-                if a.clip > 0:   # PPO clipped surrogate, per token
-                    surr = torch.minimum(surr, ratio.clamp(1 - a.clip, 1 + a.clip) * A)
                 per_seq = lambda x: (x * m).sum(1) / m.sum(1).clamp_min(1)   # mean over the tokens of an answer
+                if a.ratio == "seq":   # GSPO: one length-normalised ratio per answer
+                    dl = per_seq(lp - lp_old[mbi])
+                    ratio = torch.exp(dl)[:, None].expand_as(lp)
+                else:
+                    dl = per_seq(lp - lp_old[mbi]).detach()
+                    ratio = torch.exp(lp - lp_old[mbi])
+                kl_old = float((torch.exp(dl.detach()) - 1 - dl.detach()).mean())
+                if a.target_kl > 0 and kl_old > a.target_kl:   # ZeroHero early stop: no more policy steps on this batch
+                    stopped = True; st["stopped"] = 1.0
+                    break
+                surr = ratio * A
+                if a.clip > 0:   # PPO clipped surrogate
+                    surr = torch.minimum(surr, ratio.clamp(1 - a.clip, 1 + a.clip) * A)
                 pg = -per_seq(surr).mean()
                 loss = pg
                 kl = torch.zeros((), device=device)
@@ -519,24 +596,29 @@ def main():
                     loss = loss + a.kl_coef * kl
                 bc = bc_loss()
                 loss = loss + a.bc_weight * bc
+                rl_ = real_loss() if realO else torch.zeros((), device=device)
+                loss = loss + a.real_weight * rl_
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
                 opt.step()
                 with torch.no_grad():
-                    st["pg"] += float(pg); st["bc"] += float(bc); st["kl"] += float(kl)
+                    st["pg"] += float(pg); st["bc"] += float(bc); st["kl"] += float(kl); st["real"] += float(rl_)
+                    st["kl_old"] += kl_old
                     st["clipfrac"] += float(per_seq(((ratio - 1).abs() > a.clip).float()).mean()) if a.clip > 0 else 0.0
                     st["ratio"] += float(per_seq(ratio).mean())
                 n_steps += 1
+        n_steps = max(n_steps, 1)
         pg, bc = st["pg"] / n_steps, st["bc"] / n_steps
         run["score"] += float(sc.mean()); run["adv"] += float(adv.abs().mean()); run["pg"] += pg; run["bc"] += bc
         run["kl"] += st["kl"] / n_steps; run["clipfrac"] += st["clipfrac"] / n_steps; run["ratio"] += st["ratio"] / n_steps
+        run["real"] += st["real"] / n_steps; run["kl_old"] += st["kl_old"] / n_steps; run["stopped"] += st["stopped"]
         run["death"] += float(dead.mean()); run["parsed"] += float(np.mean(ok)); run["n"] += 1
         if step % 10 == 0:
             n = run.pop("n")
             print(f"update {step} " + " ".join(f"{k} {v / n:.4f}" for k, v in run.items()) + f" {step / (time.time() - t0):.3f} upd/s",
                   flush=True)
-            run = dict(score=0.0, adv=0.0, pg=0.0, bc=0.0, kl=0.0, clipfrac=0.0, ratio=0.0, death=0.0, parsed=0.0, n=0)
+            run = dict(score=0.0, adv=0.0, pg=0.0, bc=0.0, kl=0.0, clipfrac=0.0, ratio=0.0, real=0.0, kl_old=0.0, stopped=0.0, death=0.0, parsed=0.0, n=0)
         if step % a.eval_every == 0 or step == a.updates:
             res = evaluate(step); log.write(json.dumps(res) + "\n"); log.flush(); print("[val]", json.dumps(res), flush=True)
         if step % a.save_every == 0 or step == a.updates:

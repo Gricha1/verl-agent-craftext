@@ -178,6 +178,8 @@ def main():
     p.add_argument("--value-horizon", type=int, default=300)
     p.add_argument("--max-target", type=int, default=384)
     p.add_argument("--gen-tokens", type=int, default=0, help="greedy generation length at eval (0: 80 + 6 * plan)")
+    p.add_argument("--critic-from", default="", help="critic mode (hl_critic.py, user 2026-11-21): a copy of this SLM checkpoint "
+                   "with an HL-Gauss value head, trained on the value targets only (cross-entropy), as the ZeroHero critic")
     p.add_argument("--dreamer-h", default="", help="dir with h_train.pt / h_val.pt (cache_dreamer_h.py): Dreamer 4 h_t tokens")
     a = p.parse_args()
     sys.path.insert(0, f"{a.repo}/vlm_pipeline/phase4_world_model")
@@ -329,6 +331,12 @@ def main():
         missing, unexpected = model.load_state_dict(sd, strict=False)
         print("fine-tune from", a.from_run, "step", state["step"], "not loaded:", sorted({k.split(".")[0] for k in missing}),
               "unexpected:", unexpected, flush=True)
+    if a.critic_from:   # the ZeroHero critic: a deep copy of the SFT student's trunk, own head, no weight shared with the actor
+        from hl_critic import attach
+        src = torch.load(a.critic_from, map_location="cpu", weights_only=False)
+        model.load_state_dict(src["model"])
+        attach(model)
+        print("critic mode: trunk of", a.critic_from, "step", src.get("step"), "HL-Gauss head", model.value_head.cfg, flush=True)
     n_par = sum(v.numel() for v in model.parameters())
     print(f"parameters {n_par/1e6:.2f}M, vocabulary {len(text)}, prompt {pre.shape[1]}+{256 + n_h + a.readout}+{Lp} tokens", flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, betas=(0.9, 0.95), weight_decay=0.1)
@@ -413,7 +421,60 @@ def main():
         model.train()
         return res
 
+    def critic_value_logits(idx, zz, ff, hh, gg):
+        Z = windows(zz, ff, idx)
+        emb, mask, _ = model.prefix(Z, pre, post_ids[gg[idx]], post_mask[gg[idx]], HD(hh, idx))
+        h = model.backbone(inputs_embeds=emb, attention_mask=mask).last_hidden_state[:, -1]
+        return model.value_head.logits(h)
+
+    @torch.no_grad()
+    def evaluate_critic(step):
+        model.eval()
+        ce = se = sc = n = 0.0; ys, ps = [], []
+        vi = torch.nonzero(mv > 0)[:, 0]
+        vi = vi[torch.randperm(len(vi), generator=gen)[:8192].to(device)]
+        for st in range(0, len(vi), 256):
+            idx = vi[st:st + 256]
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                lg = critic_value_logits(idx, zv, fv, hV, gv)
+            v = model.value_head.mean(lg)
+            ce += float(model.value_head.loss(lg, vv[idx])) * len(idx); n += len(idx)
+            se += float(((v - vv[idx]) ** 2).sum()); sc += float(((vmean - vv[idx]) ** 2).sum())
+            ys.append(vv[idx].cpu()); ps.append(v.cpu())
+        y, pr = torch.cat(ys), torch.cat(ps)
+        model.train()
+        return dict(step=step, value_ce=ce / n, value_mse=se / n, value_mse_const=sc / n,
+                    value_corr=float(torch.corrcoef(torch.stack([y, pr]))[0, 1]), value_mean_pred=float(pr.mean()),
+                    value_mean_target=float(y.mean()), n=int(n))
+
     log = open(out / "metrics.jsonl", "a")
+    if a.critic_from:   # stage-1 critic: value cross-entropy only, on the frames with a value target
+        res = evaluate_critic(0); log.write(json.dumps(res) + "\n"); log.flush(); print("[val]", json.dumps(res), flush=True)
+        ti = torch.nonzero(mt > 0)[:, 0]
+        best, step, t0, run_ce = None, 0, time.time(), 0.0
+        model.train()
+        while step < a.steps:
+            for g_ in opt.param_groups:
+                g_["lr"] = lr_at(step)
+            idx = ti[torch.randint(0, len(ti), (a.batch,), device=device)]
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                lg = critic_value_logits(idx, zt, ft, hT, gt)
+            loss = model.value_head.loss(lg, vt[idx])
+            opt.zero_grad(set_to_none=True); loss.backward()
+            gn = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step(); step += 1; run_ce += float(loss)
+            if step % 100 == 0:
+                print(f"step {step} value_ce {run_ce / 100:.4f} lr {lr_at(step):.2e} gnorm {gn.item():.2f} "
+                      f"{step / (time.time() - t0):.2f} it/s", flush=True); run_ce = 0.0
+            if step % a.eval_every == 0 or step == a.steps:
+                res = evaluate_critic(step); log.write(json.dumps(res) + "\n"); log.flush(); print("[val]", json.dumps(res), flush=True)
+                state = dict(model=model.state_dict(), step=step, args=vars(a), val=res, tasks=tasks,
+                             critic_hl=model.value_head.cfg, critic_from=a.critic_from)
+                torch.save(state, out / "latest.pt")          # only the final and the best checkpoint are kept
+                if best is None or res["value_ce"] < best:
+                    best = res["value_ce"]; torch.save(state, out / "best.pt")
+        print("TRAIN_DONE", step, flush=True)
+        return
     if a.from_run:
         res = evaluate(0); log.write(json.dumps(res) + "\n"); log.flush(); print("[val]", json.dumps(res)[:1500], flush=True)
     ema = {}

@@ -138,7 +138,8 @@ def main():
         clm = AutoModelForCausalLM.from_pretrained(cst["args"]["init_checkpoint"], dtype=torch.float32)
         clm.resize_token_embeddings(len(text)); clm.tie_weights()
         critic = SLMReasonAct(clm, cst["args"]["readout"], n_h=n_h, d_h=d_h).to(device)
-        critic.load_state_dict(cst["model"]); critic.eval()
+        from hl_critic import attach_for   # an HL-Gauss critic checkpoint (train_slm_reason_act_d4.py --critic-from) reads its mean
+        attach_for(critic, cst).load_state_dict(cst["model"]); critic.eval()
         assert cst["tasks"] == state["tasks"], "critic and policy SLMs have different task lists"
         print("value from the critic", a.critic, flush=True)
     if n_h and not a.heads:
@@ -351,6 +352,7 @@ def main():
     # ---------------- closed loop ----------------
     xs, zs, played = [], [], []       # per step: frames [L,63,63,3], latents [L,64,16], actions [L]
     rews, dones = [], []              # per step: env reward of the action, done after it [L]
+    said = []                         # per step: the text of the plan chosen at that step ("" when the lane played its queue)
     active = np.ones(L, bool)
     success = np.zeros(L, bool)
     steps = np.zeros(L, int)
@@ -491,8 +493,9 @@ def main():
                 now_values[act_lanes[j]].append(float(v_now[j]))
                 pos += len(cl)
         acts_now = np.zeros(L, np.int32)
+        said.append([""] * L)
         for j, lane in enumerate(act_lanes):
-            plan, src, _ = cands[j][choice[j]]
+            plan, src, said[-1][lane] = cands[j][choice[j]]
             chosen_stats[src] += 1
             queue[lane] = list(plan[:max(1, a.execute)])
             previous[lane] = plan[len(queue[lane]):] or None
@@ -596,6 +599,7 @@ def main():
             reward_rule=("native Crafter reward" if crafter_env else "native environment reward (Craftax / 50)") +
                         ", last action's reward added to the transition into x_{n-1}",
             source=dict(run=run.name, checkpoint=a.checkpoint, seeds=a.seeds, heads=a.heads, critic=a.critic))))
+        (sd / "plans.json").write_text(json.dumps([said[t][lane] for lane, e in enumerate(episodes) for t in range(e["steps"])]))
         (sd / "episodes.json").write_text(json.dumps([dict(task=e["task"], seed=e["seed"], steps=e["steps"], success=e["success"],
                                                            end=e["end"]) for e in episodes]))
         print("saved", len(episodes), "episodes", first, "frames to", sd, flush=True)

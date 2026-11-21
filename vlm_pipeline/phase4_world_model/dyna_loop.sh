@@ -16,7 +16,7 @@
 #              starts; $GRPO_UPDATES updates -> SLM_{i+1}.
 # After the last iteration: the standard 128-episode wood eval (seeds 20264000..031) of SLM_N with HEADS_N, same planner.
 #
-#   2b tok     TOK_FT=1 (user 2026-11-20, "СЂР°Р·РјРѕСЂР°Р¶РёРІР°РµРј СЌРЅРєРѕРґРµСЂ РґРµРєРѕРґРµСЂ Сѓ РґСЂРёРјРµСЂР°"): finetune_d4_tokenizer.py trains the
+#   2b tok     TOK_FT=1 (user 2026-11-20, "размораживаем энкодер декодер у дримера"): finetune_d4_tokenizer.py trains the
 #              tokenizer's encoder and decoder on all played episodes + wood2200 (MSE + LPIPS, latent anchor to the phase-1
 #              tokenizer on the wood2200 clips), $TOK_STEPS steps, from the previous iteration's tokenizer -> TOK_{i+1} and a
 #              dynamics checkpoint pointing at it (dyn_tok.pt), which stages 3, 4 and the next collect use as --dyn (the heads
@@ -24,9 +24,17 @@
 #   bash dyna_loop.sh <run dir> [GPU]      env: ITERS=4 SEEDS=32 WM_STEPS=2000 GRPO_UPDATES=200 SMOKE=0
 #        TOK_FT=0 TOK_STEPS=3000 TOK_ANCHOR=10 TOK_LPIPS=0.2 DYN_LR=2e-5
 #        GRPO_ARGS="--clip 0.2 --kl-coef 0.04 --ppo-epochs 2 --minibatches 2" (KL reference = the start SLM)
+#   3c critic  CRITIC_HL=<HL-Gauss critic .pt, container path> (user 2026-11-21, the ZeroHero critic): the stage-1 critic of
+#              train_slm_reason_act_d4.py --critic-from replaces the start SLM's value everywhere (base eval, collect, GRPO
+#              tail, final eval); after the world model, finetune_slm_critic_real.py moves it to the GAE(0.99, 0.95) returns of
+#              the planner's real episodes (all traj dirs so far, 25 % teacher frames as an anchor), $CRIT_STEPS steps, from the
+#              previous iteration's critic; GRPO and the next collect use it. With GRPO_ARGS="--real-weight 1 ..." GRPO also
+#              distills the planner's real choices weighted by their real advantage (train_slm_imagine_grpo.py doc).
+#        CRITIC_HL="" CRIT_STEPS=1500
 set -e
 D=$1; GPU=${2:-0}
 ITERS=${ITERS:-4}; SEEDS=${SEEDS:-32}; WM_STEPS=${WM_STEPS:-2000}; GRPO_UPDATES=${GRPO_UPDATES:-200}; SMOKE=${SMOKE:-0}
+CRITIC_HL=${CRITIC_HL:-}; CRIT_STEPS=${CRIT_STEPS:-1500}
 TOK_FT=${TOK_FT:-0}; TOK_STEPS=${TOK_STEPS:-3000}; TOK_ANCHOR=${TOK_ANCHOR:-10}; TOK_LPIPS=${TOK_LPIPS:-0.2}; DYN_LR=${DYN_LR:-2e-5}
 M=$HOME/runs/slm_d4_env_eval_20261119
 V=$HOME/runs/dreamer4_heads_texttask_native_wood2200_itlgpu1_20261119_r1
@@ -56,18 +64,20 @@ dock() {   # dock TAG WOOD_DIR ARGS... : one stage in container ${NAME}_TAG with
 }
 
 SLM_RUN=/o/slm/$(basename $SLM0_RUN); SLM_CK=step_060000.pt
-CRITIC=$SLM_RUN/run/checkpoints/step_060000.pt
+SLM0_CK=$SLM_RUN/run/checkpoints/step_060000.pt
+CRITIC=${CRITIC_HL:-$SLM0_CK}   # the stage-1 critic: the start SLM's value, or the HL-Gauss critic
 HEADS=$V/heads/checkpoints/latest.pt
 start_it=0
 for i in $(seq 0 $((ITERS - 1))); do   # resume: skip finished iterations
   [ -f $D/it$i/DONE ] || break
   SLM_RUN=/D/it$i/grpo; SLM_CK=$(cat $D/it$i/DONE); HEADS=$D/it$i/heads/checkpoints/latest.pt; start_it=$((i + 1))
   [ -f $D/it$i/tok/dyn_tok.pt ] && { DYN=/D/it$i/tok/dyn_tok.pt; TOK=/D/it$i/tok/latest.pt; }
+  [ -f $D/it$i/critic/critic.pt ] && CRITIC=/D/it$i/critic/critic.pt
 done
 TRAJS=""
 for i in $(seq 0 $((start_it - 1))); do TRAJS="$TRAJS${TRAJS:+,}/D/it$i/traj"; done
 if [ $SMOKE = 1 ]; then
-  CEXTRA="--tasks 0,1 --max-steps 30"; HEXTRA="--eval_every 20 --eval_n 0 --final_eval_n 0"; TOK_STEPS=20
+  CEXTRA="--tasks 0,1 --max-steps 30"; HEXTRA="--eval_every 20 --eval_n 0 --final_eval_n 0"; TOK_STEPS=20; CRIT_STEPS=20
   GEXTRA="--eval-every 4 --eval-starts 64 --save-every 4"
 else
   CEXTRA=""; HEXTRA="--eval_every $WM_STEPS"; GEXTRA="--eval-every 100 --save-every $GRPO_UPDATES"
@@ -111,6 +121,17 @@ for i in $(seq $start_it $((ITERS - 1))); do
   fi
   HEADS=$I/heads/checkpoints/latest.pt
   if [ $TOK_FT = 1 ]; then DYN=/D/it$i/tok/dyn_tok.pt; TOK=/D/it$i/tok/latest.pt; fi   # (a resumed iteration skipped 2b)
+  # 3c critic: the HL-Gauss critic on the real returns of the planner
+  if [ -n "$CRITIC_HL" ]; then
+    if [ ! -f $I/critic/critic.pt ]; then
+      dock critic$i $V/wood2200_native -v $G:/g:ro -e PYTHONPATH=/code/dreamer4:/d/pylibs --entrypoint python3 $IMG \
+        /w/repo/vlm_pipeline/phase4_world_model/finetune_slm_critic_real.py --critic $CRITIC --online $TRAJS --game wood \
+        --raw-data /g/raw --train /g/wood2200_v3 --val /g/wood2200_d4/val --latent-cache /c/latents \
+        --out /D/it$i/critic --steps $CRIT_STEPS --seed $((7950 + i)) > $I/critic.log 2>&1
+    fi
+    grep -E "CRITIC-FT (before|after)" $I/critic.log | tee -a $D/loop.log
+    CRITIC=/D/it$i/critic/critic.pt
+  fi
   # 4 policy
   U=$([ $SMOKE = 1 ] && echo 4 || echo $GRPO_UPDATES)
   if [ ! -f $I/grpo/checkpoints/step_$(printf %06d $U).pt ]; then
@@ -118,7 +139,7 @@ for i in $(seq $start_it $((ITERS - 1))); do
       /w/repo/vlm_pipeline/phase4_world_model/train_slm_imagine_grpo.py --slm $SLM_RUN/run/checkpoints/$SLM_CK \
       --dyn $DYN $([ $TOK_FT = 1 ] && echo --reencode all) --heads /D/it$i/heads/checkpoints/latest.pt --critic $CRITIC --online $TRAJS --online-frac 0.75 \
       --raw-data /g/raw --reasoning /c/reason_wood2200 --train /g/wood2200_v3 --val /g/wood2200_d4/val --latent-cache /c/latents \
-      --out /D/it$i/grpo --updates $U --starts 32 --group 8 --tail slm --seed $((7950 + i)) $GEXTRA $GRPO_ARGS ${GRPO_ARGS:+--ref $CRITIC} \
+      --out /D/it$i/grpo --updates $U --starts 32 --group 8 --tail slm --seed $((7950 + i)) $GEXTRA $GRPO_ARGS ${GRPO_ARGS:+--ref $SLM0_CK} \
       2>&1 | grep --line-buffered -v -iE "warn|gym" > $I/grpo.log
   fi
   grep "\[val\]" $I/grpo.log | sed -n '1p;$p' | tee -a $D/loop.log
@@ -142,6 +163,7 @@ fi
 if [ -f $D/final_eval.json ]; then
   for j in $(seq 0 $((ITERS - 2))); do find $D/it$j -type f \( -name '*.pt' -o -name '*.pth' \) ! -name 'z*.pt' -delete 2>/dev/null; done
   rm -rf $D/it*/grpo/latents 2>/dev/null
+  for j in $(seq 0 $((ITERS - 2))); do rm -f $D/it$j/critic/critic.pt; done
   echo "intermediate weights deleted, kept it$((ITERS - 1))" | tee -a $D/loop.log
 fi
 echo "DYNA_DONE $(date -u)" | tee -a $D/loop.log
