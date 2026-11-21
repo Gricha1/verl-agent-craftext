@@ -108,6 +108,12 @@ def main():
     p.add_argument("--reencode", choices=("", "online", "all"), default="", help="encode frames with the tokenizer of --dyn "
                    "(cached in <out>/latents) instead of the traj dirs' z.pt (online) and also --latent-cache (all): the Dyna loop "
                    "with tokenizer finetuning; 'online' for the 3M-frame Qwen data, whose latents the anchor keeps")
+    p.add_argument("--dream-samples", type=int, default=1, help="M dreams per plan: score = mean - --pessimism * std over them")
+    p.add_argument("--pessimism", type=float, default=0.0)
+    p.add_argument("--adv-norm", choices=("std", "none"), default="std", help="group advantage (R - mean) / std, or R - mean "
+                   "(Dr. GRPO: no division, a group of near-equal plans gives a near-zero signal instead of +-1 noise)")
+    p.add_argument("--min-spread", type=float, default=0.0, help="kappa > 0 (needs --dream-samples > 1): a group trains only if "
+                   "std_i R_i > kappa * mean_i std_m S(p_i): the plans differ by more than the dream's own uncertainty")
     p.add_argument("--clip", type=float, default=0.0, help="PPO clip epsilon of the ratio pi/pi_old (0: off)")
     p.add_argument("--ratio", choices=("token", "seq"), default="token", help="per-token ratio, or GSPO length-normalised "
                    "ratio of the whole answer (ZeroHero)")
@@ -408,7 +414,12 @@ def main():
     @torch.no_grad()
     def score(Zs, prev, g, plans, H=H):
         """Zs [C,4,64,16], prev [C,3] actions a_{t-3..t-1}, g [C] SLM task ids, plans list of action lists, H the dream
-        horizon (--horizon; --diag-out also scores at other horizons) -> score [C], death mass [C], success mass [C]."""
+        horizon (--horizon; --diag-out also scores at other horizons) -> score [C], death mass [C], success mass [C], and the
+        std of the score over the --dream-samples dreams [C] (zeros for one dream)."""
+        M_ = max(1, a.dream_samples)
+        if M_ > 1:
+            Zs, prev, g = Zs.repeat_interleave(M_, 0), prev.repeat_interleave(M_, 0), g.repeat_interleave(M_, 0)
+            plans = [pl for pl in plans for _ in range(M_)]
         C = Zs.shape[0]
         L = torch.tensor([min(len(pl), H) for pl in plans], device=device)
         pa = torch.tensor([pl[:H] + [0] * (H - min(len(pl), H)) for pl in plans], device=device)
@@ -448,7 +459,10 @@ def main():
             sc = sc + (a.gamma * disc * alive[:, :H] * pk * vk * valid).sum(1)
         dead = (alive[:, :H] * pk * (rk < 0) * valid).sum(1)
         won = (alive[:, :H] * pk * (rk > 0) * valid).sum(1)
-        return sc, dead, won
+        if M_ > 1:
+            scm = sc.view(-1, M_)
+            return (scm.mean(1) - a.pessimism * scm.std(1), dead.view(-1, M_).mean(1), won.view(-1, M_).mean(1), scm.std(1))
+        return sc, dead, won, torch.zeros_like(sc)
 
     def batch_of(rows, z, ep_first, pick):
         idx = torch.tensor([rows[i][0] for i in pick], device=device)
@@ -474,7 +488,7 @@ def main():
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 ids, lens = sample(Zs, g, greedy=True)
             plans, ok = parse(ids, lens)
-            sc, dead, won = score(Zs, prev, g, plans)
+            sc, dead, won, _ = score(Zs, prev, g, plans)
             res["score"] += float(sc.sum()); res["death"] += float(dead.sum()); res["success"] += float(won.sum())
             res["parsed"] += sum(ok); n += len(pick)
         model.train()
@@ -496,7 +510,7 @@ def main():
                 ids, lens = sample(ZG, gG, greedy=False)
             plans, ok = parse(ids, lens)
             for h in Hs:
-                sc, _, _ = score(ZG, pG, gG, plans, H=h)
+                sc, _, _, _ = score(ZG, pG, gG, plans, H=h)
                 sc = torch.where(torch.tensor(ok, device=device), sc, torch.full_like(sc, a.bad_score))
                 Rs[h] += sc.view(-1, G).cpu().tolist()
             okm += torch.tensor(ok).view(-1, G).tolist(); plan_rows += [plans[i:i + G] for i in range(0, len(plans), G)]
@@ -542,10 +556,17 @@ def main():
             ids, lens = sample(ZG, gG, greedy=False)
         model.train()
         plans, ok = parse(ids, lens)
-        sc, dead, _ = score(ZG, pG, gG, plans)
+        sc, dead, _, sdm = score(ZG, pG, gG, plans)
         sc = torch.where(torch.tensor(ok, device=device), sc, torch.full_like(sc, a.bad_score))
         R = sc.view(-1, G)
-        adv = ((R - R.mean(1, keepdim=True)) / (R.std(1, keepdim=True) + 1e-4)).flatten()
+        if a.adv_norm == "none":
+            adv = R - R.mean(1, keepdim=True)
+        else:
+            adv = (R - R.mean(1, keepdim=True)) / (R.std(1, keepdim=True) + 1e-4)
+        if a.min_spread > 0:   # groups whose plans differ less than the dream's own noise carry no signal
+            keep = (R.std(1) > a.min_spread * sdm.view(-1, G).mean(1)).float()[:, None]
+            adv = adv * keep; run["kept"] = run.get("kept", 0.0) + float(keep.mean())
+        adv = adv.flatten()
         W = max(lens)
         tg = ids[:, :W]
         tm = (torch.arange(W, device=device)[None] < torch.tensor(lens, device=device)[:, None]).long()

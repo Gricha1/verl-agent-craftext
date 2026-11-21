@@ -105,6 +105,10 @@ def main():
                    "of the acting SLM's (the Dyna loop keeps the value of the start SLM while GRPO moves the policy)")
     p.add_argument("--dump-dir", default="", help="dir: per episode (written when it ends) every step's real frame, all N plan "
                    "texts with their scores, the chosen one, and the decoded Dreamer dreams of the best and the worst plan")
+    p.add_argument("--dream-samples", type=int, default=1, help="M dreams per plan (Dreamer 4 samples a new noise each time): "
+                   "score = mean_m S - --pessimism * std_m S (user 2026-11-22: the dream invents what is off-screen; one dream is one "
+                   "random world)")
+    p.add_argument("--pessimism", type=float, default=0.0)
     p.add_argument("--counterfactual", type=int, default=0, help="N > 0 (with --imagine --score reward): every N-th step each "
                    "candidate plan of every planning lane is also played in a copy of the real environment (Craftax state / deep-"
                    "copied Crafter env) and scored by the same formula with real rewards, real ends and the critic on the real "
@@ -551,6 +555,8 @@ def main():
         if A and a.imagine and (N > 1 or a.keep_previous):
             t2 = time.time()
             flat = [(j, c) for j, cl in enumerate(cands) for c in range(len(cl))]
+            M_ = max(1, a.dream_samples)
+            flat = [fc for fc in flat for _ in range(M_)]                       # every plan M times (aggregated below)
             lane_of = torch.tensor([j for j, _ in flat], device=device)
             ctx_lat = torch.stack([zs[max(0, t - ctx + 1 + i)][idx] for i in range(ctx)], 1)[lane_of]   # z_{t-2..t}
             before = [[played[t - ctx + 1 + i][lane] if t - ctx + 1 + i >= 0 else 0 for i in range(ctx - 1)] for lane in act_lanes]
@@ -601,6 +607,14 @@ def main():
                 if hasattr(heads, "cont"):   # native reward: an imagined end is valued by the SLM value of its frame
                     tail = tail + (a.gamma * disc * alive[:, :H] * pk * v.masked_fill(~valid, 0) * valid).sum(1)
                 sc = rsum + tail
+                if M_ > 1:   # back to one row per plan: mean - pessimism * std over its M dreams
+                    scm = sc.view(-1, M_)
+                    sc = scm.mean(1) - a.pessimism * scm.std(1)
+                    rsum, tail = rsum.view(-1, M_).mean(1), tail.view(-1, M_).mean(1)
+                    rk, pk = rk.view(-1, M_, H).mean(1), pk.view(-1, M_, H).mean(1)
+                    v = v.masked_fill(~valid, 0).view(-1, M_, H).mean(1)
+                    acts, valid, S, lane_of = acts[::M_], valid[::M_], S[::M_], lane_of[::M_]
+                    flat = flat[::M_]
                 for j, (jj, c) in enumerate(flat):
                     if c == 0:
                         reward_terms[act_lanes[jj]].append((float(rsum[j]), float(tail[j])))
