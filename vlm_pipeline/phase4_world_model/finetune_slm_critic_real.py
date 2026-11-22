@@ -50,6 +50,8 @@ def main():
     p.add_argument("--value-horizon", type=int, default=300)
     p.add_argument("--val-frac", type=float, default=0.1)
     p.add_argument("--seed", type=int, default=0)
+    import train_state
+    train_state.add_args(p)
     a = p.parse_args()
     sys.path.insert(0, f"{a.repo}/vlm_pipeline/phase4_world_model")
     from hl_critic import attach_for, online_targets
@@ -173,10 +175,12 @@ def main():
 
     before = evaluate(model); print("CRITIC-FT before", json.dumps(before), flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, betas=(0.9, 0.95), weight_decay=0.01)
+    g0 = train_state.load(a.state_in, opt, who="critic")   # one warmup + one cosine over all loop iterations
+    total = a.total_steps or a.steps
     nb = int(round(a.base_frac * a.batch)); no = a.batch - nb
     t0 = time.time(); run = 0.0
     for step in range(1, a.steps + 1):
-        lr = a.lr * min(1.0, step / a.warmup) * 0.5 * (1 + math.cos(math.pi * step / a.steps))
+        lr = a.lr * train_state.lr_mult(g0 + step, total, a.warmup)
         for g_ in opt.param_groups:
             g_["lr"] = lr
         io = oT[torch.randint(0, len(oT), (no,), device=dev)]
@@ -195,6 +199,7 @@ def main():
     after = evaluate(model); print("CRITIC-FT after", json.dumps(after), flush=True)
     st = dict(cst, model=model.state_dict(), finetune=dict(args=vars(a), before=before, after=after, from_critic=a.critic))
     torch.save(st, out / "critic.pt")
+    train_state.save(out / "train_state.pt", opt, g0 + a.steps)
     (out / "critic_ft.json").write_text(json.dumps(dict(before=before, after=after, args=vars(a), minutes=(time.time() - t0) / 60), indent=1))
     print("CRITIC-FT-DONE", out, flush=True)
 

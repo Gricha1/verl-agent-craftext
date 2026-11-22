@@ -34,6 +34,12 @@
 #              of step 3 and the current critic; GRPO and the next collect score plans with them. DH0_HEADS / DH0_CRITIC: the
 #              Stage-1 dream-trained scorer used from the start. EVAL_EXTRA: extra planner args of the evals.
 #        DREAM_HEADS=0 DH_STEPS=1500 DH0_HEADS="" DH0_CRITIC="" EVAL_EXTRA=""
+#   state      STATE_CARRY=1 (default since 2026-11-22, safe_rl_nlp.md 14.15-17): every trainer of iteration i>0 restores
+#              the training state of the same trainer in iteration i-1 (--state-in .../train_state.pt: AdamW moments and step,
+#              the global step of its lr schedule, the RMS loss normalisers) and its lr schedule runs over ITERS x its steps,
+#              so the 4 iterations are one continuous optimisation per model. Before, every iteration restarted AdamW, the
+#              warmup + cosine and the normalisers. Iteration 0 starts fresh (new phase after Stage 1). A missing state of
+#              iteration i-1 stops the loop (never continue without the full state).
 set -eo pipefail   # a failed stage must stop the loop (its output is piped through grep / tee)
 D=$1; S0=$2; CK0=$3; GPU=${4:-3}
 ITERS=${ITERS:-4}; SEEDS=${SEEDS:-64}; CSTEPS=${CSTEPS:-1000}; WM_STEPS=${WM_STEPS:-2000}; GRPO_UPDATES=${GRPO_UPDATES:-200}
@@ -61,7 +67,7 @@ dock() {   # dock TAG DYN_DATA_DIR ARGS...: one stage in container ${NAME}_TAG (
 }
 if [ ! -f $D/dreamer4/PATCHED ]; then   # dreamer4 of the Qwen heads + task-text (unused) + continue head + --init
   rm -rf $D/dreamer4; cp -r $CODE $D/dreamer4
-  for P in patch_dreamer4_heads_text_task.py patch_dreamer4_heads_continue.py patch_dreamer4_heads_init.py; do   # continue needs text_task
+  for P in patch_dreamer4_heads_text_task.py patch_dreamer4_heads_continue.py patch_dreamer4_heads_init.py patch_dreamer4_heads_state.py; do   # continue needs text_task
     CUDA_VISIBLE_DEVICES=$GPU docker run --rm --user 1007:100 -v $REPO:/w:ro -v $D:/o --entrypoint python3 $IMG \
       /w/vlm_pipeline/phase4_world_model/$P /o/dreamer4/dreamer4
   done
@@ -100,6 +106,13 @@ else
   HEXTRA="--eval_every $WM_STEPS"; GEXTRA="--eval-every 100 --save-every $GRPO_UPDATES"
 fi
 hpath() { case $1 in $D/*) echo /D/${1#$D/};; *) echo /runs/${1#$B/run/};; esac; }
+STATE_CARRY=${STATE_CARRY:-1}
+chk() {   # chk SUBPATH: the state of iteration i-1 must exist (iteration 0 starts fresh)
+  if [ "$STATE_CARRY" = 1 ] && [ $i -gt 0 ] && [ ! -f $D/it$((i - 1))/$1 ]; then
+    echo "MISSING TRAIN STATE $D/it$((i - 1))/$1 (safe_rl_nlp.md 14.17): not continuing without it" | tee -a $D/loop.log; exit 1
+  fi
+}
+st() { if [ "$STATE_CARRY" = 1 ] && [ $i -gt 0 ]; then echo "$1 /D/it$((i - 1))/$2"; fi; }   # st FLAG SUBPATH
 for i in $(seq $start_it $((ITERS - 1))); do
   I=$D/it$i; mkdir -p $I
   echo "== iteration $i $(date -u) SLM $SLM_RUN/$SLM_CK HEADS $HEADS DYN $DYN TOK ${TOK:-phase1}" | tee -a $D/loop.log
@@ -118,13 +131,15 @@ for i in $(seq $start_it $((ITERS - 1))); do
       /qd/train /D/it$i/replay $(echo $TRAJS | tr , ' ') --share 0.3 --base-episodes $([ $SMOKE = 1 ] && echo 40 || echo $BASE_EPS) \
       --seed $i | tee -a $D/loop.log
     if [ $TOK_FT = 1 ] && [ ! -f $I/tok/dyn_tok.pt ]; then   # 2b tokenizer: encoder + decoder on the played frames
+      chk tok/train_state.pt
       dock tok$i $Q/crafter64/train --entrypoint python3 $IMG /w/repo/vlm_pipeline/phase4_world_model/finetune_d4_tokenizer.py \
-        ${TOK:+--tok $TOK} --dyn $DYN0 --base /qd/train --online $TRAJS --out /D/it$i/tok --steps $TOK_STEPS --anchor $TOK_ANCHOR \
+        ${TOK:+--tok $TOK} --dyn $DYN0 --base /qd/train --online $TRAJS --out /D/it$i/tok --steps $TOK_STEPS $(st --state-in tok/train_state.pt) --total-steps $((ITERS * TOK_STEPS)) --anchor $TOK_ANCHOR \
         --perceptual $TOK_LPIPS --seed $((7950 + i)) > $I/tok.log 2>&1
       grep -E "TOK-FT (before|after)" $I/tok.log | tee -a $D/loop.log
     fi
     if [ $TOK_FT = 1 ]; then DYN=/D/it$i/tok/dyn_tok.pt; TOK=/D/it$i/tok/latest.pt; fi
-    dock heads$i $I/replay -w /code/dreamer4 --entrypoint python3 $IMG -m dreamer4.train.train_heads --dyn $DYN --init $hd \
+    chk heads/checkpoints/train_state.pt
+    dock heads$i $I/replay -w /code/dreamer4 --entrypoint python3 $IMG -m dreamer4.train.train_heads --dyn $DYN --init $hd $(st --state_in heads/checkpoints/train_state.pt) --total_steps $((ITERS * $([ $SMOKE = 1 ] && echo 20 || echo $WM_STEPS))) \
       --out /D/it$i/heads --steps $([ $SMOKE = 1 ] && echo 20 || echo $WM_STEPS) --lr 1e-4 --dyn_lr $DYN_LR --n_tasks 1 \
       --cont_head 1 --seed $((7950 + i)) $HEXTRA > $I/heads.log 2>&1
     grep -E "init|HEADS-EVAL|HEADS-DONE" $I/heads.log | tail -3 | tee -a $D/loop.log
@@ -137,9 +152,10 @@ for i in $(seq $start_it $((ITERS - 1))); do
   if [ -n "$CRITIC_HL" ]; then
     REAL_CRITIC=$CRITIC   # the critic these episodes were played with: V_old of the real advantages
     if [ ! -f $I/critic/critic.pt ]; then
+      chk critic/train_state.pt
       dock critic$i $Q/crafter64/train --entrypoint python3 $IMG /w/repo/vlm_pipeline/phase4_world_model/finetune_slm_critic_real.py \
         --critic $CRITIC --online $TRAJS --game crafter --train /qd/train --val /qd/val --latent-cache /s0/latents \
-        --out /D/it$i/critic --steps $CRIT_STEPS --seed $((7950 + i)) > $I/critic.log 2>&1
+        --out /D/it$i/critic --steps $CRIT_STEPS $(st --state-in critic/train_state.pt) --total-steps $((ITERS * CRIT_STEPS)) --seed $((7950 + i)) > $I/critic.log 2>&1
     fi
     grep -E "CRITIC-FT (before|after)" $I/critic.log | tee -a $D/loop.log
     CRITIC=/D/it$i/critic/critic.pt
@@ -147,9 +163,10 @@ for i in $(seq $start_it $((ITERS - 1))); do
   # 3d the scorer on dreams of real actions (teacher data + all played episodes)
   if [ "$DREAM_HEADS" = 1 ]; then
     if [ ! -f $I/dheads/heads.pt ]; then
+      chk dheads/train_state.pt
       dock dheads$i $Q/crafter64/train --entrypoint python3 $IMG /w/repo/vlm_pipeline/phase4_world_model/train_heads_on_dreams.py \
         --dyn $DYN --heads /D/it$i/heads/checkpoints/latest.pt --critic $CRITIC --game crafter --data /qd/train \
-        --latents /s0/latents/z_train.pt --online $TRAJS --out /D/it$i/dheads --steps $([ $SMOKE = 1 ] && echo 20 || echo $DH_STEPS) \
+        --latents /s0/latents/z_train.pt --online $TRAJS --out /D/it$i/dheads $(st --state-in dheads/train_state.pt) --total-steps $((ITERS * $([ $SMOKE = 1 ] && echo 20 || echo $DH_STEPS))) --steps $([ $SMOKE = 1 ] && echo 20 || echo $DH_STEPS) \
         $([ $SMOKE = 1 ] && echo --eval-batches 2) --seed $((7950 + i)) > $I/dheads.log 2>&1
     fi
     grep -E "DREAM-HEADS (before|after)" $I/dheads.log | tee -a $D/loop.log
@@ -158,10 +175,11 @@ for i in $(seq $start_it $((ITERS - 1))); do
   # 4 policy
   U=$([ $SMOKE = 1 ] && echo 4 || echo $GRPO_UPDATES)
   if [ ! -f $I/grpo/checkpoints/step_$(printf %06d $U).pt ]; then
+    chk grpo/train_state.pt
     dock grpo$i $Q/crafter64/train --entrypoint python3 $IMG /w/repo/vlm_pipeline/phase4_world_model/train_slm_imagine_grpo.py \
       --slm $SLM_RUN/run/checkpoints/$SLM_CK --dyn $DYN $([ $TOK_FT = 1 ] && echo --reencode online) --heads $(hpath $HEADS) --critic $CRITIC \
       --online $TRAJS --online-frac 0.75 --frame-labels /ql --train /qd/train --val /qd/val --latent-cache /s0/latents \
-      --out /D/it$i/grpo --updates $U --starts 32 --group 8 --tail slm --seed $((7950 + i)) $GEXTRA $GRPO_ARGS ${REAL_CRITIC:+--real-critic $REAL_CRITIC} ${GRPO_ARGS:+--ref /s0/run/checkpoints/$CK0} \
+      --out /D/it$i/grpo $(st --state-in grpo/train_state.pt) --updates $U --starts 32 --group 8 --tail slm --seed $((7950 + i)) $GEXTRA $GRPO_ARGS ${REAL_CRITIC:+--real-critic $REAL_CRITIC} ${GRPO_ARGS:+--ref /s0/run/checkpoints/$CK0} \
       2>&1 | grep --line-buffered -v -iE "warn|gym|numpy 2|upgrade to|migration" > $I/grpo.log
   fi
   grep "\[val\]" $I/grpo.log | sed -n '1p;$p' | tee -a $D/loop.log

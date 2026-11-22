@@ -36,6 +36,12 @@
 #              of step 3 and the current critic; GRPO and the next collect score plans with them. DH0_HEADS / DH0_CRITIC: the
 #              Stage-1 dream-trained scorer used from the start. EVAL_EXTRA: extra planner args of the evals.
 #        DREAM_HEADS=0 DH_STEPS=1500 DH0_HEADS="" DH0_CRITIC="" EVAL_EXTRA=""
+#   state      STATE_CARRY=1 (default since 2026-11-22, safe_rl_nlp.md 14.15-17): every trainer of iteration i>0 restores
+#              the training state of the same trainer in iteration i-1 (--state-in .../train_state.pt: AdamW moments and step,
+#              the global step of its lr schedule, the RMS loss normalisers) and its lr schedule runs over ITERS x its steps,
+#              so the 4 iterations are one continuous optimisation per model. Before, every iteration restarted AdamW, the
+#              warmup + cosine and the normalisers. Iteration 0 starts fresh (new phase after Stage 1). A missing state of
+#              iteration i-1 stops the loop (never continue without the full state).
 set -e
 D=$1; GPU=${2:-0}
 ITERS=${ITERS:-4}; SEEDS=${SEEDS:-32}; WM_STEPS=${WM_STEPS:-2000}; GRPO_UPDATES=${GRPO_UPDATES:-200}; SMOKE=${SMOKE:-0}
@@ -56,8 +62,10 @@ mkdir -p $D
 (cd $REPO && git rev-parse --short HEAD) > $D/code_version.txt
 if [ ! -d $D/dreamer4 ]; then
   cp -r $V/dreamer4 $D/dreamer4
-  docker run --rm --user $(id -u):$(id -g) -v $REPO:/w:ro -v $D:/o --entrypoint python3 $IMG \
-    /w/vlm_pipeline/phase4_world_model/patch_dreamer4_heads_init.py /o/dreamer4/dreamer4
+  for P in patch_dreamer4_heads_init.py patch_dreamer4_heads_state.py; do
+    docker run --rm --user $(id -u):$(id -g) -v $REPO:/w:ro -v $D:/o --entrypoint python3 $IMG \
+      /w/vlm_pipeline/phase4_world_model/$P /o/dreamer4/dreamer4
+  done
 fi
 NV=$(cat $M/nvlibs.txt)
 BASE="--gpus \"device=$GPU\" --user $(id -u):$(id -g) -e HOME=/tmp -e PYTHONUNBUFFERED=1 -e TORCH_HOME=/o/torch_home \
@@ -76,6 +84,13 @@ HEADS=$V/heads/checkpoints/latest.pt
 [ -n "$DH0_HEADS" ] && HEADS=$DH0_HEADS            # the Stage-1 heads trained on dreams (host path)
 [ -n "$DH0_CRITIC" ] && CRITIC=$DH0_CRITIC         # and the Stage-1 critic trained on dreams (container path)
 hpath() { case $1 in $D/*) echo /D/${1#$D/};; $M/*) echo /o/${1#$M/};; $V/*) echo /V/${1#$V/};; *) echo $1;; esac; }
+STATE_CARRY=${STATE_CARRY:-1}
+chk() {   # chk SUBPATH: the state of iteration i-1 must exist (iteration 0 starts fresh)
+  if [ "$STATE_CARRY" = 1 ] && [ $i -gt 0 ] && [ ! -f $D/it$((i - 1))/$1 ]; then
+    echo "MISSING TRAIN STATE $D/it$((i - 1))/$1 (safe_rl_nlp.md 14.17): not continuing without it" | tee -a $D/loop.log; exit 1
+  fi
+}
+st() { if [ "$STATE_CARRY" = 1 ] && [ $i -gt 0 ]; then echo "$1 /D/it$((i - 1))/$2"; fi; }   # st FLAG SUBPATH
 start_it=0
 for i in $(seq 0 $((ITERS - 1))); do   # resume: skip finished iterations
   [ -f $D/it$i/DONE ] || break
@@ -114,16 +129,18 @@ for i in $(seq $start_it $((ITERS - 1))); do
     python3 $REPO/vlm_pipeline/phase4_world_model/build_online_d4.py $V/wood2200_native $I/replay $(echo $TRAJS | tr , '\n' | sed "s#^/D#$D#") --share 0.3 | tee -a $D/loop.log
     # 2b tokenizer: encoder + decoder on the played frames (anchored to the phase-1 latents on wood2200)
     if [ $TOK_FT = 1 ] && [ ! -f $I/tok/dyn_tok.pt ]; then
+      chk tok/train_state.pt
       dock tok$i $V/wood2200_native -w /code/dreamer4 -e PYTHONPATH=/code/dreamer4:/d/pylibs --entrypoint python3 $IMG \
         /w/repo/vlm_pipeline/phase4_world_model/finetune_d4_tokenizer.py --tok $TOK --ref $TOK0 --dyn $DYN0 \
-        --base /d/wood2200_d4/train --online $TRAJS --out /D/it$i/tok --steps $TOK_STEPS --anchor $TOK_ANCHOR \
+        --base /d/wood2200_d4/train --online $TRAJS --out /D/it$i/tok --steps $TOK_STEPS $(st --state-in tok/train_state.pt) --total-steps $((ITERS * TOK_STEPS)) --anchor $TOK_ANCHOR \
         --perceptual $TOK_LPIPS --seed $((7950 + i)) > $I/tok.log 2>&1
       grep -E "TOK-FT (before|after)" $I/tok.log | tee -a $D/loop.log
     fi
     if [ $TOK_FT = 1 ]; then DYN=/D/it$i/tok/dyn_tok.pt; TOK=/D/it$i/tok/latest.pt; fi
     # 3 world model
+    chk heads/checkpoints/train_state.pt
     dock heads$i $I/replay -v $M/mirror/c/tok2288:/tok:ro -v $V:/V:ro -w /code/dreamer4 -e PYTHONPATH=/code/dreamer4:/d/pylibs \
-      --entrypoint python3 $IMG -m dreamer4.train.train_heads --dyn $DYN --init $hd --out /D/it$i/heads \
+      --entrypoint python3 $IMG -m dreamer4.train.train_heads --dyn $DYN --init $hd $(st --state_in heads/checkpoints/train_state.pt) --total_steps $((ITERS * $([ $SMOKE = 1 ] && echo 20 || echo $WM_STEPS))) --out /D/it$i/heads \
       --steps $([ $SMOKE = 1 ] && echo 20 || echo $WM_STEPS) --lr 1e-4 --dyn_lr $DYN_LR --n_tasks 4 --gamma 0.99 --text_tokenizer /tok \
       --cont_head 1 --seed $((7950 + i)) $HEXTRA > $I/heads.log 2>&1
     grep -E "HEADS-EVAL|HEADS-DONE" $I/heads.log | tail -2 | tee -a $D/loop.log
@@ -136,10 +153,11 @@ for i in $(seq $start_it $((ITERS - 1))); do
   if [ -n "$CRITIC_HL" ]; then
     REAL_CRITIC=$CRITIC   # the critic these episodes were played with: V_old of the real advantages
     if [ ! -f $I/critic/critic.pt ]; then
+      chk critic/train_state.pt
       dock critic$i $V/wood2200_native -v $G:/g:ro -e PYTHONPATH=/code/dreamer4:/d/pylibs --entrypoint python3 $IMG \
         /w/repo/vlm_pipeline/phase4_world_model/finetune_slm_critic_real.py --critic $CRITIC --online $TRAJS --game wood \
         --raw-data /g/raw --train /g/wood2200_v3 --val /g/wood2200_d4/val --latent-cache /c/latents \
-        --out /D/it$i/critic --steps $CRIT_STEPS --seed $((7950 + i)) > $I/critic.log 2>&1
+        --out /D/it$i/critic --steps $CRIT_STEPS $(st --state-in critic/train_state.pt) --total-steps $((ITERS * CRIT_STEPS)) --seed $((7950 + i)) > $I/critic.log 2>&1
     fi
     grep -E "CRITIC-FT (before|after)" $I/critic.log | tee -a $D/loop.log
     CRITIC=/D/it$i/critic/critic.pt
@@ -147,10 +165,11 @@ for i in $(seq $start_it $((ITERS - 1))); do
   # 3d the scorer on dreams of real actions (teacher data + all played episodes)
   if [ "$DREAM_HEADS" = 1 ]; then
     if [ ! -f $I/dheads/heads.pt ]; then
+      chk dheads/train_state.pt
       dock dheads$i $V/wood2200_native -v $V:/V:ro -e PYTHONPATH=/code/dreamer4:/d/pylibs --entrypoint python3 $IMG \
         /w/repo/vlm_pipeline/phase4_world_model/train_heads_on_dreams.py --dyn $DYN --heads /D/it$i/heads/checkpoints/latest.pt \
         --critic $CRITIC --game wood --data /V/wood2200_native --latents /o/dream_heads/latents_wood2200_native_phase1tok.pt \
-        --online $TRAJS --out /D/it$i/dheads --steps $([ $SMOKE = 1 ] && echo 20 || echo $DH_STEPS) \
+        --online $TRAJS --out /D/it$i/dheads $(st --state-in dheads/train_state.pt) --total-steps $((ITERS * $([ $SMOKE = 1 ] && echo 20 || echo $DH_STEPS))) --steps $([ $SMOKE = 1 ] && echo 20 || echo $DH_STEPS) \
         $([ $SMOKE = 1 ] && echo --eval-batches 2) --seed $((7950 + i)) > $I/dheads.log 2>&1
     fi
     grep -E "DREAM-HEADS (before|after)" $I/dheads.log | tee -a $D/loop.log
@@ -159,11 +178,12 @@ for i in $(seq $start_it $((ITERS - 1))); do
   # 4 policy
   U=$([ $SMOKE = 1 ] && echo 4 || echo $GRPO_UPDATES)
   if [ ! -f $I/grpo/checkpoints/step_$(printf %06d $U).pt ]; then
+    chk grpo/train_state.pt
     dock grpo$i $V/wood2200_native -v $G:/g:ro -e PYTHONPATH=/code/dreamer4:/d/pylibs --entrypoint python3 $IMG \
       /w/repo/vlm_pipeline/phase4_world_model/train_slm_imagine_grpo.py --slm $SLM_RUN/run/checkpoints/$SLM_CK \
       --dyn $DYN $([ $TOK_FT = 1 ] && echo --reencode all) --heads $(hpath $HEADS) --critic $CRITIC --online $TRAJS --online-frac 0.75 \
       --raw-data /g/raw --reasoning /c/reason_wood2200 --train /g/wood2200_v3 --val /g/wood2200_d4/val --latent-cache /c/latents \
-      --out /D/it$i/grpo --updates $U --starts 32 --group 8 --tail slm --seed $((7950 + i)) $GEXTRA $GRPO_ARGS ${REAL_CRITIC:+--real-critic $REAL_CRITIC} ${GRPO_ARGS:+--ref $SLM0_CK} \
+      --out /D/it$i/grpo $(st --state-in grpo/train_state.pt) --updates $U --starts 32 --group 8 --tail slm --seed $((7950 + i)) $GEXTRA $GRPO_ARGS ${REAL_CRITIC:+--real-critic $REAL_CRITIC} ${GRPO_ARGS:+--ref $SLM0_CK} \
       2>&1 | grep --line-buffered -v -iE "warn|gym" > $I/grpo.log
   fi
   grep "\[val\]" $I/grpo.log | sed -n '1p;$p' | tee -a $D/loop.log

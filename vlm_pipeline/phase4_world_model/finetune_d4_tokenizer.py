@@ -57,6 +57,8 @@ def main():
     p.add_argument("--val-frac", type=float, default=0.1)
     p.add_argument("--val-clips", type=int, default=2048)
     p.add_argument("--seed", type=int, default=0)
+    import train_state
+    train_state.add_args(p)
     a = p.parse_args()
     from dreamer4.train.common import LossCombiner
     from dreamer4.train.perceptual import build_perceptual
@@ -143,6 +145,8 @@ def main():
     weights = {"recon": 1.0}; weights.update({n: w for n, _, w in perceptual})
     comb = LossCombiner(weights, normalize=True, decay=0.99, floor_frac=0.2, device=dev)
     opt = torch.optim.AdamW(tok.parameters(), lr=a.lr, betas=(0.9, 0.95), weight_decay=0.01)
+    g0 = train_state.load(a.state_in, opt, extra={"loss_norm": comb}, who="tokenizer")
+    total = a.total_steps or a.steps
     with torch.no_grad():   # Var(z_ref) on base clips, the anchor's scale
         pt = patchify(clips(ba_tr, 512, rng), ps)
         with torch.autocast("cuda", dtype=torch.bfloat16):
@@ -150,7 +154,7 @@ def main():
     n_on = int(round(a.online_frac * a.batch)); n_ba = a.batch - n_on
     tok.train(); t0 = time.time()
     for step in range(1, a.steps + 1):
-        lr = a.lr * min(1.0, step / a.warmup) * 0.5 * (1 + math.cos(math.pi * min(1.0, step / a.steps)))
+        lr = a.lr * train_state.lr_mult(g0 + step, total, a.warmup)
         for g in opt.param_groups:
             g["lr"] = lr
         x = torch.cat([clips(on_tr, n_on, rng), clips(ba_tr, n_ba, rng)])
@@ -185,6 +189,7 @@ def main():
               finetune=dict(args=vars(a), before=before, after=after))
     ck.pop("opt", None); ck.pop("loss_norm", None)
     torch.save(ck, out / "latest.pt")
+    train_state.save(out / "train_state.pt", opt, g0 + a.steps, extra={"loss_norm": comb})
     dk = torch.load(a.dyn, map_location="cpu", weights_only=False)
     dk["config"]["tokenizer"]["ckpt"] = str(out / "latest.pt"); dk["config"]["tokenizer"]["decoder_ckpt"] = ""
     dk["tokenizer_ckpt"] = str(out / "latest.pt")

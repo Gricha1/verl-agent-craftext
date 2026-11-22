@@ -140,6 +140,8 @@ def main():
                    "scores, advantages and plan diversity at every --diag-horizons to this json, no training")
     p.add_argument("--diag-starts", type=int, default=256)
     p.add_argument("--diag-horizons", default="8,16")
+    import train_state
+    train_state.add_args(p)
     a = p.parse_args()
     sys.path.insert(0, f"{a.repo}/vlm_pipeline/phase4_world_model")
     from train_slm_reason_act_d4 import EOS, NAMES, SYSTEM_PLAN, SLMReasonAct, parse_plan
@@ -177,6 +179,7 @@ def main():
     max_tokens = cfg.get("gen_tokens") or 80 + 6 * K
     params = [q for n, q in model.named_parameters() if not n.startswith(("head.", "value_head."))]
     opt = torch.optim.AdamW(params, lr=a.lr, betas=(0.9, 0.95), weight_decay=0.0)
+    g0 = train_state.load(a.state_in, opt, who="grpo")   # the policy optimiser of the previous iteration (constant lr)
     critic = copy.deepcopy(model).eval().requires_grad_(False) if a.tail == "slm" else None
     if critic is not None and a.critic:
         cst = torch.load(a.critic, map_location="cpu", weights_only=False)
@@ -674,6 +677,7 @@ def main():
             res = evaluate(step); log.write(json.dumps(res) + "\n"); log.flush(); print("[val]", json.dumps(res), flush=True)
         if step % a.save_every == 0 or step == a.updates:
             save(step, res)
+    train_state.save(out / "train_state.pt", opt, g0 + a.updates)
     print("GRPO_DONE", flush=True)
 
 

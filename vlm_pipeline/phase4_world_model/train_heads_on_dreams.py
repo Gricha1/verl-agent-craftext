@@ -54,6 +54,8 @@ def main():
     p.add_argument("--value-horizon", type=int, default=300)
     p.add_argument("--eval-batches", type=int, default=24)
     p.add_argument("--seed", type=int, default=0)
+    import train_state
+    train_state.add_args(p)
     a = p.parse_args()
     sys.path.insert(0, f"{a.repo}/vlm_pipeline/phase4_world_model")
     from hl_critic import attach_for
@@ -269,10 +271,12 @@ def main():
     opt = torch.optim.AdamW([{"params": heads.parameters(), "lr": a.lr_heads}, {"params": critic.parameters(), "lr": a.lr_critic}],
                             betas=(0.9, 0.95), weight_decay=0.01)
     base_lr = [g["lr"] for g in opt.param_groups]
+    g0 = train_state.load(a.state_in, opt, who="dream-heads")   # one warmup + one cosine over all loop iterations
+    total = a.total_steps or a.steps
     t0 = time.time(); run = {}
     heads.train(); critic.train()
     for step in range(1, a.steps + 1):
-        f = min(1.0, step / 100) * 0.5 * (1 + math.cos(math.pi * step / a.steps))
+        f = train_state.lr_mult(g0 + step, total, 100)
         for g_, l0 in zip(opt.param_groups, base_lr):
             g_["lr"] = l0 * f
         n_on = int(round(a.online_frac * a.batch)) if onl else 0
@@ -296,6 +300,7 @@ def main():
     after = evaluate(heads, critic); print("DREAM-HEADS after", json.dumps(after), flush=True)
     torch.save(dict(hck, agent=heads.state_dict(), dream_trained=dict(args=vars(a), before=before, after=after)), out / "heads.pt")
     torch.save(dict(cst, model=critic.state_dict(), dream_trained=dict(args=vars(a), before=before, after=after)), out / "critic.pt")
+    train_state.save(out / "train_state.pt", opt, g0 + a.steps)
     (out / "dream_heads.json").write_text(json.dumps(dict(before=before, after=after, args=vars(a), minutes=(time.time() - t0) / 60), indent=1))
     print("DREAM-HEADS-DONE", out, flush=True)
 
