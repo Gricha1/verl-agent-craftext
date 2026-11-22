@@ -200,14 +200,19 @@ class CrafterVisionQwen3ForCausalLM(TransformersForCausalLM, SupportsMultiModal)
             assert intermediate_tensors is not None
             input_ids = None
             inputs_embeds = intermediate_tensors["hidden_states"]
-        elif input_ids is not None and any(torch.any(input_ids.eq(token_id)) for token_id in self.visual_token_ids):
+        elif input_ids is not None and bool(((input_ids >= min(self.visual_token_ids)) & (input_ids <= max(self.visual_token_ids))).any()):
             if pixel_values is None:
                 raise ValueError("Crafter visual marker ids require pixel_values; refusing a text-only rollout")
             inputs_embeds = self.embed_input_ids(input_ids)
             visual = self._visual_embeds(input_ids, pixel_values)
-            for index, token_id in enumerate(self.visual_token_ids):
-                mask = input_ids.eq(token_id)
-                inputs_embeds = inputs_embeds.masked_scatter(mask.unsqueeze(-1), visual[:, index : index + 1, :])
+            ids = list(self.visual_token_ids)
+            if len(ids) > 8 and ids == list(range(ids[0], ids[0] + len(ids))):   # contiguous ids in order: one scatter
+                mask = (input_ids >= ids[0]) & (input_ids <= ids[-1])
+                inputs_embeds = inputs_embeds.masked_scatter(mask.unsqueeze(-1), visual.reshape(-1, visual.shape[-1]))
+            else:
+                for index, token_id in enumerate(self.visual_token_ids):
+                    mask = input_ids.eq(token_id)
+                    inputs_embeds = inputs_embeds.masked_scatter(mask.unsqueeze(-1), visual[:, index : index + 1, :])
             input_ids = None
         elif self.embed_scale is not None and input_ids is not None and inputs_embeds is None:
             inputs_embeds = self.embed_input_ids(input_ids)
