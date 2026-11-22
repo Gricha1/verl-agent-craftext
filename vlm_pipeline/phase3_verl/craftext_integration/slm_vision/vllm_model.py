@@ -174,7 +174,7 @@ class CrafterVisionQwen3ForCausalLM(TransformersForCausalLM, SupportsMultiModal)
         # The HF policy masks them identically, so rollout and actor agree.
         logits = super().compute_logits(hidden_states, *args, **kwargs)
         if logits is not None:
-            logits[..., list(self.visual_token_ids)] = float("-inf")
+            logits[..., list(self.visual_token_ids) + list(getattr(self.config, "crafter_blocked_token_ids", []) or [])] = float("-inf")
         return logits
 
     def _visual_embeds(self, input_ids: torch.Tensor, pixel_values: torch.Tensor) -> torch.Tensor:

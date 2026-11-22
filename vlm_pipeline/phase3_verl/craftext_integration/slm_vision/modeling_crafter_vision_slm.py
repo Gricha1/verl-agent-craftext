@@ -196,7 +196,8 @@ class CrafterVisionQwen3ForCausalLM(_CrafterVisionMixin, Qwen3ForCausalLM):
             # vLLM rollout model does, so a response can never contain a frame slot.
             # -1e4 rather than -inf keeps p * log p (entropy) finite, also after a
             # temperature division; exp(-1e4 - max) is exactly 0 in fp32.
-            marker_ids = torch.tensor(self.crafter_visual_token_ids, device=output.logits.device)
+            marker_ids = torch.tensor(list(self.crafter_visual_token_ids) + list(getattr(self.config, "crafter_blocked_token_ids", []) or []),
+                                      device=output.logits.device)
             output.logits = output.logits.index_fill(-1, marker_ids, -1e4)
         return output
 

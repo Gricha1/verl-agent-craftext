@@ -58,7 +58,10 @@ def main() -> None:
     tokenizer.eos_token_id  # noqa: B018
     eos = tokenizer.convert_ids_to_tokens(2)
     tokenizer.add_special_tokens({"eos_token": eos, "pad_token": tokenizer.convert_ids_to_tokens(0)})
-    if tokenizer.add_special_tokens({"additional_special_tokens": markers}) != len(markers):
+    # veRL's Qwen continuous-token builder requires the ChatML boundary tokens; the SLM never saw them, so they come
+    # after the markers and are blocked in the logits like the markers (config.crafter_blocked_token_ids)
+    chat = ["<|im_start|>", "<|im_end|>"]
+    if tokenizer.add_special_tokens({"additional_special_tokens": markers + chat}) != len(markers) + len(chat):
         raise RuntimeError("Expected only new reserved marker tokens")
     lm = AutoModelForCausalLM.from_pretrained(args.init, dtype=torch.float32)
     lm.resize_token_embeddings(n_text)
@@ -90,6 +93,8 @@ def main() -> None:
     }
     config.crafter_visual_tokens = len(markers)
     config.crafter_visual_token_ids = tokenizer.convert_tokens_to_ids(markers)
+    config.crafter_blocked_token_ids = tokenizer.convert_tokens_to_ids(chat)
+    assert config.crafter_visual_token_ids == list(range(n_text, n_text + len(markers))), "markers must follow the text vocabulary"
     config.crafter_dreamer = dict(n_lat=args.n_lat, d_lat=args.d_lat, window=args.window, readout=readout)
     config.crafter_freeze_front_end = False
     config.crafter_plan = int(st["args"].get("plan") or 0)
