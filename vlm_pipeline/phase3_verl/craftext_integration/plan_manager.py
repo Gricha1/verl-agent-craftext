@@ -221,6 +221,7 @@ class CraftextPlanVectorAgentLoopWorker(CraftextVectorAgentLoopWorker):
         """n plans per lane from vLLM: (prompt_ids, [result]*n) per lane."""
         params = deepcopy(self._sampling_params(validate=False))   # the planner samples n candidates also in validation
         params["max_tokens"] = min(self.per_turn_max_tokens, self.codec.rollout_config.response_length)
+        params["detokenize"] = False   # plans are decoded here; vLLM's frontend detokenizer is a single Python thread
         jobs, keys = [], []
         prompts = {}
         for lane in lanes:

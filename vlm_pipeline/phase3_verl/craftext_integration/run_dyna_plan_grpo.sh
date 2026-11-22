@@ -81,7 +81,7 @@ cd "${REPO_ROOT}"
   actor_rollout_ref.rollout.name=vllm actor_rollout_ref.rollout.mode=async \
   actor_rollout_ref.rollout.tensor_model_parallel_size=1 actor_rollout_ref.rollout.data_parallel_size=1 \
   actor_rollout_ref.rollout.temperature="${TEMPERATURE}" actor_rollout_ref.rollout.top_k="${TOP_K}" actor_rollout_ref.rollout.top_p=1.0 \
-  actor_rollout_ref.rollout.calculate_log_probs=true \
+  actor_rollout_ref.rollout.calculate_log_probs="${CALC_ROLLOUT_LOGPROBS:-false}" \
   actor_rollout_ref.rollout.gpu_memory_utilization="${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.35}" \
   actor_rollout_ref.rollout.max_model_len="${ROLLOUT_MAX_MODEL_LEN:-768}" \
   actor_rollout_ref.rollout.max_num_seqs="${ROLLOUT_MAX_NUM_SEQS:-512}" \

@@ -191,20 +191,27 @@ def logprobs_from_logits_v2(logits: torch.FloatTensor, labels: torch.Tensor) -> 
         This implementation trades compute for memory by iterating over batch
         dimension, making it suitable for large vocabulary sizes.
     """
+    # Blocks of rows, not single rows: with the packed [total_tokens, vocab] logits of the no-remove-padding path a
+    # Python loop over rows is one log_softmax kernel per token (~1M per PPO step, 99% of the actor's time for a small
+    # model; profiled 2026-11-23). Each row is still normalised on its own, so the result is unchanged.
+    block = int(os.environ.get("VERL_LOGPROB_ROW_BLOCK", "8192"))
+    flat_logits = logits.reshape(-1, logits.shape[-1])
+    flat_labels = labels.reshape(-1)
     if logits.dtype in [torch.float32, torch.float64]:
-        logits_labels = torch.gather(logits, dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+        logits_labels = torch.gather(flat_logits, dim=-1, index=flat_labels.unsqueeze(-1)).squeeze(-1)
         # loop to reduce peak mem consumption
-        logsumexp_values = torch.stack([torch.logsumexp(logit, dim=-1) for logit in logits])
+        logsumexp_values = torch.cat(
+            [torch.logsumexp(flat_logits[s : s + block], dim=-1) for s in range(0, flat_logits.shape[0], block)]
+        )
         logprobs_labels = logits_labels - logsumexp_values  # log_softmax(x_i) = x_i - logsumexp(x)
     else:
         # logsumexp approach is unstable with bfloat16, fall back to slightly less efficent approach
         logprobs_labels = []
-        for row_logits, row_labels in zip(logits, labels, strict=True):  # loop to reduce peak mem consumption
-            row_logprobs = F.log_softmax(row_logits, dim=-1)
-            row_logprobs_labels = row_logprobs.gather(dim=-1, index=row_labels.unsqueeze(-1)).squeeze(-1)
-            logprobs_labels.append(row_logprobs_labels)
-        logprobs_labels = torch.stack(logprobs_labels)
-    return logprobs_labels
+        for s in range(0, flat_logits.shape[0], block):  # loop to reduce peak mem consumption
+            row_logprobs = F.log_softmax(flat_logits[s : s + block], dim=-1)
+            logprobs_labels.append(row_logprobs.gather(dim=-1, index=flat_labels[s : s + block].unsqueeze(-1)).squeeze(-1))
+        logprobs_labels = torch.cat(logprobs_labels)
+    return logprobs_labels.view(labels.shape)
 
 
 def clip_by_value(x: torch.Tensor, tensor_min: torch.Tensor, tensor_max: torch.Tensor) -> torch.Tensor:
