@@ -62,9 +62,9 @@ mkdir -p $D
 (cd $REPO && git rev-parse --short HEAD) > $D/code_version.txt
 if [ ! -d $D/dreamer4 ]; then
   cp -r $V/dreamer4 $D/dreamer4
-  for P in patch_dreamer4_heads_init.py patch_dreamer4_heads_state.py; do
+  for PF in patch_dreamer4_heads_init.py patch_dreamer4_heads_state.py; do
     docker run --rm --user $(id -u):$(id -g) -v $REPO:/w:ro -v $D:/o --entrypoint python3 $IMG \
-      /w/vlm_pipeline/phase4_world_model/$P /o/dreamer4/dreamer4
+      /w/vlm_pipeline/phase4_world_model/$PF /o/dreamer4/dreamer4
   done
 fi
 NV=$(cat $M/nvlibs.txt)
