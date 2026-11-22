@@ -144,8 +144,11 @@ def check(args, st, output, tokenizer, markers) -> None:
             worst = max(worst, float((l_ref - l_pol).abs().max()))
             g_ref = ref.generate(Z, pre_t, post_t.expand(B, -1), torch.ones(B, len(post), dtype=torch.long, device=dev),
                                  max_tokens=60)
-            g_pol = pol.generate(input_ids=ids, pixel_values=Z.reshape(B, -1), attention_mask=torch.ones_like(ids),
-                                 max_new_tokens=60, do_sample=False, eos_token_id=2, pad_token_id=0)[:, ids.shape[1]:]
+            cur = ids
+            for _ in range(60):   # plain greedy decoding, full forward each step (5M model)
+                nxt = pol(input_ids=cur, pixel_values=Z.reshape(B, -1)).logits[:, -1, :n_text].argmax(-1, keepdim=True)
+                cur = torch.cat([cur, nxt], 1)
+            g_pol = cur[:, ids.shape[1]:]
             for b in range(B):
                 a = [t for t in g_ref[b].tolist()]; a = a[:a.index(2) + 1] if 2 in a else a
                 c = g_pol[b].tolist(); c = c[:c.index(2) + 1] if 2 in c else c
