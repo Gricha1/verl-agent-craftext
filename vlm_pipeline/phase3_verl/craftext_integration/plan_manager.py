@@ -203,7 +203,8 @@ class CraftextPlanVectorAgentLoopWorker(CraftextVectorAgentLoopWorker):
         self.visual_marker_ids = [int(self.tokenizer.convert_tokens_to_ids(f"<|crafter_visual_{i}|>")) for i in range(n_vis)]
         if any(t is None or t < 0 or t == self.tokenizer.unk_token_id for t in self.visual_marker_ids):
             raise RuntimeError("the Dreamer-latent SLM tokenizer lacks its marker tokens")
-        self._train = None   # persistent training env + dreamer connection + latent windows
+        self.n_chunks = int(cfg.get("n_chunks", 4))
+        self._train = None   # persistent training env + dreamer connections + latent windows
         self.turn_counter = 0
 
     def _make_env(self, num_envs, seed, cap):
@@ -240,15 +241,20 @@ class CraftextPlanVectorAgentLoopWorker(CraftextVectorAgentLoopWorker):
         plan = [x for x in (parse_plan(text) or []) if x is not None]
         return (plan or [0]), bool(plan), text
 
-    async def _turn(self, env, client, windows, lanes, tasks, validate, make_items, uid_of):
-        """One real step of the given lanes; returns (items, per-lane (reward, done, ok), new windows of the lanes)."""
+    async def _turn(self, env, client, windows, lanes, tasks, validate, make_items, uid_of, off=0, timing=None):
+        """One real step of the given lanes (global ids; ``client`` serves lanes off..off+n-1 as 0..n-1); returns (items,
+        per-lane (reward, done, ok, end), actions). ``timing`` accumulates seconds per phase."""
+        import time as _time
+        t0 = _time.time()
         prompts, results = await self._plans(lanes, windows, tasks, validate)
+        t1 = _time.time()
         rows_lane, rows_plan, parsed = [], [], []
         for lane in lanes:
             for res in results[lane]:
                 plan, ok, _ = self._plan_of(res)
-                rows_lane.append(lane); rows_plan.append(plan); parsed.append(ok)
+                rows_lane.append(lane - off); rows_plan.append(plan); parsed.append(ok)
         scores = await asyncio.to_thread(client.score, rows_lane, rows_plan)
+        t2 = _time.time()
         items, acts = [], []
         for j, lane in enumerate(lanes):
             sc = [float(s) for s in scores[j * self.n_plans:(j + 1) * self.n_plans]]
@@ -262,12 +268,23 @@ class CraftextPlanVectorAgentLoopWorker(CraftextVectorAgentLoopWorker):
                     items.append(dict(lane=lane, uid=uid_of(lane), plan=n, prompt_ids=prompts[lane], response_ids=rid,
                                       logprobs=list(res.log_probs) if res.log_probs else None, reward=sc[n],
                                       window=windows[lane], parsed=parsed[j * self.n_plans + n], chosen=float(n == best)))
-        outs = env.step(lanes, acts)
-        new_w = await asyncio.to_thread(client.step, lanes, acts, [env.frames[l] for l in lanes],
+        outs = await asyncio.to_thread(env.step, lanes, acts)
+        t3 = _time.time()
+        new_w = await asyncio.to_thread(client.step, [l - off for l in lanes], acts, [env.frames[l] for l in lanes],
                                         [o[0] for o in outs], [o[3] for o in outs])
         for i, l in enumerate(lanes):
             windows[l] = new_w[i]
+        if timing is not None:
+            for k, v in (("generate", t1 - t0), ("dream_score", t2 - t1), ("env", t3 - t2), ("encode", _time.time() - t3)):
+                timing[k] = timing.get(k, 0.0) + v
         return items, outs, acts
+
+    def _chunks(self, L):
+        """Contiguous lane groups that run as independent coroutines, so vLLM generates for one group while dreamer_service
+        scores another (n_chunks connections to the service, one per group)."""
+        n = max(1, min(self.n_chunks, L))
+        size = (L + n - 1) // n
+        return [list(range(s, min(L, s + size))) for s in range(0, L, size)]
 
     def _output(self, it, prompt, global_steps, extra):
         mask = [1] * len(it["response_ids"])
@@ -294,6 +311,7 @@ class CraftextPlanVectorAgentLoopWorker(CraftextVectorAgentLoopWorker):
         return field, tag
 
     async def _run_vector_batch(self, batch, *, validate: bool) -> None:
+        import time as _time
         prompts = [{k: _value_at(v, lane) for k, v in batch.items()} for lane in range(len(batch))]
         uids = [str(p["uid"]) for p in prompts]
         partition = "val" if validate else "train"
@@ -302,86 +320,116 @@ class CraftextPlanVectorAgentLoopWorker(CraftextVectorAgentLoopWorker):
         L = len(batch)
         gs = int(prompts[0]["global_steps"])
         keys, fields, tags = [], [], []
-        client = None
+        clients = []
+        timing = {}
+        t_start = _time.time()
+
+        async def connect(env, tasks, learn):
+            """One dreamer_service connection per lane group; the service keeps lane state per connection (local ids)."""
+            chunks, windows = [], {}
+            for lanes in self._chunks(L):
+                c = await asyncio.to_thread(DreamerClient, self.dreamer_socket)
+                clients.append(c)
+                w = await asyncio.to_thread(c.first, [env.frames[l] for l in lanes], [tasks[l] for l in lanes], learn)
+                for i, l in enumerate(lanes):
+                    windows[l] = np.asarray(w[i])
+                chunks.append(dict(lanes=lanes, off=lanes[0], client=c))
+            return chunks, windows
+
         try:
             if validate:   # fresh worlds, played to the end with the same planner
                 env = self._make_env(L, self.validation_seed, self.val_max_steps)
-                client = await asyncio.to_thread(DreamerClient, self.dreamer_socket)
                 tasks = env.tasks()
-                w = await asyncio.to_thread(client.first, [env.frames[l] for l in range(L)], tasks)
-                windows = {l: np.asarray(w[l]) for l in range(L)}
-                active = list(range(L)); stats = {}
-                parsed_n = chosen_n = 0
-                turn = 0
-                while active and turn < self.val_max_steps:
-                    items, outs, _ = await self._turn(env, client, windows, active, tasks, True, False, None)
-                    still = []
-                    for l, (r, done, ok, _) in zip(active, outs):
-                        if done:
-                            stats[l] = env.episode_stats(l)
-                        else:
-                            still.append(l)
-                    active = still; turn += 1
-                for l in active:
-                    stats[l] = env.episode_stats(l)
+                chunks, windows = await connect(env, tasks, False)
+                stats, w_last = {}, {}
+
+                async def play(ch):
+                    active, turn = list(ch["lanes"]), 0
+                    while active and turn < self.val_max_steps:
+                        _, outs, _ = await self._turn(env, ch["client"], windows, active, tasks, True, False, None,
+                                                      off=ch["off"], timing=timing)
+                        still = []
+                        for l, (r, done, ok, _) in zip(active, outs):
+                            if done:
+                                stats[l] = env.episode_stats(l)
+                            else:
+                                still.append(l)
+                        active = still; turn += 1
+                    for l in active:
+                        stats[l] = env.episode_stats(l)
+                    w = await asyncio.to_thread(ch["client"].reset, [l - ch["off"] for l in ch["lanes"]],
+                                                [env.frames[l] for l in ch["lanes"]], [tasks[l] for l in ch["lanes"]])
+                    for i, l in enumerate(ch["lanes"]):
+                        w_last[l] = np.asarray(w[i])
+
+                await asyncio.gather(*[play(ch) for ch in chunks])
                 # one item per lane carries its episode (the trainer reads reward_extra_info of validation items)
-                w_last = await asyncio.to_thread(client.reset, list(range(L)), [env.frames[l] for l in range(L)], tasks)
-                prompts_, results = await self._plans(list(range(L)), {l: np.asarray(w_last[l]) for l in range(L)}, tasks, True)
+                prompts_, results = await self._plans(list(range(L)), w_last, tasks, True)
                 for l in range(L):
                     st = stats[l]
                     res = results[l][0]
                     it = dict(uid=uids[l], plan=0, prompt_ids=prompts_[l], response_ids=list(res.token_ids) or [2],
                               logprobs=None, reward=float(st["achievements"] if self.game == "crafter" else st["success"]),
-                              window=np.asarray(w_last[l]), parsed=1.0, chosen=1.0)
+                              window=w_last[l], parsed=1.0, chosen=1.0)
                     extra = {"craftext_episode_final": True, "reward_extra_info": {
                         "craftext_episode_success": st["success"], "craftext_episode_return": st["ret"],
                         "craftext_episode_steps": float(st["steps"]), "craftext_episode_achievements": st["achievements"],
                         "craftext_episode_died": st["died"]}}
                     f, t = self._output(it, prompts[l], gs, extra)
                     keys.append(f"{uids[l]}_0_0"); fields.append(f); tags.append(t)
-                env_closed = True
             else:
                 if self._train is None or self._train["L"] != L:
                     env = self._make_env(L, self.seed, self.episode_cap)
-                    client = await asyncio.to_thread(DreamerClient, self.dreamer_socket)
                     tasks = env.tasks()
-                    w = await asyncio.to_thread(client.first, [env.frames[l] for l in range(L)], tasks, True)
-                    self._train = dict(L=L, env=env, client=client, tasks=tasks, windows={l: np.asarray(w[l]) for l in range(L)},
-                                       finished=[])
+                    chunks, windows = await connect(env, tasks, True)
+                    self._train = dict(L=L, env=env, chunks=chunks, tasks=tasks, windows=windows)
                 tr = self._train
-                env, client, tasks, windows = tr["env"], tr["client"], tr["tasks"], tr["windows"]
+                env, chunks, tasks, windows = tr["env"], tr["chunks"], tr["tasks"], tr["windows"]
                 session = [0] * L
                 last_field = {}   # lane -> index of its newest PPO item (carries a finished episode's figures)
-                for _ in range(self.steps_per_rollout):
-                    make = self.turn_counter % self.train_every == 0
-                    turn = self.turn_counter
-                    items, outs, _ = await self._turn(env, client, windows, list(range(L)), tasks, False, make,
-                                                      lambda lane: f"{uids[lane]}-t{turn}")
-                    for it in items:
-                        f, t = self._output(it, prompts[it["lane"]], gs, {})
-                        keys.append(f"{uids[it['lane']]}_{session[it['lane']]}_0"); session[it["lane"]] += 1
-                        last_field[it["lane"]] = len(fields)
-                        fields.append(f); tags.append(t)
-                    ended = [l for l, (r, done, ok, _) in enumerate(outs) if done]
-                    for l in ended:
-                        st = env.episode_stats(l)
-                        tr["finished"].append(st)
-                        if l in last_field:   # train/success_rate, episode return / length, achievements (metrics.py)
-                            fields[last_field[l]]["extra_fields"].update(
-                                craftext_episode_final=True, craftext_episode_success=st["success"],
-                                craftext_episode_return=st["ret"], craftext_episode_steps=float(st["steps"]),
-                                craftext_episode_achievements=st["achievements"])
-                        env.reset_lane(l)
-                    if ended:
-                        tasks = tr["tasks"] = env.tasks()
-                        w = await asyncio.to_thread(client.reset, ended, [env.frames[l] for l in ended], [tasks[l] for l in ended])
-                        for i, l in enumerate(ended):
-                            windows[l] = np.asarray(w[i])
-                    self.turn_counter += 1
-                tr["finished"] = []
-                info = await asyncio.to_thread(client.update)   # the critic learns from the real returns (if enabled)
+                base = self.turn_counter
+
+                async def roll(ch):
+                    for s in range(self.steps_per_rollout):
+                        turn = base + s
+                        make = turn % self.train_every == 0
+                        items, outs, _ = await self._turn(env, ch["client"], windows, ch["lanes"], tasks, False, make,
+                                                          lambda lane, turn=turn: f"{uids[lane]}-t{turn}",
+                                                          off=ch["off"], timing=timing)
+                        for it in items:
+                            f, t = self._output(it, prompts[it["lane"]], gs, {})
+                            keys.append(f"{uids[it['lane']]}_{session[it['lane']]}_0"); session[it["lane"]] += 1
+                            last_field[it["lane"]] = len(fields)
+                            fields.append(f); tags.append(t)
+                        ended = [l for l, (r, done, ok, _) in zip(ch["lanes"], outs) if done]
+                        for l in ended:
+                            st = env.episode_stats(l)
+                            if l in last_field:   # train/success_rate, episode return / length, achievements (metrics.py)
+                                fields[last_field[l]]["extra_fields"].update(
+                                    craftext_episode_final=True, craftext_episode_success=st["success"],
+                                    craftext_episode_return=st["ret"], craftext_episode_steps=float(st["steps"]),
+                                    craftext_episode_achievements=st["achievements"])
+                            env.reset_lane(l)
+                        if ended:
+                            now = env.tasks()
+                            for l in ended:
+                                tasks[l] = now[l]
+                            w = await asyncio.to_thread(ch["client"].reset, [l - ch["off"] for l in ended],
+                                                        [env.frames[l] for l in ended], [tasks[l] for l in ended])
+                            for i, l in enumerate(ended):
+                                windows[l] = np.asarray(w[i])
+
+                await asyncio.gather(*[roll(ch) for ch in chunks])
+                self.turn_counter = base + self.steps_per_rollout
+                info = await asyncio.to_thread(chunks[0]["client"].update)   # the critic learns from the real returns
                 if info.get("critic_updates") and fields:
                     fields[0]["extra_fields"].update({f"craftext_{k}": float(v) for k, v in info.items()})
+            wall = _time.time() - t_start
+            if fields:   # seconds per phase summed over lane groups; overlap = their sum / wall time
+                fields[0]["extra_fields"].update({f"craftext_time_{k}": float(v) for k, v in timing.items()})
+                fields[0]["extra_fields"]["craftext_time_rollout_wall"] = float(wall)
+            print(json.dumps(dict(plan_rollout=partition, lanes=L, chunks=len(self._chunks(L)), wall=round(wall, 1),
+                                  **{k: round(v, 1) for k, v in timing.items()})), flush=True)
             if not fields:
                 raise RuntimeError("plan rollout produced no PPO items")
             await tq.async_kv_batch_put(keys=keys, fields=list_of_dict_to_tensordict(fields), tags=tags, partition_id=partition)
@@ -392,8 +440,9 @@ class CraftextPlanVectorAgentLoopWorker(CraftextVectorAgentLoopWorker):
                 await tq.async_kv_put(key=uid, partition_id=partition, tag={"status": "failure"})
             raise
         finally:
-            if validate and client is not None:
-                await asyncio.to_thread(client.close)
+            if validate:
+                for c in clients:
+                    await asyncio.to_thread(c.close)
 
 
 class CraftextPlanVectorAgentLoopManager(AgentLoopManagerTQ):

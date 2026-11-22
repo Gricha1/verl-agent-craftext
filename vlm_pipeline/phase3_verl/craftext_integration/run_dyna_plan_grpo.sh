@@ -108,4 +108,4 @@ cd "${REPO_ROOT}"
   +craftext.per_turn_max_tokens="${PER_TURN_MAX_TOKENS}" +craftext.num_envs="${NUM_ENVS}" \
   +craftext.seed="${SEED}" +craftext.validation_seed="${VALIDATION_SEED}" +craftext.visual_tokens=320 \
   +craftext.settings="${SETTINGS:-achievements_wood}" +craftext.teacher_root="${CHECKOUT}/caged_craftext" \
-  +craftext.max_env_steps=1 +craftext.visual_prompt_history=0
+  +craftext.n_chunks="${N_CHUNKS:-4}" +craftext.max_env_steps=1 +craftext.visual_prompt_history=0
