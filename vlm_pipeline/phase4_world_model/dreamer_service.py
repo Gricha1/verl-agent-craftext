@@ -297,9 +297,32 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--socket", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--selftest", action="store_true", help="one fake rollout (random frames, random plans), print the scores")
     a = p.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
-    Service(a).serve()
+    service = Service(a)
+    if a.selftest:
+        class Conn:   # the messages a rollout sends, answers printed
+            def __init__(self):
+                rng = np.random.default_rng(0)
+                fr = lambda n: [rng.integers(0, 255, (63, 63, 3), dtype=np.uint8) for _ in range(n)]
+                plans = [list(rng.integers(0, 17, 16)) for _ in range(6 * 8)]
+                self.q = [("first", fr(6), [service.tasks[0]] * 6), ("step", [0, 1, 2], [5, 5, 1], fr(3)),
+                          ("score", [i // 8 for i in range(48)], plans), ("reset", [4], fr(1), [service.tasks[0]]),
+                          ("score", [4] * 8, plans[:8])]
+            def recv(self):
+                if not self.q:
+                    raise EOFError
+                return self.q.pop(0)
+            def send(self, x):
+                if isinstance(x, Exception):
+                    raise x
+                print("reply", getattr(x, "shape", None), np.round(np.asarray(x).ravel()[:8], 3).tolist(), flush=True)
+        t0 = time.time()
+        service.serve_rollout(Conn())
+        print(json.dumps(dict(selftest="ok", seconds=round(time.time() - t0, 1), **service.stats)), flush=True)
+        return
+    service.serve()
 
 
 if __name__ == "__main__":
