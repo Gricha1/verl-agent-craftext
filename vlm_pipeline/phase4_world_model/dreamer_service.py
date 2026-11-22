@@ -58,6 +58,8 @@ class Service:
         self.heads = build_agent_heads(hck["agent_cfg"]).to(dev).eval()
         self.heads.load_state_dict(hck["agent"])
         self.cont = hasattr(self.heads, "cont")
+        from dreamer4.models.agent_heads import terminal_bins
+        self.term_bin = None if self.cont else terminal_bins(self.heads.reward, world.continues_from_reward, dev)
         man = world.dataset.manifest
         self.critics = []
         for cp in [a.critic] + [x for x in a.extra_critics.split(",") if x]:
@@ -140,9 +142,8 @@ class Service:
                 out_r.append(self.heads.reward.mean(lr_))
                 if self.cont:
                     out_p.append(torch.sigmoid(self.heads.cont(self.flatten_agent_out(hh)).squeeze(-1).float()))
-                else:
-                    from dreamer4.models.agent_heads import terminal_bins
-                    out_p.append((lr_.softmax(-1) * terminal_bins(self.heads.reward, True, dev)).sum(-1))
+                else:   # reward bins that end the episode (no continue head), as eval_slm_d4_env.py
+                    out_p.append((lr_.softmax(-1) * self.term_bin).sum(-1))
             rs.append(torch.cat(out_r)); ps.append(torch.cat(out_p))
         return torch.stack(rs, 1), torch.stack(ps, 1)
 
