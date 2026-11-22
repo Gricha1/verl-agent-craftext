@@ -25,7 +25,8 @@ if [ "$GAME" = crafter ]; then
   DENV="-e D_DYN=/r/dyn/checkpoints/latest.pt -e D_TOK=/q4/tok/checkpoints/latest.pt \
     -e D_HEADS=${D_HEADS:-/runs/dreamer4_heads_qwen_crafter64_reward_a3gpu3_20261119_r1/heads/checkpoints/latest.pt} \
     -e D_CRITIC=${D_CRITIC:-/s0/run/checkpoints/step_060000.pt} -e DREAMER_PYTHONPATH=/cl:/p/pylibs:/code/dreamer4 \
-    -e EPISODE_CAP=${EPISODE_CAP:-1000} -e VAL_MAX_STEPS=${VAL_MAX_STEPS:-1000} \n    -e PER_TURN_MAX_TOKENS=400 -e MAX_RESPONSE_LENGTH=416 -e ROLLOUT_MAX_MODEL_LEN=1024"   # Stage-1 gen_tokens of this SLM: 400
+    -e EPISODE_CAP=${EPISODE_CAP:-1000} -e VAL_MAX_STEPS=${VAL_MAX_STEPS:-1000} \
+    -e PER_TURN_MAX_TOKENS=400 -e MAX_RESPONSE_LENGTH=416 -e ROLLOUT_MAX_MODEL_LEN=1024"   # Stage-1 gen_tokens of this SLM: 400
 else
   echo "wood: not wired yet (Stage-1 wood SLM to materialise; prompts had left padding)" >&2; exit 1
 fi
