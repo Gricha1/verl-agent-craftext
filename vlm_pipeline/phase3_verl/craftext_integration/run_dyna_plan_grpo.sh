@@ -27,7 +27,7 @@ LOGGER_BACKENDS="${LOGGER_BACKENDS:-[console,file]}"
 mkdir -p "${RUN_ROOT}"/{ray,dataset,checkpoints,logs,dreamer}
 export CRAFTEXT_LEGACY_ROOT="${CHECKOUT}" PYTHONUNBUFFERED=1
 export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/craftext_integration/vllm_plugin_site:${PYTHONPATH:-}"
-export RAY_TMPDIR="${RUN_ROOT}/ray" RAY_TEMP_DIR="${RUN_ROOT}/ray" WANDB_MODE=disabled COMET_DISABLE_AUTO_LOGGING=1
+export RAY_TMPDIR=/tmp/ray RAY_TEMP_DIR=/tmp/ray   # short: AF_UNIX socket paths are limited to 107 bytes WANDB_MODE=disabled COMET_DISABLE_AUTO_LOGGING=1
 export VERL_FILE_LOGGER_PATH="${RUN_ROOT}/logs/metrics.jsonl" JAX_PLATFORM_NAME=cpu JAX_PLATFORMS=cpu
 
 # --- the world model on its own GPU ---------------------------------------------------------------------------------
@@ -93,7 +93,7 @@ cd "${REPO_ROOT}"
   "trainer.logger=${LOGGER_BACKENDS}" trainer.project_name=stage2_dyna_verl trainer.experiment_name="$(basename "${RUN_ROOT}")" \
   trainer.default_local_dir="${RUN_ROOT}/checkpoints" \
   +ray_kwargs.ray_init.runtime_env.env_vars.CRAFTEXT_LEGACY_ROOT="${CHECKOUT}" \
-  +ray_kwargs.ray_init._temp_dir="${RUN_ROOT}/ray" \
+  +ray_kwargs.ray_init._temp_dir=/tmp/ray \
   +craftext.game="${GAME}" +craftext.dreamer_socket="${DREAMER_SOCKET}" \
   +craftext.n_plans="${N_PLANS}" +craftext.plan_len="${PLAN_LEN}" +craftext.train_every="${TRAIN_EVERY}" \
   +craftext.steps_per_rollout="${STEPS_PER_ROLLOUT}" +craftext.episode_cap="${EPISODE_CAP}" +craftext.val_max_steps="${VAL_MAX_STEPS}" \
