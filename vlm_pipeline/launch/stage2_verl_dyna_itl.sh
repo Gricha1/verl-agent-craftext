@@ -42,7 +42,7 @@ for v in ACTOR_LR CLIP KL_COEF NORM_ADV_BY_STD NUM_ENVS VAL_ENVS N_PLANS TRAIN_E
          N_CHUNKS ROLLOUT_MAX_NUM_SEQS VLLM_MAX_BATCHED_TOKENS; do
   [ -n "${!v:-}" ] && PASS="$PASS -e $v=${!v}"
 done
-eval docker run -d --rm --name "gorbov_${RUN_NAME:0:60}" --gpus "'\"device=$GPU_ID,$DREAMER_GPU\"'" --shm-size=32g \
+eval docker run -d --rm --name "gorbov_${RUN_NAME:0:60}" --gpus "'\"device=$GPU_ID,$DREAMER_GPU\"'" --shm-size=32g --cap-add SYS_PTRACE \
   --user "$(id -u):$(id -g)" -e HOME=/tmp -e USER=gorbov_gv -e LOGNAME=gorbov_gv -e TORCHINDUCTOR_CACHE_DIR=/tmp/inductor -e TRITON_CACHE_DIR=/tmp/triton -e PYTHONUNBUFFERED=1 -e TORCH_HOME=/tmp/torch -e NUMBA_CACHE_DIR=/tmp/numba \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   -v "$CHECKOUT:/w:ro" -v "$MODEL:/model:ro" -v "$R:$R" $MOUNTS \
