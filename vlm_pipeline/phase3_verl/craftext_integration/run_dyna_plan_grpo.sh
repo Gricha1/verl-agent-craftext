@@ -70,9 +70,9 @@ cd "${REPO_ROOT}"
   actor_rollout_ref.actor.loss_agg_mode="${LOSS_AGG_MODE:-token-mean}" \
   actor_rollout_ref.actor.ppo_mini_batch_size="${PPO_MINI_BATCH_SIZE}" \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu="${PPO_MICRO_BATCH_SIZE}" \
-  actor_rollout_ref.actor.use_dynamic_bsz=true actor_rollout_ref.actor.ppo_max_token_len_per_gpu="${MAX_TOKEN_LEN:-24576}" \
-  actor_rollout_ref.ref.log_prob_use_dynamic_bsz=true actor_rollout_ref.ref.log_prob_max_token_len_per_gpu="${MAX_TOKEN_LEN:-24576}" \
-  actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=true actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu="${MAX_TOKEN_LEN:-24576}" \
+  actor_rollout_ref.actor.use_dynamic_bsz=true actor_rollout_ref.actor.ppo_max_token_len_per_gpu="${MAX_TOKEN_LEN:-131072}" \
+  actor_rollout_ref.ref.log_prob_use_dynamic_bsz=true actor_rollout_ref.ref.log_prob_max_token_len_per_gpu="${MAX_TOKEN_LEN:-131072}" \
+  actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=true actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu="${MAX_TOKEN_LEN:-131072}" \
   actor_rollout_ref.actor.use_kl_loss=true actor_rollout_ref.actor.kl_loss_coef="${KL_COEF}" actor_rollout_ref.actor.kl_loss_type=low_var_kl \
   actor_rollout_ref.actor.calculate_entropy=true actor_rollout_ref.actor.entropy_coeff=0 \
   actor_rollout_ref.actor.use_torch_compile=false actor_rollout_ref.actor.fsdp_config.use_torch_compile=false \
@@ -86,7 +86,7 @@ cd "${REPO_ROOT}"
   actor_rollout_ref.rollout.max_model_len="${ROLLOUT_MAX_MODEL_LEN:-768}" \
   actor_rollout_ref.rollout.max_num_seqs="${ROLLOUT_MAX_NUM_SEQS:-512}" \
   actor_rollout_ref.rollout.max_num_batched_tokens="${VLLM_MAX_BATCHED_TOKENS:-65536}" \
-  actor_rollout_ref.rollout.free_cache_engine=true actor_rollout_ref.rollout.enforce_eager=true \
+  actor_rollout_ref.rollout.free_cache_engine=true actor_rollout_ref.rollout.enforce_eager="${ENFORCE_EAGER:-false}" \
   actor_rollout_ref.rollout.enable_chunked_prefill=true \
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu="${PPO_MICRO_BATCH_SIZE}" \
   actor_rollout_ref.rollout.agent.default_agent_loop=craftext_reasoning \
