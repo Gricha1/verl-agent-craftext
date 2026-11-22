@@ -154,6 +154,19 @@ class _CrafterVisionMixin:
         token_embeddings = self.get_input_embeddings()(input_ids)
         visual_embeddings = self.vision(pixel_values.to(dtype=token_embeddings.dtype))
         visual_embeddings = visual_embeddings.view(pixel_values.shape[0], self.crafter_visual_tokens, -1)
+        ids = torch.tensor(self.crafter_visual_token_ids, device=input_ids.device)
+        if self.crafter_visual_tokens > 8 and bool((ids[1:] == ids[:-1] + 1).all()):
+            # One scatter for all markers (the Dreamer front end has 320; a loop copies the whole embedding tensor 320
+            # times per forward). Valid when every marked row holds the markers once each, in id order, so the row-major
+            # order of the marked positions equals the order of the soft tokens.
+            positions = (input_ids >= ids[0]) & (input_ids <= ids[-1])
+            counts = positions.sum(dim=1)
+            if not (torch.all(counts[marked] == self.crafter_visual_tokens) and torch.all(counts[~marked] == 0)):
+                raise ValueError("Every visual row must contain each reserved Crafter visual id exactly once")
+            order = input_ids[positions].view(-1, self.crafter_visual_tokens) - ids[0]
+            if not torch.equal(order, torch.arange(self.crafter_visual_tokens, device=order.device).expand_as(order)):
+                raise ValueError("Crafter visual ids must appear in id order")
+            return token_embeddings.masked_scatter(positions.unsqueeze(-1), visual_embeddings.to(token_embeddings.dtype))
         for offset, token_id in enumerate(self.crafter_visual_token_ids):
             positions = input_ids.eq(token_id)
             counts = positions.sum(dim=1)
