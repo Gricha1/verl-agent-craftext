@@ -321,7 +321,7 @@ def main() -> None:
                 print("reply", getattr(x, "shape", None), np.round(np.asarray(x).ravel()[:8], 3).tolist(), flush=True)
         t0 = time.time()
         service.serve_rollout(Conn())
-        print(json.dumps(dict(selftest="ok", seconds=round(time.time() - t0, 1), **service.stats)), flush=True)
+        print(json.dumps(dict(selftest="ok", wall=round(time.time() - t0, 1), **service.stats)), flush=True)
         return
     service.serve()
 
