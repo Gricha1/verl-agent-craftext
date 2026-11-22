@@ -65,6 +65,9 @@ cd "${REPO_ROOT}"
   actor_rollout_ref.actor.clip_ratio="${CLIP}" \
   actor_rollout_ref.actor.ppo_mini_batch_size="${PPO_MINI_BATCH_SIZE}" \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu="${PPO_MICRO_BATCH_SIZE}" \
+  actor_rollout_ref.actor.use_dynamic_bsz=true actor_rollout_ref.actor.ppo_max_token_len_per_gpu="${MAX_TOKEN_LEN:-24576}" \
+  actor_rollout_ref.ref.log_prob_use_dynamic_bsz=true actor_rollout_ref.ref.log_prob_max_token_len_per_gpu="${MAX_TOKEN_LEN:-24576}" \
+  actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=true actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu="${MAX_TOKEN_LEN:-24576}" \
   actor_rollout_ref.actor.use_kl_loss=true actor_rollout_ref.actor.kl_loss_coef="${KL_COEF}" actor_rollout_ref.actor.kl_loss_type=low_var_kl \
   actor_rollout_ref.actor.calculate_entropy=true actor_rollout_ref.actor.entropy_coeff=0 \
   actor_rollout_ref.actor.use_torch_compile=false actor_rollout_ref.actor.fsdp_config.use_torch_compile=false \
