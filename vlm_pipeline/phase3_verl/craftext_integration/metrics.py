@@ -50,6 +50,7 @@ def training_metrics(extra_fields: Iterable[Any]) -> dict[str, float]:
         ("craftext_episode_success", "train/success_rate"),
         ("craftext_episode_return", "train/episode_return_mean"),
         ("craftext_episode_steps", "train/episode_length_mean"),
+        ("craftext_episode_achievements", "train/achievements_mean"),
     ):
         value = _mean(row.get(source) for row in final_rows)
         if value is not None:
@@ -68,6 +69,8 @@ def validation_metrics(reward_extra_info: Mapping[str, list[Any]]) -> dict[str, 
         ("craftext_episode_return", "val/mean_episode_return", "mean"),
         ("craftext_episode_return", "val/median_episode_return", "median"),
         ("craftext_episode_steps", "val/episode_length_mean", "mean"),
+        ("craftext_episode_achievements", "val/achievements_mean", "mean"),
+        ("craftext_episode_died", "val/death_rate", "mean"),
         ("craftext_episode_steps", "val/episode_length_median", "median"),
         ("craftext_episode_parse_rate", "val/action_parse_rate", "mean"),
         ("craftext_episode_invalid_rate", "val/invalid_action_rate", "mean"),

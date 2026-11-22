@@ -58,27 +58,7 @@ import torch.nn.functional as F
 
 from train_slm_recon_d4 import OBJECTS, SLMRecon, decode, encode_split, load_split, windows
 
-SYSTEM = ("You play Crafter from the game screen. Think about the best course of action step by step inside "
-          "<reasoning></reasoning>, then give the action inside <action></action>")
-SYSTEM_PLAN = ("You play Crafter from the game screen. Think about the best course of action step by step inside "
-               "<reasoning></reasoning>, then give your next {} actions, comma-separated, inside <plan></plan>")
-NAMES = ("Noop", "Move West", "Move East", "Move North", "Move South", "Do", "Sleep", "Place Stone", "Place Table",
-         "Place Furnace", "Place Plant", "Make Wood Pickaxe", "Make Stone Pickaxe", "Make Iron Pickaxe",
-         "Make Wood Sword", "Make Stone Sword", "Make Iron Sword")   # ZeroHero ACTIONS, the Craftax-Classic order
-EOS = 2
-
-
-def parse_action(text):
-    m = re.search(r"<action>(.*?)</action>", text)
-    return NAMES.index(m.group(1).strip()) if m and m.group(1).strip() in NAMES else None
-
-
-def parse_plan(text):
-    """List of action indices inside <plan></plan> (None for a name that is not an action), or None without the tags."""
-    m = re.search(r"<plan>(.*?)</plan>", text, re.S)
-    if m is None:
-        return None
-    return [NAMES.index(s.strip()) if s.strip() in NAMES else None for s in m.group(1).split(",")]
+from slm_plan_text import EOS, NAMES, SYSTEM, SYSTEM_PLAN, parse_action, parse_plan  # noqa: E402,F401  (one source)
 
 
 class SLMReasonAct(SLMRecon):

@@ -222,18 +222,23 @@ class Service:
                 break
             try:
                 name, *rest = message
-                if name == "first":
-                    frames, tasks = rest
-                    L = len(frames)
+                if name in ("first", "reset"):   # first(frames, tasks): all lanes; reset(lanes, frames, tasks): new episodes
+                    if name == "first":
+                        frames, tasks = rest
+                        L = len(frames); lanes = list(range(L))
+                        frames_hist, z_hist, played, steps, g = [None] * L, [None] * L, [None] * L, [0] * L, [0] * L
+                    else:
+                        lanes, frames, tasks = rest
                     to = lambda f: torch.from_numpy(np.ascontiguousarray(f)).to(dev)
-                    frames_hist = [[to(f)] for f in frames]                                 # real frames so far (up to 4)
+                    for l, f, t in zip(lanes, frames, tasks):
+                        frames_hist[l] = [to(f)]                                             # real frames so far (up to 4)
+                        played[l] = [0, 0, 0]; steps[l] = 0
+                        g[l] = self.tasks.index(t) if t in self.tasks else 0
                     with self.lock:
-                        z0 = encode(list(range(L)))
-                    z_hist = [[z0[l]] * 4 for l in range(L)]
-                    played = [[0, 0, 0] for _ in range(L)]
-                    steps = [0] * L
-                    g = [self.tasks.index(t) if t in self.tasks else 0 for t in tasks]
-                    connection.send(windows(list(range(L))))
+                        z0 = encode(lanes)
+                    for i, l in enumerate(lanes):
+                        z_hist[l] = [z0[i]] * 4
+                    connection.send(windows(lanes))
                 elif name == "step":
                     lanes, actions, frames = rest
                     for l, a_, f in zip(lanes, actions, frames):
