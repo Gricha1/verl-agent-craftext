@@ -198,7 +198,7 @@ class Service:
         frames_hist, z_hist, played, steps, g = None, None, None, None, None
 
         def windows(lanes):
-            return torch.stack([z_hist[l][-4:] for l in lanes]).reshape(len(lanes), -1).float().cpu().numpy()
+            return torch.stack([torch.stack(z_hist[l][-4:]) for l in lanes]).reshape(len(lanes), -1).float().cpu().numpy()
 
         def encode(lanes):
             """Latent of each lane's newest frame, encoded with the frames before it (up to 4, as eval_slm_d4_env.py:
