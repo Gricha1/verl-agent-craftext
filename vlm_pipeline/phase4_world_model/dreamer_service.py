@@ -83,6 +83,7 @@ class Service:
         self.head_task = ({g: i for i, g in enumerate(man["task_names"])} if "task_names" in man else {g: 0 for g in self.tasks})
         self.H = a.horizon
         self.lock = threading.Lock()
+        self._init_critic_learning()
         self.stats = dict(scored=0, seconds=0.0)
         print(json.dumps(dict(loaded=True, tasks=self.tasks, H=self.H, K=a.K, critics=len(self.critics), cont=self.cont)), flush=True)
 
@@ -193,10 +194,97 @@ class Service:
             sc = scm.mean(1) - a.pessimism * scm.std(1)
         return sc
 
+    # ---------------- the critic learns from the real returns (optional) ----------------
+    def _init_critic_learning(self):
+        """--critic-ft-steps > 0: the first critic is finetuned on the G^lambda(0.99, 0.95) returns of the planner's real
+        training episodes (finetune_slm_critic_real.py, now inside the run): AdamW kept for the whole run, constant lr, a
+        replay of the latest real windows, and --critic-anchor x a distillation to the Stage-1 critic. Everything that makes
+        the learner (weights, AdamW, step, replay) is saved to <out>/critic_online.pt after every update and restored at
+        start (safe_rl_nlp.md 14.15-17)."""
+        torch, a = self.torch, self.a
+        self.learn = a.critic_ft_steps > 0
+        if not self.learn:
+            return
+        import copy
+        cr = self.critics[0]
+        self.hl = hasattr(cr.value_head, "logits")
+        self.anchor_net = copy.deepcopy(cr).eval().requires_grad_(False)
+        cr.requires_grad_(False)
+        params = [p_ for n_, p_ in cr.named_parameters() if not n_.startswith(("lm_head", "head."))]
+        for p_ in params:
+            p_.requires_grad_(True)
+        self.c_opt = torch.optim.AdamW(params, lr=a.critic_lr, betas=(0.9, 0.95), weight_decay=0.01)
+        self.c_step = 0
+        self.replay = []            # (windows fp16 [n, 4, 64, 16], G [n], task id) per finished real episode
+        self.c_path = a.out / "critic_online.pt"
+        if self.c_path.exists():
+            st = torch.load(self.c_path, map_location="cpu", weights_only=False)
+            cr.load_state_dict(st["model"]); self.c_opt.load_state_dict(st["opt"]); self.c_step = st["step"]
+            self.replay = [(w.to(self.dev), G.to(self.dev), gi) for w, G, gi in st["replay"]]
+            print(json.dumps(dict(critic_resumed=str(self.c_path), step=self.c_step, episodes=len(self.replay))), flush=True)
+        cr.eval()
+
+    def _critic_out(self, net, Z, gi):
+        emb, mask, _ = net.prefix(Z, self.pre, self.post_ids[gi], self.post_mask[gi])
+        h = net.backbone(inputs_embeds=emb, attention_mask=mask).last_hidden_state[:, -1]
+        return net.value_head.logits(h) if self.hl else net.value_head(h).squeeze(-1).float()
+
+    def _critic_mean(self, out):
+        return self.critics[0].value_head.mean(out) if self.hl else out.float()
+
+    def finish_episode(self, wins, rewards, end, gi):
+        """wins [n+1, 4, 64, 16]: the windows of the n played states and of the state after the last action; rewards [n];
+        end: terminal (a death; 0), success (wood task done; 1) or truncated (bootstrap with V of the last window)."""
+        torch, a = self.torch, self.a
+        with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+            v = self._critic_mean(self._critic_out(self.critics[0], wins, torch.full((len(wins),), gi, device=self.dev))).float()
+        v_end = float(v[-1]) if end == "truncated" else (1.0 if end == "success" else 0.0)
+        n = len(rewards)
+        r = torch.as_tensor(rewards, dtype=torch.float32)
+        vv = v.cpu()
+        G = torch.empty(n)
+        nxt = v_end                                   # G^lambda of the state after the last action
+        for t in range(n - 1, -1, -1):                # G_t = r_t + gamma ((1 - lam) V_{t+1} + lam G_{t+1})
+            v_next = v_end if t == n - 1 else float(vv[t + 1])
+            G[t] = r[t] + a.gamma * ((1 - 0.95) * v_next + 0.95 * nxt)
+            nxt = float(G[t])
+        self.replay.append((wins[:-1].half(), G.to(self.dev), gi))
+        while sum(len(w) for w, _, _ in self.replay) > a.critic_buffer:
+            self.replay.pop(0)
+
+    def update_critic(self):
+        torch, a, F = self.torch, self.a, self.F
+        if not self.learn or not self.replay:
+            return dict(critic_updates=0)
+        cr = self.critics[0]
+        W = torch.cat([w for w, _, _ in self.replay]); G = torch.cat([g_ for _, g_, _ in self.replay])
+        gi = torch.cat([torch.full((len(w),), t, device=self.dev, dtype=torch.long) for w, _, t in self.replay])
+        cr.train(); tot = 0.0
+        for _ in range(a.critic_ft_steps):
+            idx = torch.randint(0, len(W), (a.critic_batch,), device=self.dev)
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                out = self._critic_out(cr, W[idx].float(), gi[idx])
+                loss = cr.value_head.loss(out, G[idx]) if self.hl else F.mse_loss(out.float(), G[idx].float())
+                if a.critic_anchor > 0:   # stay near the Stage-1 critic: distil its value on the same windows
+                    with torch.no_grad():
+                        ref = self._critic_mean(self._critic_out(self.anchor_net, W[idx].float(), gi[idx])).float()
+                    loss = loss + a.critic_anchor * (cr.value_head.loss(out, ref) if self.hl else F.mse_loss(out.float(), ref))
+            self.c_opt.zero_grad(set_to_none=True); loss.backward()
+            torch.nn.utils.clip_grad_norm_([p_ for p_ in cr.parameters() if p_.requires_grad], 1.0)
+            self.c_opt.step(); tot += float(loss); self.c_step += 1
+        cr.eval()
+        torch.save(dict(model=cr.state_dict(), opt=self.c_opt.state_dict(), step=self.c_step,
+                        replay=[(w.cpu(), g_.cpu(), t) for w, g_, t in self.replay]), self.c_path)
+        info = dict(critic_updates=a.critic_ft_steps, critic_step=self.c_step, critic_loss=tot / a.critic_ft_steps,
+                    replay_windows=int(len(W)), replay_episodes=len(self.replay))
+        print(json.dumps(info), flush=True)
+        return info
+
     # ---------------- one rollout ----------------
     def serve_rollout(self, connection) -> None:
         torch, dev = self.torch, self.dev
         frames_hist, z_hist, played, steps, g = None, None, None, None, None
+        learn, ep_w, ep_r = False, None, None   # learn: a training rollout records its episodes for the critic
 
         def windows(lanes):
             return torch.stack([torch.stack(z_hist[l][-4:]) for l in lanes]).reshape(len(lanes), -1).float().cpu().numpy()
@@ -225,9 +313,11 @@ class Service:
                 name, *rest = message
                 if name in ("first", "reset"):   # first(frames, tasks): all lanes; reset(lanes, frames, tasks): new episodes
                     if name == "first":
-                        frames, tasks = rest
+                        frames, tasks = rest[:2]
+                        learn = bool(rest[2]) if len(rest) > 2 else False
                         L = len(frames); lanes = list(range(L))
                         frames_hist, z_hist, played, steps, g = [None] * L, [None] * L, [None] * L, [0] * L, [0] * L
+                        ep_w, ep_r = [[] for _ in range(L)], [[] for _ in range(L)]
                     else:
                         lanes, frames, tasks = rest
                     to = lambda f: torch.from_numpy(np.ascontiguousarray(f)).to(dev)
@@ -239,9 +329,12 @@ class Service:
                         z0 = encode(lanes)
                     for i, l in enumerate(lanes):
                         z_hist[l] = [z0[i]] * 4
+                        ep_w[l], ep_r[l] = [torch.stack(z_hist[l][-4:])], []
                     connection.send(windows(lanes))
-                elif name == "step":
-                    lanes, actions, frames = rest
+                elif name == "step":   # step(lanes, actions, frames[, rewards, ends]); ends: "" | terminal | success | truncated
+                    lanes, actions, frames = rest[:3]
+                    rewards = rest[3] if len(rest) > 3 else [0.0] * len(lanes)
+                    ends = rest[4] if len(rest) > 4 else [""] * len(lanes)
                     for l, a_, f in zip(lanes, actions, frames):
                         frames_hist[l] = frames_hist[l][-3:] + [torch.from_numpy(np.ascontiguousarray(f)).to(dev)]
                         played[l] = played[l][-2:] + [int(a_)]
@@ -250,7 +343,16 @@ class Service:
                         zn = encode(lanes)
                     for i, l in enumerate(lanes):
                         z_hist[l] = z_hist[l][-3:] + [zn[i]]
+                        if learn and self.learn:
+                            ep_w[l].append(torch.stack(z_hist[l][-4:])); ep_r[l].append(float(rewards[i]))
+                            if ends[i] and len(ep_r[l]) >= 2:
+                                with self.lock:
+                                    self.finish_episode(torch.stack(ep_w[l]), ep_r[l], ends[i], g[l])
                     connection.send(windows(lanes))
+                elif name == "update":   # after a training rollout: critic steps on the replay of real episodes
+                    with self.lock:
+                        info = self.update_critic()
+                    connection.send(info)
                 elif name == "score":
                     lanes, plans = rest
                     t0 = time.time()
@@ -298,6 +400,12 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--socket", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--critic-ft-steps", type=int, default=0, help="critic gradient steps per training rollout on the real "
+                   "G^lambda returns (0: frozen critic)")
+    p.add_argument("--critic-lr", type=float, default=1e-5)
+    p.add_argument("--critic-batch", type=int, default=64)
+    p.add_argument("--critic-anchor", type=float, default=0.25, help="weight of the distillation to the Stage-1 critic")
+    p.add_argument("--critic-buffer", type=int, default=20000, help="real windows kept for the critic")
     p.add_argument("--selftest", action="store_true", help="one fake rollout (random frames, random plans), print the scores")
     a = p.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)

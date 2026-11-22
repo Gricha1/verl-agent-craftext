@@ -38,6 +38,7 @@ CUDA_VISIBLE_DEVICES="${DREAMER_GPU}" PYTHONPATH="${DREAMER_PYTHONPATH:-}:${PYTH
   --critic "${D_CRITIC}" ${D_TEXT_TOKENIZER:+--text-tokenizer ${D_TEXT_TOKENIZER}} ${D_INIT:+--init ${D_INIT}} \
   ${D_EXTRA_CRITICS:+--extra-critics ${D_EXTRA_CRITICS}} --critic-pessimism "${D_CRITIC_PESSIMISM:-0}" \
   --horizon "${D_HORIZON}" --K "${D_K}" --dream-samples "${D_SAMPLES}" --pessimism "${D_PESSIMISM}" \
+  --critic-ft-steps "${D_CRITIC_FT_STEPS:-0}" --critic-lr "${D_CRITIC_LR:-1e-5}" --critic-anchor "${D_CRITIC_ANCHOR:-0.25}" \
   --socket "${DREAMER_SOCKET}" --out "${RUN_ROOT}/dreamer" > "${RUN_ROOT}/dreamer/service.log" 2>&1 &
 DREAMER_PID=$!
 trap 'kill "${DREAMER_PID}" 2>/dev/null || true' EXIT
@@ -64,6 +65,9 @@ cd "${REPO_ROOT}"
   actor_rollout_ref.model.use_remove_padding=false \
   actor_rollout_ref.actor.optim.lr="${ACTOR_LR}" \
   actor_rollout_ref.actor.clip_ratio="${CLIP}" \
+  actor_rollout_ref.actor.clip_ratio_low="${CLIP}" actor_rollout_ref.actor.clip_ratio_high="${CLIP}" \
+  actor_rollout_ref.actor.policy_loss.loss_mode="${POLICY_LOSS:-vanilla}" \
+  actor_rollout_ref.actor.loss_agg_mode="${LOSS_AGG_MODE:-token-mean}" \
   actor_rollout_ref.actor.ppo_mini_batch_size="${PPO_MINI_BATCH_SIZE}" \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu="${PPO_MICRO_BATCH_SIZE}" \
   actor_rollout_ref.actor.use_dynamic_bsz=true actor_rollout_ref.actor.ppo_max_token_len_per_gpu="${MAX_TOKEN_LEN:-24576}" \

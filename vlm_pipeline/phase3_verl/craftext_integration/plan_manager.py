@@ -58,14 +58,18 @@ class DreamerClient:
             raise RuntimeError("dreamer_service failed") from reply
         return reply
 
-    def first(self, frames, tasks):
-        return self._call("first", list(frames), list(tasks))
+    def first(self, frames, tasks, learn=False):
+        return self._call("first", list(frames), list(tasks), bool(learn))
 
     def reset(self, lanes, frames, tasks):
         return self._call("reset", list(lanes), list(frames), list(tasks))
 
-    def step(self, lanes, actions, frames):
-        return self._call("step", list(lanes), [int(a) for a in actions], list(frames))
+    def step(self, lanes, actions, frames, rewards=None, ends=None):
+        return self._call("step", list(lanes), [int(a) for a in actions], list(frames),
+                          [float(r) for r in (rewards or [0.0] * len(lanes))], list(ends or [""] * len(lanes)))
+
+    def update(self):
+        return self._call("update")
 
     def score(self, lanes, plans):
         return self._call("score", list(lanes), [list(p) for p in plans])
@@ -106,7 +110,8 @@ class CrafterVectorEnv:
             self.unlocked[lane] |= {k for k, v in info["achievements"].items() if v > 0}
             died = bool(d) and info["inventory"]["health"] <= 0
             self.died[lane] |= died
-            out.append((float(r), bool(d) or self.steps[lane] >= self.cap, False))
+            cap = self.steps[lane] >= self.cap
+            out.append((float(r), bool(d) or cap, False, "terminal" if d else ("truncated" if cap else "")))
         return out
 
     def episode_stats(self, lane):
@@ -169,7 +174,9 @@ class CraftaxWoodVectorEnv:
             self.keys[l] = keys[i]; self.states[l] = jax.tree_util.tree_map(lambda x: x[i], sts)
             self.frames[l] = np.round(obs[i] * 255).astype(np.uint8)
             self.steps[l] += 1; self.ret[l] += float(r[i]); self.success[l] |= bool(ok[i])
-            out.append((float(r[i]), bool(done[i]) or self.steps[l] >= self.cap, bool(ok[i])))
+            cap = self.steps[l] >= self.cap
+            end = ("success" if ok[i] else "terminal") if done[i] else ("truncated" if cap else "")
+            out.append((float(r[i]), bool(done[i]) or cap, bool(ok[i]), end))
         return out
 
     def episode_stats(self, lane):
@@ -256,7 +263,8 @@ class CraftextPlanVectorAgentLoopWorker(CraftextVectorAgentLoopWorker):
                                       logprobs=list(res.log_probs) if res.log_probs else None, reward=sc[n],
                                       window=windows[lane], parsed=parsed[j * self.n_plans + n], chosen=float(n == best)))
         outs = env.step(lanes, acts)
-        new_w = await asyncio.to_thread(client.step, lanes, acts, [env.frames[l] for l in lanes])
+        new_w = await asyncio.to_thread(client.step, lanes, acts, [env.frames[l] for l in lanes],
+                                        [o[0] for o in outs], [o[3] for o in outs])
         for i, l in enumerate(lanes):
             windows[l] = new_w[i]
         return items, outs, acts
@@ -308,7 +316,7 @@ class CraftextPlanVectorAgentLoopWorker(CraftextVectorAgentLoopWorker):
                 while active and turn < self.val_max_steps:
                     items, outs, _ = await self._turn(env, client, windows, active, tasks, True, False, None)
                     still = []
-                    for l, (r, done, ok) in zip(active, outs):
+                    for l, (r, done, ok, _) in zip(active, outs):
                         if done:
                             stats[l] = env.episode_stats(l)
                         else:
@@ -337,7 +345,7 @@ class CraftextPlanVectorAgentLoopWorker(CraftextVectorAgentLoopWorker):
                     env = self._make_env(L, self.seed, self.episode_cap)
                     client = await asyncio.to_thread(DreamerClient, self.dreamer_socket)
                     tasks = env.tasks()
-                    w = await asyncio.to_thread(client.first, [env.frames[l] for l in range(L)], tasks)
+                    w = await asyncio.to_thread(client.first, [env.frames[l] for l in range(L)], tasks, True)
                     self._train = dict(L=L, env=env, client=client, tasks=tasks, windows={l: np.asarray(w[l]) for l in range(L)},
                                        finished=[])
                 tr = self._train
@@ -354,7 +362,7 @@ class CraftextPlanVectorAgentLoopWorker(CraftextVectorAgentLoopWorker):
                         keys.append(f"{uids[it['lane']]}_{session[it['lane']]}_0"); session[it["lane"]] += 1
                         last_field[it["lane"]] = len(fields)
                         fields.append(f); tags.append(t)
-                    ended = [l for l, (r, done, ok) in enumerate(outs) if done]
+                    ended = [l for l, (r, done, ok, _) in enumerate(outs) if done]
                     for l in ended:
                         st = env.episode_stats(l)
                         tr["finished"].append(st)
@@ -371,6 +379,9 @@ class CraftextPlanVectorAgentLoopWorker(CraftextVectorAgentLoopWorker):
                             windows[l] = np.asarray(w[i])
                     self.turn_counter += 1
                 tr["finished"] = []
+                info = await asyncio.to_thread(client.update)   # the critic learns from the real returns (if enabled)
+                if info.get("critic_updates") and fields:
+                    fields[0]["extra_fields"].update({f"craftext_{k}": float(v) for k, v in info.items()})
             if not fields:
                 raise RuntimeError("plan rollout produced no PPO items")
             await tq.async_kv_batch_put(keys=keys, fields=list_of_dict_to_tensordict(fields), tags=tags, partition_id=partition)
