@@ -56,9 +56,36 @@ class LatentAdapters(nn.Module):
         return torch.cat((self.h_prefix(h), self.z_prefix(z)), dim=-1)
 
 
+class DreamerLatentFrontEnd(nn.Module):
+    """Phase 4 SLM over Dreamer 4 latents (train_slm_reason_act_d4.SLMReasonAct.prefix): a window of ``window`` frames,
+    each ``n_lat`` latents of ``d_lat`` numbers, becomes ``window * n_lat`` soft tokens ``adapter(z) + slot + index``,
+    followed by ``readout`` learned readout tokens. ``pixel_values`` is ``[B, window * n_lat * d_lat]``. Parameter names
+    and shapes are those of SLMReasonAct, so its weights load one to one (materialize_d4_checkpoint.py)."""
+
+    def __init__(self, n_lat: int, d_lat: int, window: int, readout: int, width: int):
+        super().__init__()
+        self.n_lat, self.d_lat, self.w, self.R = n_lat, d_lat, window, readout
+        self.adapter = nn.Sequential(nn.Linear(d_lat, width), nn.GELU(), nn.Linear(width, width))
+        self.slot = nn.Parameter(torch.zeros(window, 1, width))
+        self.index = nn.Parameter(torch.zeros(1, n_lat, width))
+        self.readout = nn.Parameter(torch.zeros(readout, width))
+
+    def forward(self, latents: torch.Tensor) -> torch.Tensor:
+        B = latents.shape[0]
+        z = latents.view(B, self.w, self.n_lat, self.d_lat)
+        e = self.adapter(z) + self.slot + self.index                      # [B, w, n_lat, width]
+        e = torch.cat([e.reshape(B, -1, e.shape[-1]), self.readout.to(e.dtype).expand(B, -1, -1)], 1)
+        return e.reshape(B, -1)
+
+
 def build_front_end(config) -> nn.Module:
-    """What turns one observation into the soft tokens: the CE CNN, or the adapters of ``config.crafter_rssm``."""
+    """What turns one observation into the soft tokens: the CE CNN, the adapters of ``config.crafter_rssm``, or the
+    Dreamer 4 latent window of ``config.crafter_dreamer``."""
     width = int(config.hidden_size)
+    dreamer = getattr(config, "crafter_dreamer", None)
+    if dreamer:
+        return DreamerLatentFrontEnd(int(dreamer["n_lat"]), int(dreamer["d_lat"]), int(dreamer["window"]),
+                                     int(dreamer["readout"]), width)
     rssm = getattr(config, "crafter_rssm", None)
     if rssm:
         return LatentAdapters(int(rssm["h_size"]), int(rssm["z_size"]), int(rssm["h_tokens"]), int(rssm["z_tokens"]), width)
@@ -72,6 +99,9 @@ def build_front_end(config) -> nn.Module:
 
 def front_end_input(config) -> tuple:
     """Shape of one observation at ``pixel_values``."""
+    dreamer = getattr(config, "crafter_dreamer", None)
+    if dreamer:
+        return (int(dreamer["window"]) * int(dreamer["n_lat"]) * int(dreamer["d_lat"]),)
     rssm = getattr(config, "crafter_rssm", None)
     return (int(rssm["h_size"]) + int(rssm["z_size"]),) if rssm else (3, 63, 63)
 
