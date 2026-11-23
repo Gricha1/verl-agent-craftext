@@ -33,6 +33,8 @@ of build_qwen_slm_labels.py (the teacher Qwen's own <reasoning>, its memory drop
 instruction success, so the value is the return of the native Crafter reward, G_t = sum_k gamma^k r_{t+k}, trained where the
 episode ended in a death or at least --value-horizon steps remain before the collection cut it. Targets longer than
 --max-target tokens are left unlabelled (reconstruction and value only).
+--value-gae-lambda enables a finite-window GAE return for joint Crafter BC training. Bootstrap values come from the
+current SLM before the optimizer update, without gradients. Validation value MSE retains the original return target.
 
 Reasoning labels: rows of the phase-2 reasoning data dir of wood2200 (Gemma-4, label_reasoning.py --context;
 reason_wood2200_h200_20261106/data/{train,valid}.jsonl), cot_target "<reasoning>R</reasoning>\nACTION: X".
@@ -149,6 +151,8 @@ def main():
     p.add_argument("--generate-samples", type=int, default=512)
     p.add_argument("--lpips-weight", type=float, default=0.2)
     p.add_argument("--value-gamma", type=float, default=0.99)
+    p.add_argument("--value-gae-lambda", type=float, default=None)
+    p.add_argument("--value-gae-horizon", type=int, default=32)
     p.add_argument("--seed", type=int, default=7950)
     p.add_argument("--latent-cache", default="")
     p.add_argument("--plan", type=int, default=0, help="K > 0: target <plan> with the teacher's next K actions instead of <action>")
@@ -162,6 +166,11 @@ def main():
                    "with an HL-Gauss value head, trained on the value targets only (cross-entropy), as the ZeroHero critic")
     p.add_argument("--dreamer-h", default="", help="dir with h_train.pt / h_val.pt (cache_dreamer_h.py): Dreamer 4 h_t tokens")
     a = p.parse_args()
+    if a.value_gae_lambda is not None:
+        if not 0 <= a.value_gae_lambda <= 1 or not 1 <= a.value_gae_horizon <= a.value_horizon:
+            p.error("GAE requires lambda in [0, 1] and a horizon within the valid reward window")
+        if not a.frame_labels or a.from_run or a.critic_from:
+            p.error("GAE requires joint training from scratch with Crafter --frame-labels")
     sys.path.insert(0, f"{a.repo}/vlm_pipeline/phase4_world_model")
     from imagine_eval import classify_tiles, tile_prototypes
     from train_slm_world_model import ACTIONS, add_value_targets, load_episodes
@@ -457,6 +466,41 @@ def main():
         return
     if a.from_run:
         res = evaluate(0); log.write(json.dumps(res) + "\n"); log.flush(); print("[val]", json.dumps(res)[:1500], flush=True)
+    if a.value_gae_lambda is not None:
+        horizon = a.value_gae_horizon
+        lam = a.value_gae_lambda
+        gamma = a.value_gamma
+        root = Path(a.train)
+        manifest = json.loads((root / "manifest.json").read_text())
+        lengths = torch.as_tensor(manifest["lengths"], device=device)
+        last_frame = (lengths.cumsum(0) - 1).repeat_interleave(lengths, output_size=len(zt))
+        rewards = torch.as_tensor(np.load(root / "rewards.npy"), device=device, dtype=torch.float32)
+        offsets = torch.arange(horizon, device=device)
+        discounts = (gamma * lam) ** offsets
+        value_weights = gamma * discounts * (1 - lam)
+        value_weights[-1] = gamma * discounts[-1]
+        print(f"Joint GAE gamma={gamma} lambda={lam} horizon={horizon}", flush=True)
+
+    @torch.no_grad()
+    def gae_target(idx):
+        steps = idx[:, None] + offsets
+        ends = last_frame[idx, None]
+        transition = steps < ends
+        r = rewards[steps.clamp_max(len(rewards) - 1)].masked_fill(~transition, 0)
+        bootstrap = steps + 1 < ends
+        states, inverse = torch.unique(steps[bootstrap] + 1, return_inverse=True)
+        v = torch.zeros_like(r)
+        if states.numel():
+            values = []
+            for chunk in states.split(128):
+                with torch.autocast("cuda", dtype=torch.bfloat16):
+                    emb, mask, _ = model.prefix(windows(zt, ft, chunk), pre,
+                                                post_ids[gt[chunk]], post_mask[gt[chunk]], Hd=HD(hT, chunk))
+                    h = model.backbone(inputs_embeds=emb, attention_mask=mask).last_hidden_state
+                    values.append(model.value_head(h[:, -1]).squeeze(-1).float())
+            v[bootstrap] = torch.cat(values)[inverse]
+        return (r * discounts + v * value_weights).sum(dim=1)
+
     ema = {}
     step, t0 = 0, time.time()
     run = {k: 0.0 for k in ("rec", "text", "val")}
@@ -476,9 +520,10 @@ def main():
                 xh = decode(tok, zhat).float()
             lm_mask = (tm.bool() & Ht[idx].bool()[:, None]).float()
             ce = F.cross_entropy(logits.transpose(1, 2), tg, reduction="none")
+            target = vt[idx] if a.value_gae_lambda is None else gae_target(idx)
             terms = dict(rec=F.mse_loss(xh, x) + a.lpips_weight * lpips(xh, x),
                          text=(ce * lm_mask).sum() / lm_mask.sum().clamp_min(1),
-                         val=((value - vt[idx]) ** 2 * mt[idx]).sum() / mt[idx].sum().clamp_min(1))
+                         val=((value - target) ** 2 * mt[idx]).sum() / mt[idx].sum().clamp_min(1))
             loss = 0.0
             for k, v in terms.items():
                 ema[k] = v.item() if k not in ema else .99 * ema[k] + .01 * v.item()
