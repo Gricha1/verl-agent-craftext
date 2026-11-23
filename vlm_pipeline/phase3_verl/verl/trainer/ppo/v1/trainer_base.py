@@ -1033,6 +1033,15 @@ class PPOTrainer(ABC):
                 async_save=True,
             )
             return
+        craftext = self.config.get("craftext", {})
+        if craftext.get("dreamer_world_ft_steps", 0):
+            from multiprocessing.connection import Client
+
+            with Client(craftext.dreamer_socket, family="AF_UNIX", authkey=b"dreamer") as conn:
+                conn.send(("checkpoint", local_global_step_folder, self.global_steps))
+                result = conn.recv()
+            if result is not True:
+                raise RuntimeError("Saving the online Dreamer checkpoint failed") from result
         local_latest_checkpointed_iteration = os.path.join(
             self.config.trainer.default_local_dir, "latest_checkpointed_iteration.txt"
         )

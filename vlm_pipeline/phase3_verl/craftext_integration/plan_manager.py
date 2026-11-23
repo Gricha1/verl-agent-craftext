@@ -71,6 +71,9 @@ class DreamerClient:
     def update(self):
         return self._call("update")
 
+    def refresh(self):
+        return self._call("refresh")
+
     def score(self, lanes, plans):
         return self._call("score", list(lanes), [list(p) for p in plans])
 
@@ -423,6 +426,13 @@ class CraftextPlanVectorAgentLoopWorker(CraftextVectorAgentLoopWorker):
                 await asyncio.gather(*[roll(ch) for ch in chunks])
                 self.turn_counter = base + self.steps_per_rollout
                 info = await asyncio.to_thread(chunks[0]["client"].update)   # the critic learns from the real returns
+                if info.get("world_updates"):
+                    refreshed = await asyncio.gather(*(asyncio.to_thread(ch["client"].refresh) for ch in chunks))
+                    for ch, encoded in zip(chunks, refreshed, strict=True):
+                        for lane, window in zip(ch["lanes"], encoded, strict=True):
+                            windows[lane] = np.asarray(window)
+                if "world_updates" in info and fields:
+                    fields[0]["extra_fields"].update({f"craftext_{k}": float(v) for k, v in info.items()})
                 if info.get("critic_updates") and fields:
                     fields[0]["extra_fields"].update({f"craftext_{k}": float(v) for k, v in info.items()})
             wall = _time.time() - t_start

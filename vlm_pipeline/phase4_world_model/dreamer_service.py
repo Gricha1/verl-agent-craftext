@@ -84,6 +84,14 @@ class Service:
         self.H = a.horizon
         self.lock = threading.Lock()
         self._init_critic_learning()
+        self.online = None
+        if a.world_ft_steps:
+            from dreamer_online import OnlineDreamer
+
+            if self.learn or len(self.critics) != 1 or self.window != 4:
+                raise ValueError("Online Dreamer needs one critic, four-frame windows, and no legacy critic learner")
+            self.hl = hasattr(self.critics[0].value_head, "logits")
+            self.online = OnlineDreamer(self, world)
         self.stats = dict(scored=0, seconds=0.0)
         print(json.dumps(dict(loaded=True, tasks=self.tasks, H=self.H, K=a.K, critics=len(self.critics), cont=self.cont)), flush=True)
 
@@ -285,6 +293,7 @@ class Service:
         torch, dev = self.torch, self.dev
         frames_hist, z_hist, played, steps, g = None, None, None, None, None
         learn, ep_w, ep_r = False, None, None   # learn: a training rollout records its episodes for the critic
+        recent_actions = None
 
         def windows(lanes):
             return torch.stack([torch.stack(z_hist[l][-4:]) for l in lanes]).reshape(len(lanes), -1).float().cpu().numpy()
@@ -295,9 +304,9 @@ class Service:
             out = [None] * len(lanes)
             by_len = {}
             for i, l in enumerate(lanes):
-                by_len.setdefault(len(frames_hist[l]), []).append(i)
+                by_len.setdefault(min(4, len(frames_hist[l])), []).append(i)
             for n, idx in by_len.items():
-                win = torch.stack([torch.stack(frames_hist[lanes[i]]) for i in idx])          # [m, n, 63, 63, 3] uint8
+                win = torch.stack([torch.stack(frames_hist[lanes[i]][-4:]) for i in idx])
                 with torch.no_grad():
                     z = self.tok.encode_frames(win)[:, -1].float()
                 for k, i in enumerate(idx):
@@ -318,12 +327,14 @@ class Service:
                         L = len(frames); lanes = list(range(L))
                         frames_hist, z_hist, played, steps, g = [None] * L, [None] * L, [None] * L, [0] * L, [0] * L
                         ep_w, ep_r = [[] for _ in range(L)], [[] for _ in range(L)]
+                        recent_actions = [[] for _ in range(L)]
                     else:
                         lanes, frames, tasks = rest
                     to = lambda f: torch.from_numpy(np.ascontiguousarray(f)).to(dev)
                     for l, f, t in zip(lanes, frames, tasks):
                         frames_hist[l] = [to(f)]                                             # real frames so far (up to 4)
                         played[l] = [0, 0, 0]; steps[l] = 0
+                        recent_actions[l] = []
                         g[l] = self.tasks.index(t) if t in self.tasks else 0
                     with self.lock:
                         z0 = encode(lanes)
@@ -336,23 +347,51 @@ class Service:
                     rewards = rest[3] if len(rest) > 3 else [0.0] * len(lanes)
                     ends = rest[4] if len(rest) > 4 else [""] * len(lanes)
                     for l, a_, f in zip(lanes, actions, frames):
-                        frames_hist[l] = frames_hist[l][-3:] + [torch.from_numpy(np.ascontiguousarray(f)).to(dev)]
+                        keep = 7 if self.online else 3
+                        frames_hist[l] = frames_hist[l][-keep:] + [torch.from_numpy(np.ascontiguousarray(f)).to(dev)]
+                        if learn and self.online:
+                            recent_actions[l] = recent_actions[l][-3:] + [int(a_)]
                         played[l] = played[l][-2:] + [int(a_)]
                         steps[l] += 1
                     with self.lock:
                         zn = encode(lanes)
+                    samples = []
                     for i, l in enumerate(lanes):
                         z_hist[l] = z_hist[l][-3:] + [zn[i]]
+                        if (learn and self.online and len(frames_hist[l]) == 8
+                                and (ends[i] or (steps[l] + l) % 4 == 0)):
+                            samples.append((frames_hist[l], recent_actions[l], rewards[i], ends[i], g[l]))
                         if learn and self.learn:
                             ep_w[l].append(torch.stack(z_hist[l][-4:])); ep_r[l].append(float(rewards[i]))
                             if ends[i] and len(ep_r[l]) >= 2:
                                 with self.lock:
                                     self.finish_episode(torch.stack(ep_w[l]), ep_r[l], ends[i], g[l])
+                    if samples:
+                        with self.lock:
+                            self.online.add_batch(samples)
                     connection.send(windows(lanes))
                 elif name == "update":   # after a training rollout: critic steps on the replay of real episodes
                     with self.lock:
-                        info = self.update_critic()
+                        info = self.online.update() if self.online else self.update_critic()
+                    if self.online:
+                        print(json.dumps(info), flush=True)
                     connection.send(info)
+                elif name == "refresh":
+                    with self.lock, torch.no_grad():
+                        groups = {}
+                        for l, frames in enumerate(frames_hist):
+                            groups.setdefault(len(frames), []).append(l)
+                        for lanes in groups.values():
+                            raw = torch.stack([torch.stack(frames_hist[l]) for l in lanes])
+                            for l, current in zip(lanes, self.tok.encode_frames(raw)[:, -4:].float(), strict=True):
+                                z_hist[l] = [current[0]] * (4 - len(current)) + list(current)
+                        connection.send(windows(list(range(len(z_hist)))))
+                elif name == "checkpoint":
+                    if self.online is None:
+                        raise ValueError("Online Dreamer is disabled")
+                    with self.lock:
+                        self.online.save(*rest)
+                    connection.send(True)
                 elif name == "score":
                     lanes, plans = rest
                     t0 = time.time()
@@ -407,7 +446,13 @@ def main() -> None:
     p.add_argument("--critic-anchor", type=float, default=0.25, help="weight of the distillation to the Stage-1 critic")
     p.add_argument("--critic-buffer", type=int, default=20000, help="real windows kept for the critic")
     p.add_argument("--selftest", action="store_true", help="one fake rollout (random frames, random plans), print the scores")
+    p.add_argument("--world-ft-steps", type=int, default=0, help="joint Dreamer and SLM critic steps per rollout")
+    p.add_argument("--world-lr", type=float, default=1e-5)
+    p.add_argument("--world-batch", type=int, default=16)
+    p.add_argument("--world-buffer", type=int, default=2048)
     a = p.parse_args()
+    if a.world_ft_steps < 0 or not 0 < a.world_batch <= a.world_buffer or a.world_lr <= 0:
+        p.error("require nonnegative world steps, a positive batch no larger than replay, and a positive world LR")
     a.out.mkdir(parents=True, exist_ok=True)
     service = Service(a)
     if a.selftest:
