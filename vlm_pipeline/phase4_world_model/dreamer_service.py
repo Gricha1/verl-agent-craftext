@@ -92,6 +92,10 @@ class Service:
                 raise ValueError("Online Dreamer needs one critic, four-frame windows, and no legacy critic learner")
             self.hl = hasattr(self.critics[0].value_head, "logits")
             self.online = OnlineDreamer(self, world)
+        if a.world_resume:
+            if self.online is None:
+                raise ValueError("--world-resume requires online Dreamer")
+            print(json.dumps(self.online.restore(a.world_resume)), flush=True)
         self.stats = dict(scored=0, seconds=0.0)
         print(json.dumps(dict(loaded=True, tasks=self.tasks, H=self.H, K=a.K, critics=len(self.critics), cont=self.cont)), flush=True)
 
@@ -127,9 +131,11 @@ class Service:
         C = S.shape[0]
         task = torch.tensor([self.head_task[self.tasks[int(g)]] for g in gi.tolist()], device=dev)
         sig = min(int(round((1.0 - self.tau_ctx) * self.k_max)), self.k_max)
-        rs, ps = [], []
+        # every window k of every row in one batch (row order k-major): the same per-window inputs as a loop over k,
+        # one dynamics forward per a.chunk rows instead of one per k
+        zws, avs = [], []
         for k in ks:
-            zw = S[:, k:k + 4]
+            zws.append(S[:, k:k + 4])
             av = torch.zeros(C, 4, 18, device=dev)
             av[:, 0, 17] = 1.0
             for j in range(1, 4):
@@ -137,24 +143,25 @@ class Service:
                     av[:, j, :17] = self.F.one_hot(into[:, k + j - 1], 17).float()
                 else:
                     av[:, j, 17] = 1.0
-            out_r, out_p = [], []
-            for s0 in range(0, C, a.chunk):
-                sl = slice(s0, s0 + a.chunk)
-                B = zw[sl].shape[0]
-                st = torch.full((B, 4), self._log2_int(self.k_max), device=dev, dtype=torch.long)
-                sg = torch.full((B, 4), sig, device=dev, dtype=torch.long)
-                ag = self.heads.tokens((B, 4), task_ids=task[sl].reshape(B, 1).expand(B, 4), device=dev)
-                with torch.autocast("cuda", dtype=torch.bfloat16):
-                    out = self.dyn(av[sl], st, sg, (1 - self.tau_ctx) * zw[sl], agent_tokens=ag)
-                hh = out[-1][:, -1].float()
-                lr_ = self.heads.reward.at(self.flatten_agent_out(hh), 0).float()
-                out_r.append(self.heads.reward.mean(lr_))
-                if self.cont:
-                    out_p.append(torch.sigmoid(self.heads.cont(self.flatten_agent_out(hh)).squeeze(-1).float()))
-                else:   # reward bins that end the episode (no continue head), as eval_slm_d4_env.py
-                    out_p.append((lr_.softmax(-1) * self.term_bin).sum(-1))
-            rs.append(torch.cat(out_r)); ps.append(torch.cat(out_p))
-        return torch.stack(rs, 1), torch.stack(ps, 1)
+            avs.append(av)
+        zw, av, task = torch.cat(zws), torch.cat(avs), task.repeat(len(ks))
+        out_r, out_p = [], []
+        for s0 in range(0, zw.shape[0], a.chunk):
+            sl = slice(s0, s0 + a.chunk)
+            B = zw[sl].shape[0]
+            st = torch.full((B, 4), self._log2_int(self.k_max), device=dev, dtype=torch.long)
+            sg = torch.full((B, 4), sig, device=dev, dtype=torch.long)
+            ag = self.heads.tokens((B, 4), task_ids=task[sl].reshape(B, 1).expand(B, 4), device=dev)
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                out = self.dyn(av[sl], st, sg, (1 - self.tau_ctx) * zw[sl], agent_tokens=ag)
+            hh = out[-1][:, -1].float()
+            lr_ = self.heads.reward.at(self.flatten_agent_out(hh), 0).float()
+            out_r.append(self.heads.reward.mean(lr_))
+            if self.cont:
+                out_p.append(torch.sigmoid(self.heads.cont(self.flatten_agent_out(hh)).squeeze(-1).float()))
+            else:   # reward bins that end the episode (no continue head), as eval_slm_d4_env.py
+                out_p.append((lr_.softmax(-1) * self.term_bin).sum(-1))
+        return torch.cat(out_r).view(len(ks), C).T, torch.cat(out_p).view(len(ks), C).T
 
     def score_rows(self, lane_z, lane_played, lane_t, lane_g, plans):
         """lane_z [n, >=4, 64, 16] latent history (last 4 used), lane_played [n, 3] a_{t-3..t-1}, lane_t [n] step index,
@@ -425,6 +432,7 @@ def main() -> None:
     p.add_argument("--dyn", required=True, help="Dreamer 4 dynamics checkpoint (phase 1)")
     p.add_argument("--heads", required=True, help="phase-2 checkpoint (train_heads.py / train_heads_on_dreams.py)")
     p.add_argument("--tok", required=True, help="Dreamer 4 tokenizer checkpoint (the SLM's)")
+    p.add_argument("--world-resume", type=Path, help="dreamer_online.pt beside the veRL checkpoint")
     p.add_argument("--critic", required=True, help="SLM checkpoint whose value head scores the imagined windows")
     p.add_argument("--extra-critics", default="")
     p.add_argument("--critic-pessimism", type=float, default=0.0)

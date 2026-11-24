@@ -150,3 +150,26 @@ class OnlineDreamer:
                         version=self.version, step=step, rng=torch.get_rng_state(),
                         cuda_rng=torch.cuda.get_rng_state(s.dev)), tmp)
         os.replace(tmp, path)
+
+    def restore(self, path):
+        s = self.service
+        path = Path(path)
+        state = torch.load(path, map_location="cpu", weights_only=False, mmap=True)
+        step = int(path.parent.name.removeprefix("global_step_"))
+        if state["step"] != step:
+            raise ValueError(f"Dreamer checkpoint step {state['step']} differs from {step}")
+        if len(state["replay"]) > self.replay.maxlen:
+            raise ValueError("Online Dreamer checkpoint replay exceeds the configured buffer")
+        s.tok.tok.load_state_dict(state["tokenizer"])
+        s.dyn.load_state_dict(state["dynamics"])
+        s.heads.load_state_dict(state["heads"])
+        s.critics[0].load_state_dict(state["critic"])
+        self.opt.load_state_dict(state["optimizer"])
+        self.critic_opt.load_state_dict(state["critic_optimizer"])
+        self.losses.load_state_dict(state["loss_normalizer"])
+        self.replay.clear()
+        self.replay.extend(state["replay"])
+        self.version = state["version"]
+        torch.set_rng_state(state["rng"])
+        torch.cuda.set_rng_state(state["cuda_rng"], s.dev)
+        return {"restored_online_step": step, "world_version": self.version, "world_replay": len(self.replay)}

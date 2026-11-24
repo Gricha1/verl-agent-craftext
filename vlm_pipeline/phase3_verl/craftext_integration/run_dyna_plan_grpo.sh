@@ -26,12 +26,31 @@ SEED="${SEED:-170000000}"; VALIDATION_SEED="${VALIDATION_SEED:-150000000}"
 D_HORIZON="${D_HORIZON:-8}"; D_K="${D_K:-1}"; D_SAMPLES="${D_SAMPLES:-1}"; D_PESSIMISM="${D_PESSIMISM:-0}"
 WORLD_FT_STEPS="${WORLD_FT_STEPS:-0}"
 RESUME_MODE=auto
+resume_args=()
+world_resume_args=()
 if [[ "${WORLD_FT_STEPS}" != 0 ]]; then
   [[ "${GAME}" == crafter ]] || { echo "Online Dreamer requires Crafter" >&2; exit 1; }
   [[ ! -e "${RUN_ROOT}/checkpoints/latest_checkpointed_iteration.txt" ]] || {
-    echo "Online Dreamer has no training-world resume yet; use a new run directory" >&2; exit 1;
+    echo "Online Dreamer needs a fresh output directory; pass the saved checkpoint via ONLINE_RESUME_FROM" >&2; exit 1;
   }
   RESUME_MODE=disable
+  if [[ -n "${ONLINE_RESUME_FROM:-}" ]]; then
+    [[ "$(basename -- "$ONLINE_RESUME_FROM")" =~ ^global_step_[0-9]+$ ]] || {
+      echo "ONLINE_RESUME_FROM must identify a global_step_N checkpoint" >&2; exit 1;
+    }
+    for artifact in dreamer_online.pt data.pt actor/model_world_size_1_rank_0.pt \
+                    actor/optim_world_size_1_rank_0.pt actor/extra_state_world_size_1_rank_0.pt; do
+      [[ -s "$ONLINE_RESUME_FROM/$artifact" ]] || {
+        echo "Missing checkpoint artifact: $ONLINE_RESUME_FROM/$artifact" >&2; exit 1;
+      }
+    done
+    RESUME_MODE=resume_path
+    resume_args=("trainer.resume_from_path=$ONLINE_RESUME_FROM")
+    world_resume_args=(--world-resume "$ONLINE_RESUME_FROM/dreamer_online.pt")
+  fi
+elif [[ -n "${ONLINE_RESUME_FROM:-}" ]]; then
+  echo "ONLINE_RESUME_FROM requires online Dreamer" >&2
+  exit 1
 fi
 LOGGER_BACKENDS="${LOGGER_BACKENDS:-[console,file]}"
 mkdir -p "${RUN_ROOT}"/{ray,dataset,checkpoints,logs,dreamer}
@@ -50,6 +69,7 @@ CUDA_VISIBLE_DEVICES="${DREAMER_GPU}" PYTHONPATH="${DREAMER_PYTHONPATH:-}:${PYTH
   --critic-ft-steps "${D_CRITIC_FT_STEPS:-0}" --critic-lr "${D_CRITIC_LR:-1e-5}" --critic-anchor "${D_CRITIC_ANCHOR:-0.25}" \
   --world-ft-steps "${WORLD_FT_STEPS}" --world-lr "${WORLD_LR:-1e-5}" \
   --world-batch "${WORLD_BATCH:-16}" --world-buffer "${WORLD_BUFFER:-2048}" \
+  "${world_resume_args[@]}" \
   --socket "${DREAMER_SOCKET}" --out "${RUN_ROOT}/dreamer" > "${RUN_ROOT}/dreamer/service.log" 2>&1 &
 DREAMER_PID=$!
 trap 'kill "${DREAMER_PID}" 2>/dev/null || true' EXIT
@@ -97,6 +117,7 @@ cd "${REPO_ROOT}"
   actor_rollout_ref.rollout.max_model_len="${ROLLOUT_MAX_MODEL_LEN:-768}" \
   actor_rollout_ref.rollout.max_num_seqs="${ROLLOUT_MAX_NUM_SEQS:-512}" \
   actor_rollout_ref.rollout.max_num_batched_tokens="${VLLM_MAX_BATCHED_TOKENS:-65536}" \
+  actor_rollout_ref.rollout.disable_log_stats="${VLLM_DISABLE_LOG_STATS:-true}" \
   actor_rollout_ref.rollout.free_cache_engine=true actor_rollout_ref.rollout.enforce_eager="${ENFORCE_EAGER:-false}" \
   actor_rollout_ref.rollout.enable_chunked_prefill=true \
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu="${PPO_MICRO_BATCH_SIZE}" \
@@ -107,8 +128,10 @@ cd "${REPO_ROOT}"
   actor_rollout_ref.rollout.dtype=bfloat16 \
   trainer.use_v1=true trainer.v1.trainer_mode=sync \
   trainer.total_epochs="${TOTAL_EPOCHS}" trainer.n_gpus_per_node=1 trainer.nnodes=1 \
-  trainer.val_before_train="${VAL_BEFORE_TRAIN}" trainer.test_freq="${TEST_FREQ}" trainer.save_freq="${SAVE_FREQ}" \
+  trainer.val_before_train="${VAL_BEFORE_TRAIN}" trainer.val_only="${VAL_ONLY:-false}" \
+  trainer.test_freq="${TEST_FREQ}" trainer.save_freq="${SAVE_FREQ}" \
   trainer.resume_mode="${RESUME_MODE}" \
+  "${resume_args[@]}" \
   "trainer.logger=${LOGGER_BACKENDS}" trainer.project_name=stage2_dyna_verl trainer.experiment_name="$(basename "${RUN_ROOT}")" \
   trainer.default_local_dir="${RUN_ROOT}/checkpoints" \
   +ray_kwargs.ray_init.runtime_env.env_vars.CRAFTEXT_LEGACY_ROOT="${CHECKOUT}" \
