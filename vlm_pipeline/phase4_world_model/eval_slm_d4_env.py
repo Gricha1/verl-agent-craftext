@@ -103,6 +103,9 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--critic", default="", help="SLM checkpoint (.pt) whose value head scores the imagined windows instead "
                    "of the acting SLM's (the Dyna loop keeps the value of the start SLM while GRPO moves the policy)")
+    p.add_argument("--verl-actor", default="", help="single-rank veRL actor model weights")
+    p.add_argument("--joint-snapshot", default="", help="Dreamer/tokenizer/critic snapshot paired with --verl-actor")
+    p.add_argument("--record-episode", default="", help="folder for every candidate and real/dream frames at every step")
     p.add_argument("--dump-dir", default="", help="dir: per episode (written when it ends) every step's real frame, all N plan "
                    "texts with their scores, the chosen one, and the decoded Dreamer dreams of the best and the worst plan")
     p.add_argument("--extra-critics", default="", help="comma-separated SLM critic checkpoints (scalar or HL-Gauss) whose values "
@@ -124,6 +127,17 @@ def main():
     p.add_argument("--save-traj", default="",help="dir: the played episodes in the WoodEpisodeDataset format with the native "
                    "reward (build_wood_d4_heads.py native conventions) + per-frame latents z.pt + episodes.json")
     a = p.parse_args()
+    recording = None
+    if a.record_episode:
+        lo, hi = map(int, a.seeds.split(":"))
+        if (a.game, hi - lo, a.execute, a.dream_samples, a.score) != ("crafter", 1, 1, 1, "reward") or not a.imagine or a.plans < 2:
+            p.error("Episode recording needs one Crafter world, replanning, one dream per candidate and reward scoring")
+        from crafter_episode_recording import EpisodeRecording
+
+        recording = EpisodeRecording(a.record_episode, lo, a.horizon, a.max_steps)
+        a.counterfactual = 1
+    if a.joint_snapshot and not (a.verl_actor and a.critic):
+        p.error("--joint-snapshot requires the corresponding --verl-actor and critic architecture")
     t_start = time.time()
     torch.manual_seed(a.seed)
     device = torch.device("cuda")
@@ -148,6 +162,22 @@ def main():
     d_h = int(state["model"]["h_adapter.0.weight"].shape[1]) if n_h else 0
     model = SLMReasonAct(lm, cfg["readout"], n_h=n_h, d_h=d_h).to(device)
     model.load_state_dict(state["model"]); model.eval()
+    if a.verl_actor:
+        actor = torch.load(a.verl_actor, map_location="cpu", weights_only=True)
+        mapped = {}
+        for key, val in actor.items():
+            if key.startswith("model."):
+                mapped["backbone." + key.removeprefix("model.")] = val
+            elif key.startswith("vision."):
+                mapped[key.removeprefix("vision.")] = val
+            else:
+                mapped[key] = val
+        for key in ("backbone.embed_tokens.weight", "lm_head.weight"):
+            mapped[key] = mapped[key][:len(text)]
+        mapped["embed.weight"] = mapped["backbone.embed_tokens.weight"]
+        missing, unexpected = model.load_state_dict(mapped, strict=False)
+        if unexpected or any(not key.startswith(("head.", "value_head.")) for key in missing):
+            raise RuntimeError(f"Unexpected actor mapping (missing={missing}, unexpected={unexpected})")
     critic = model
     if a.critic:   # frozen value SLM (same architecture and text tokenizer as the acting one)
         cst = torch.load(a.critic, map_location="cpu", weights_only=False)
@@ -173,6 +203,10 @@ def main():
         raise ValueError("this SLM reads Dreamer h tokens: pass --heads (and --dyn) of the phase-2 model it was trained on")
     tasks = state["tasks"]
     tok = FrozenTokenizer(a.tok or cfg["tok"], history=4, device=device)
+    joint = torch.load(a.joint_snapshot, map_location="cpu", weights_only=True, mmap=True) if a.joint_snapshot else None
+    if joint is not None:
+        tok.tok.load_state_dict(joint["tokenizer"])
+        critic.load_state_dict(joint["critic"])
     if need_world:
         from dreamer4.dynamics_eval import windowed_rollout
         from dreamer4.train.train_dynamics import load_dynamics_checkpoint
@@ -190,6 +224,9 @@ def main():
             dyn = world.dyn.eval()
             heads = build_agent_heads(hck["agent_cfg"]).to(device).eval()
             heads.load_state_dict(hck["agent"])
+            if joint is not None:
+                dyn.load_state_dict(joint["dynamics"])
+                heads.load_state_dict(joint["heads"])
             term_bin = terminal_bins(heads.reward, world.continues_from_reward, device)
             bin_values = heads.reward.twohot.bin_values.to(device).float()
             head_task = ({g: i for i, g in enumerate(world.dataset.manifest["task_names"])} if "task_names" in world.dataset.manifest
@@ -334,7 +371,8 @@ def main():
                     emb, mask, _ = cr.prefix(Z[s:s + a.chunk], pre, post_ids[gi[s:s + a.chunk]], post_mask[gi[s:s + a.chunk]],
                                              None if Hd is None else Hd[s:s + a.chunk])
                     hh = cr.backbone(inputs_embeds=emb, attention_mask=mask).last_hidden_state
-                    vk.append(cr.value_head(hh[:, -1]).squeeze(-1).float())
+                    values = cr.value_head(hh[:, -1]).float()
+                    vk.append(cr.value_head.mean(values) if hasattr(cr.value_head, "centers") else values.squeeze(-1))
                 if ci == 0:
                     hs.append(hh[:, -1])
             vk = torch.stack(vk)
@@ -501,6 +539,14 @@ def main():
                 tl = float(a.gamma ** (e + 1) * end_val[f]) if e >= 0 else float(a.gamma ** Ls[f] * Vr[f])
                 rec["real"].append(rr + tl); rec["real_r"].append(rr); rec["real_tail"].append(tl)
                 rec["end"].append("none" if e < 0 else ("success" if end_val[f] > 0 else "death"))
+            if recording:
+                img = tok.decode_latents(S[fs]).float()[:, 4:].permute(0, 1, 3, 4, 2).clamp(0, 1)
+                dream_frames = (img * 255).round().to(torch.uint8).cpu().numpy()
+                real_frames = [[frame.cpu().numpy() for frame in frames[f][4:]] for f in fs]
+                rec["texts"] = [cands[j][c][2] for _, c in (flat[f] for f in fs)]
+                plans = [[NAMES[x] for x in cands[j][c][0]] for _, c in (flat[f] for f in fs)]
+                recording.capture(rec, frames[fs[0]][3].cpu().numpy(), dream_frames, real_frames,
+                                  (rk_[fs], r_real[fs]), plans, end_k[fs])
             if (a.cf_dump and S is not None and cf_dumped[0] < a.cf_dump_max and cf_dumped[1] < a.cf_dump_per_check
                     and np.std(rec["real"]) > 1e-6 and rng_dump.random() < 0.25):   # groups whose 8 plans really differ
                 cf_dumped[0] += 1; cf_dumped[1] += 1
@@ -688,6 +734,10 @@ def main():
             ret[lane] += float(r[lane]); steps[lane] = t + 1
             last_vit[lane] = vit[lane]; min_health[lane] = min(min_health[lane], float(vit[lane][0])); in_lava[lane] = bool(lava[lane])
             success[lane] |= bool(ok[lane])
+            if recording:
+                end = "death" if env_done[lane] else ("limit" if done[lane] else "")
+                recording.finish_step(choice[0], NAMES[acts_now[lane]], np.ascontiguousarray(obs[lane, :63, :63]),
+                                      float(r[lane]), unlocked[lane], vit[lane], end)
             if done[lane]:
                 active[lane] = False
                 queue[lane] = []
