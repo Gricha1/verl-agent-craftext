@@ -540,6 +540,11 @@ def main():
                 rec["real"].append(rr + tl); rec["real_r"].append(rr); rec["real_tail"].append(tl)
                 rec["end"].append("none" if e < 0 else ("success" if end_val[f] > 0 else "death"))
             if recording:
+                lane = lanes_c[fs[0]]
+                rec["before"] = {
+                    "inventory": {key: int(value) for key, value in envs[lane]._player.inventory.items()},
+                    "achievements": sorted(unlocked[lane]),
+                }
                 img = tok.decode_latents(S[fs]).float()[:, 4:].permute(0, 1, 3, 4, 2).clamp(0, 1)
                 dream_frames = (img * 255).round().to(torch.uint8).cpu().numpy()
                 real_frames = [[frame.cpu().numpy() for frame in frames[f][4:]] for f in fs]

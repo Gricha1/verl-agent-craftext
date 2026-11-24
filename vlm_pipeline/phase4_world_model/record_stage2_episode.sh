@@ -12,7 +12,7 @@ case "$variant" in
     hl80) mode=hlgauss; step=80 ;;
     hl100) mode=hlgauss; step=100 ;;
     scalar80) mode=scalar; step=80 ;;
-    stage1) mode=scalar; step=0 ;;
+    stage1|stage1gae) mode=scalar; step=0 ;;
     *) exit 2 ;;
 esac
 
@@ -30,6 +30,9 @@ git -C "$repo" archive "$rev" vlm_pipeline/phase4_world_model | tar -x -C "$out/
 mirror="$HOME/a3mirror/run"
 world="$mirror/dreamer4_qwen_crafter64_a3gpu3_20261118_r1"
 stage1="$mirror/slm5m_plan16_value_d4qwen_crafter64_r64_scratch_a3gpu1_20261119_r1"
+if [[ $variant == stage1gae ]]; then
+    stage1="$HOME/runs/crafter_recording_checkpoints/stage1gae"
+fi
 run="$HOME/runs/onegpu_grpo_stage2_joint_${mode}_20261123_r1"
 checkpoint="$run/checkpoints/global_step_$step"
 critic=/s0/run/checkpoints/step_060000.pt
