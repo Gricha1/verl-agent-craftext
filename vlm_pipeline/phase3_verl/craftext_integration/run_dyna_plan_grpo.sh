@@ -35,6 +35,9 @@ fi
 if [[ -n "${DATALOADER_NUM_WORKERS:-}" ]]; then
   host_memory_args+=("data.dataloader_num_workers=$DATALOADER_NUM_WORKERS")
 fi
+if [[ -n "${TRANSFER_QUEUE_STORAGE_UNITS:-}" ]]; then
+  host_memory_args+=("transfer_queue.backend.SimpleStorage.num_data_storage_units=$TRANSFER_QUEUE_STORAGE_UNITS")
+fi
 if [[ "${WORLD_FT_STEPS}" != 0 ]]; then
   [[ "${GAME}" == crafter ]] || { echo "Online Dreamer requires Crafter" >&2; exit 1; }
   [[ ! -e "${RUN_ROOT}/checkpoints/latest_checkpointed_iteration.txt" ]] || {
