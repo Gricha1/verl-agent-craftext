@@ -28,6 +28,13 @@ WORLD_FT_STEPS="${WORLD_FT_STEPS:-0}"
 RESUME_MODE=auto
 resume_args=()
 world_resume_args=()
+host_memory_args=()
+if [[ -n "${RAY_OBJECT_STORE_BYTES:-}" ]]; then
+  host_memory_args+=("+ray_kwargs.ray_init.object_store_memory=$RAY_OBJECT_STORE_BYTES")
+fi
+if [[ -n "${DATALOADER_NUM_WORKERS:-}" ]]; then
+  host_memory_args+=("data.dataloader_num_workers=$DATALOADER_NUM_WORKERS")
+fi
 if [[ "${WORLD_FT_STEPS}" != 0 ]]; then
   [[ "${GAME}" == crafter ]] || { echo "Online Dreamer requires Crafter" >&2; exit 1; }
   [[ ! -e "${RUN_ROOT}/checkpoints/latest_checkpointed_iteration.txt" ]] || {
@@ -132,6 +139,7 @@ cd "${REPO_ROOT}"
   trainer.test_freq="${TEST_FREQ}" trainer.save_freq="${SAVE_FREQ}" \
   trainer.resume_mode="${RESUME_MODE}" \
   "${resume_args[@]}" \
+  "${host_memory_args[@]}" \
   "trainer.logger=${LOGGER_BACKENDS}" trainer.project_name=stage2_dyna_verl trainer.experiment_name="$(basename "${RUN_ROOT}")" \
   trainer.default_local_dir="${RUN_ROOT}/checkpoints" \
   +ray_kwargs.ray_init.runtime_env.env_vars.CRAFTEXT_LEGACY_ROOT="${CHECKOUT}" \
