@@ -66,7 +66,11 @@ import torch.nn.functional as F
 
 
 def main():
-    p = argparse.ArgumentParser()
+    protocol_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    protocol_parser.add_argument("--protocol", choices=("crafter-all-128",),
+                                 help="canonical Crafter all-achievements evaluation")
+    protocol, _ = protocol_parser.parse_known_args()
+    p = argparse.ArgumentParser(parents=[protocol_parser], allow_abbrev=False)
     p.add_argument("--run", required=True, help="train_slm_reason_act_d4.py run dir (with run/checkpoints)")
     p.add_argument("--checkpoint", default="latest.pt")
     p.add_argument("--out", required=True)
@@ -104,7 +108,7 @@ def main():
     p.add_argument("--critic", default="", help="SLM checkpoint (.pt) whose value head scores the imagined windows instead "
                    "of the acting SLM's (the Dyna loop keeps the value of the start SLM while GRPO moves the policy)")
     p.add_argument("--verl-actor", default="", help="single-rank veRL actor model weights")
-    p.add_argument("--joint-snapshot", default="", help="Dreamer/tokenizer/critic snapshot paired with --verl-actor")
+    p.add_argument("--joint-snapshot", default="", help="Dreamer/tokenizer/critic snapshot for the selected actor")
     p.add_argument("--record-episode", default="", help="folder for every candidate and real/dream frames at every step")
     p.add_argument("--dump-dir", default="", help="dir: per episode (written when it ends) every step's real frame, all N plan "
                    "texts with their scores, the chosen one, and the decoded Dreamer dreams of the best and the worst plan")
@@ -126,7 +130,14 @@ def main():
     p.add_argument("--cf-dump-per-check", type=int, default=3, help="groups dumped per counterfactual step (spread over time)")
     p.add_argument("--save-traj", default="",help="dir: the played episodes in the WoodEpisodeDataset format with the native "
                    "reward (build_wood_d4_heads.py native conventions) + per-frame latents z.pt + episodes.json")
+    fixed = {}
+    if protocol.protocol == "crafter-all-128":
+        fixed = json.loads(Path(__file__).with_name("crafter_all_128.json").read_text(encoding="utf-8"))
+        p.set_defaults(**fixed)
     a = p.parse_args()
+    for key, value in fixed.items():
+        if getattr(a, key) != value:
+            p.error(f"{a.protocol} fixes --{key.replace('_', '-')} to {value!r}")
     recording = None
     if a.record_episode:
         lo, hi = map(int, a.seeds.split(":"))
@@ -136,8 +147,8 @@ def main():
 
         recording = EpisodeRecording(a.record_episode, lo, a.horizon, a.max_steps)
         a.counterfactual = 1
-    if a.joint_snapshot and not (a.verl_actor and a.critic):
-        p.error("--joint-snapshot requires the corresponding --verl-actor and critic architecture")
+    if a.joint_snapshot and not (a.critic and a.imagine and a.dyn and a.heads):
+        p.error("--joint-snapshot requires the critic architecture, --imagine, --dyn and --heads")
     t_start = time.time()
     torch.manual_seed(a.seed)
     device = torch.device("cuda")
