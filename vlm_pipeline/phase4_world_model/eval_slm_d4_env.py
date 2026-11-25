@@ -406,7 +406,8 @@ def main():
                         text = prior[sl, depth + 1:depth + 5].clone()
                         text[:, 0] = 0
                         actions = align_actions(oh[:, depth:depth + ctx], window)
-                        predicted, _ = sample_one_timestep(bind(dyn, text, context_memory),
+                        model = bind(dyn, text) if context_memory is None else bind(dyn, text, context_memory)
+                        predicted, _ = sample_one_timestep(model,
                                                            past_packed=z[:, -ctx:], actions=actions,
                                                            K=a.K, k_max=k_max, tau_ctx=tau_ctx)
                         z = torch.cat((z, predicted.float().clamp(-1, 1)[:, None]), 1)
@@ -443,7 +444,7 @@ def main():
                 if prior is not None:
                     text = prior[sl, k:k + 4].clone()
                     text[:, 0] = 0
-                    model = bind(dyn, text, None if memory is None else memory[sl])
+                    model = bind(dyn, text) if memory is None else bind(dyn, text, memory[sl])
                 with torch.autocast("cuda", dtype=torch.bfloat16):
                     out = model(av[sl], st, sg, (1 - tau_ctx) * zw[sl], agent_tokens=ag)
                 hh = out[-1][:, -1].float()                         # (B, n_agent, d)
