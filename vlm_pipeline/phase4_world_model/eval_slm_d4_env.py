@@ -233,6 +233,14 @@ def main():
                          else {g: 0 for g in tasks})   # Qwen Crafter data: one task, no names
     if a.score == "reward" and not a.heads:
         raise ValueError("--score reward needs --heads")
+    conditioned = need_world and hasattr(dyn, "crafter_text")
+    if conditioned:
+        if a.game != "crafter" or not a.heads or ctx != 3 or a.counterfactual:
+            raise ValueError("Text-conditioned evaluation needs Crafter, reward heads, and a four-slot window")
+        from crafter_balrog_text import frame_info, relative_frame
+        from dreamer4.crafter_text import bind
+        from dreamer4.models.dynamics import align_actions, sample_one_timestep
+        from prepare import ACHIEVEMENT_IDS, describe
     if a.value_mix and not (a.heads and a.imagine):
         raise ValueError("--value-mix needs --heads and --imagine")
     if a.value_ensemble:   # train_value_heads_d4_slm.py: heads on frozen SLM / Dreamer features + ridge weights
@@ -380,19 +388,34 @@ def main():
         return (torch.cat(vs), torch.cat(hs)) if hidden else torch.cat(vs)
 
     @torch.no_grad()
-    def dream(zc, acts):
+    def dream(zc, acts, prior=None, memory=None):
         """zc [B, ctx, 64, 16] real context, acts [B, ctx - 1 + H] action ids -> [B, H, 64, 16] imagined latents."""
         outs = []
         for s in range(0, zc.shape[0], a.chunk):
-            zf = torch.cat([zc[s:s + a.chunk], zc[s:s + a.chunk, -1:].expand(-1, H, -1, -1)], 1)
-            oh = F.one_hot(acts[s:s + a.chunk], 17).float()
+            sl = slice(s, s + a.chunk)
+            oh = F.one_hot(acts[sl], 17).float()
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                d, _, _ = windowed_rollout(dyn, z_full=zf, actions=oh, window=window, ctx=ctx, K=a.K, k_max=k_max, tau_ctx=tau_ctx)
+                if prior is None:
+                    zf = torch.cat([zc[sl], zc[sl, -1:].expand(-1, H, -1, -1)], 1)
+                    d, _, _ = windowed_rollout(dyn, z_full=zf, actions=oh, window=window, ctx=ctx, K=a.K,
+                                               k_max=k_max, tau_ctx=tau_ctx)
+                else:
+                    z = zc[sl]
+                    context_memory = None if memory is None else memory[sl]
+                    for depth in range(H):
+                        text = prior[sl, depth + 1:depth + 5].clone()
+                        text[:, 0] = 0
+                        actions = align_actions(oh[:, depth:depth + ctx], window)
+                        predicted, _ = sample_one_timestep(bind(dyn, text, context_memory),
+                                                           past_packed=z[:, -ctx:], actions=actions,
+                                                           K=a.K, k_max=k_max, tau_ctx=tau_ctx)
+                        z = torch.cat((z, predicted.float().clamp(-1, 1)[:, None]), 1)
+                    d = z[:, -H:]
             outs.append(d.float())
         return torch.cat(outs)
 
     @torch.no_grad()
-    def agent_scan(S, into, fresh, gi, ks):
+    def agent_scan(S, into, fresh, gi, ks, prior=None, memory=None):
         """Phase-2 agent tokens on the windows S[:, k:k+4] for k in ks. S [C, n, 64, 16] latents, into [C, n - 1] the action that
         led into S[:, i + 1], fresh [n] bool (False: S[i] repeats S[i - 1] at the episode start -> start flag), gi [C] SLM task
         ids. Returns h [C, len(ks), n_agent, d], expected arriving reward r and terminal probability p [C, len(ks)]."""
@@ -416,8 +439,13 @@ def main():
                 st = torch.full((B, 4), _log2_int(k_max), device=device, dtype=torch.long)
                 sg = torch.full((B, 4), sig, device=device, dtype=torch.long)
                 ag = heads.tokens((B, 4), task_ids=task[sl].reshape(B, 1).expand(B, 4), device=device)
+                model = dyn
+                if prior is not None:
+                    text = prior[sl, k:k + 4].clone()
+                    text[:, 0] = 0
+                    model = bind(dyn, text, None if memory is None else memory[sl])
                 with torch.autocast("cuda", dtype=torch.bfloat16):
-                    out = dyn(av[sl], st, sg, (1 - tau_ctx) * zw[sl], agent_tokens=ag)
+                    out = model(av[sl], st, sg, (1 - tau_ctx) * zw[sl], agent_tokens=ag)
                 hh = out[-1][:, -1].float()                         # (B, n_agent, d)
                 lr_ = heads.reward.at(flatten_agent_out(hh), 0).float()   # symexp two-hot: decode with mean()
                 out_h.append(hh); out_r.append(heads.reward.mean(lr_))
@@ -428,6 +456,7 @@ def main():
 
     # ---------------- closed loop ----------------
     xs, zs, played = [], [], []       # per step: frames [L,63,63,3], latents [L,64,16], actions [L]
+    observed_text = []
     rews, dones = [], []              # per step: env reward of the action, done after it [L]
     said = []                         # per step: the text of the plan chosen at that step ("" when the lane played its queue)
     active = np.ones(L, bool)
@@ -574,6 +603,19 @@ def main():
         return out
 
     for t in range(a.max_steps):
+        if conditioned:
+            contexts = np.zeros((L, 66), dtype=np.int32)
+            for lane in np.flatnonzero(active):
+                env = envs[lane]
+                player = env._player
+                state = frame_info(env, dict(inventory=player.inventory, player_pos=player.pos,
+                                             semantic=env._sem_view()))
+                state.update(daylight=env._world.daylight,
+                             ripe_plants=[obj.pos for obj in env._world.objects
+                                          if isinstance(obj, crafter.objects.Plant) and obj.ripe])
+                contexts[lane, :-1] = describe(relative_frame(state)[0])[0]
+                contexts[lane, -1] = sum(1 << ACHIEVEMENT_IDS[name] for name in unlocked[lane])
+            observed_text.append(torch.from_numpy(contexts).to(device))
         t0 = time.time()
         xs.append(to_frame(obs))
         win = torch.stack(xs[max(0, t - 3):t + 1], 1)
@@ -592,9 +634,21 @@ def main():
         fresh_real = [False] + [t - 3 + i >= 1 for i in range(1, 4)]          # S[0..3] = z_{t-3..t}
         into_real = torch.tensor([[played[t - 3 + i][lane] if t - 3 + i >= 0 else 0 for i in range(3)] for lane in act_lanes],
                                  device=device, dtype=torch.long).reshape(A, 3)   # a_{t-3}, a_{t-2}, a_{t-1}
+        prior, memory = None, None
+        if conditioned and A:
+            zero_text = torch.zeros_like(observed_text[t])
+            prior = torch.stack([(zero_text if p <= 0 else observed_text[min(p - 1, t)])[idx]
+                                 for p in range(t - 3, t + H + 1)], dim=1)
+            if hasattr(dyn, "crafter_memory") and t > 2:
+                past = range(max(0, t - 2 - dyn.crafter_memory.length), t - 2)
+                frames = torch.stack([zs[p][idx] for p in past], dim=1)
+                arrivals = np.stack([played[p - 1][act_lanes] if p else np.full(A, 17)
+                                     for p in past], axis=1)
+                with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+                    memory = dyn.crafter_memory(frames, torch.as_tensor(arrivals, device=device))
         Hnow = None
         if n_h and A:
-            Hnow = agent_scan(Zt, into_real, fresh_real, g_of_lane[idx], [0])[0][:, 0]   # [A, n_agent, d]
+            Hnow = agent_scan(Zt, into_real, fresh_real, g_of_lane[idx], [0], prior, memory)[0][:, 0]
         greedy_rows = torch.zeros(A * N, dtype=torch.bool, device=device)
         if a.greedy_candidate:
             greedy_rows[::N] = True
@@ -637,14 +691,17 @@ def main():
                 valid.append([k < len(plan) for k in range(H)])
             acts = torch.tensor(acts, device=device)
             valid = torch.tensor(valid, device=device)
-            d = dream(ctx_lat, acts)                                            # [C, H, 64, 16]
+            candidate_prior = None if prior is None else prior[lane_of]
+            candidate_memory = None if memory is None else memory[lane_of]
+            d = dream(ctx_lat, acts, candidate_prior, candidate_memory)          # [C, H, 64, 16]
             timing["dream"] += time.time() - t2
             t3 = time.time()
             S = torch.cat([Zt[lane_of], d], 1)                                  # [C, 4 + H, 64, 16]
             Wk = torch.stack([S[:, k:k + 4] for k in range(1, H + 1)], 1)       # [C, H, 4, 64, 16]
             if a.heads:   # Dreamer agent tokens of every imagined window: reward head, and the SLM's h input
                 into = torch.cat([into_real[lane_of], acts[:, ctx - 1:]], 1)    # actions into S[1..3 + H]
-                Himg, rk, pk = agent_scan(S, into, fresh_real + [True] * H, g_of_lane[idx][lane_of], list(range(1, H + 1)))
+                Himg, rk, pk = agent_scan(S, into, fresh_real + [True] * H, g_of_lane[idx][lane_of],
+                                          list(range(1, H + 1)), candidate_prior, candidate_memory)
             v = value_of(Wk.flatten(0, 1), g_of_lane[idx][lane_of].repeat_interleave(H, 0),
                          Himg.flatten(0, 1) if n_h else None, hidden=bool(a.value_ensemble))
             if a.value_ensemble:   # stacked multi-horizon heads on the SLM hidden state and the Dreamer agent tokens
