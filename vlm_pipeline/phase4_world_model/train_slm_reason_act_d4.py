@@ -155,6 +155,7 @@ def main():
     p.add_argument("--value-gae-horizon", type=int, default=32)
     p.add_argument("--seed", type=int, default=7950)
     p.add_argument("--latent-cache", default="")
+    p.add_argument("--mmap-frames", action="store_true", help="read reconstruction targets from the mapped dataset")
     p.add_argument("--plan", type=int, default=0, help="K > 0: target <plan> with the teacher's next K actions instead of <action>")
     p.add_argument("--accum", type=int, default=1, help="micro-batches per optimizer step (batch / accum examples each)")
     p.add_argument("--frame-labels", default="", help="dir with {train,val}.jsonl of build_qwen_slm_labels.py (Qwen Crafter data)")
@@ -290,7 +291,7 @@ def main():
     for tag, root in (("train", a.train), ("val", a.val)):
         frames, starts, lengths = load_split(root)
         cache = Path(a.latent_cache) / f"z_{tag}.pt" if a.latent_cache else None
-        z, x, first = encode_split(tok, frames, starts, lengths, device, cache)
+        z, x, first = encode_split(tok, frames, starts, lengths, device, cache, mapped_frames=a.mmap_frames)
         data[tag] = (z, x, first, *(frame_split_data if a.frame_labels else split_data)(root, tag))
         if tag == "val":   # end (exclusive) of each frame's episode, for the teacher's next actions
             vend = torch.cat([torch.full((n,), s + n, dtype=torch.long) for s, n in

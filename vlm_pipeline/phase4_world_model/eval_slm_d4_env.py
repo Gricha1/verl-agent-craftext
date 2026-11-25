@@ -609,12 +609,12 @@ def main():
             for lane in np.flatnonzero(active):
                 env = envs[lane]
                 player = env._player
-                state = frame_info(env, dict(inventory=player.inventory, player_pos=player.pos,
-                                             semantic=env._sem_view()))
-                state.update(daylight=env._world.daylight,
-                             ripe_plants=[obj.pos for obj in env._world.objects
-                                          if isinstance(obj, crafter.objects.Plant) and obj.ripe])
-                contexts[lane, :-1] = describe(relative_frame(state)[0])[0]
+                observed = frame_info(env, dict(inventory=player.inventory, player_pos=player.pos,
+                                                semantic=env._sem_view()))
+                observed.update(daylight=env._world.daylight,
+                                ripe_plants=[obj.pos for obj in env._world.objects
+                                             if isinstance(obj, crafter.objects.Plant) and obj.ripe])
+                contexts[lane, :-1] = describe(relative_frame(observed)[0])[0]
                 contexts[lane, -1] = sum(1 << ACHIEVEMENT_IDS[name] for name in unlocked[lane])
             observed_text.append(torch.from_numpy(contexts).to(device))
         t0 = time.time()

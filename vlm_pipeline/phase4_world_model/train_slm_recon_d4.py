@@ -45,7 +45,7 @@ def load_split(root):
 
 
 @torch.no_grad()
-def encode_split(tok, frames, starts, lengths, device, cache=None, chunk=256):
+def encode_split(tok, frames, starts, lengths, device, cache=None, chunk=256, mapped_frames=False):
     """Per-frame latents z_t (history window inside the frozen encoder) and the frames, both on the GPU.
     The latents are kept in `cache` (a .pt file) and read from it on the next run."""
     xs = [torch.from_numpy(np.asarray(frames[s:s + n, :63, :63])) for s, n in zip(starts, lengths)]
@@ -59,7 +59,13 @@ def encode_split(tok, frames, starts, lengths, device, cache=None, chunk=256):
         z = torch.cat(zs)
         if cache is not None:
             torch.save(z.cpu(), cache)
-    x = torch.cat(xs).pin_memory()          # frames stay in host memory, batches are copied over
+    if mapped_frames:
+        expected_starts = np.cumsum([0, *lengths[:-1]]).tolist()
+        if list(starts) != expected_starts or sum(lengths) > len(frames):
+            raise ValueError("Memory-mapped frame targets need a contiguous episode layout")
+        x = torch.from_numpy(np.asarray(frames[:sum(lengths), :63, :63]))
+    else:
+        x = torch.cat(xs).pin_memory()      # frames stay in host memory, batches are copied over
     assert len(z) == len(x), (len(z), len(x))
     ep_first = torch.cat([torch.full((n,), int(o), dtype=torch.long) for n, o in zip(lengths, np.concatenate(([0], np.cumsum(lengths)[:-1])))])
     return z, x, ep_first.to(device)
