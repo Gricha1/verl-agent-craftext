@@ -32,9 +32,6 @@ host_memory_args=()
 if [[ -n "${RAY_OBJECT_STORE_BYTES:-}" ]]; then
   host_memory_args+=("+ray_kwargs.ray_init.object_store_memory=$RAY_OBJECT_STORE_BYTES")
 fi
-if [[ -n "${DATALOADER_NUM_WORKERS:-}" ]]; then
-  host_memory_args+=("data.dataloader_num_workers=$DATALOADER_NUM_WORKERS")
-fi
 if [[ -n "${TRANSFER_QUEUE_STORAGE_UNITS:-}" ]]; then
   host_memory_args+=("transfer_queue.backend.SimpleStorage.num_data_storage_units=$TRANSFER_QUEUE_STORAGE_UNITS")
 fi
