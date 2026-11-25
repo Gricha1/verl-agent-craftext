@@ -38,7 +38,10 @@ def main():
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--step", type=int, required=True)
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--reuse-replay", action="store_true", help="score the saved full replay again")
     args = parser.parse_args()
+    if args.limit and args.reuse_replay:
+        parser.error("--reuse-replay requires a full evaluation")
     torch.set_num_threads(4)
     torch.manual_seed(7950)
     args.out.mkdir(parents=True, exist_ok=True)
@@ -57,7 +60,8 @@ def main():
         cached = args.context / signature / f"{recording}.npy"
         if not cached.is_file():
             raise FileNotFoundError(cached)
-        fixed.replay(world, heads, source, sprites / recording, args.limit, audit, None, cached)
+        if not args.reuse_replay:
+            fixed.replay(world, heads, source, sprites / recording, args.limit, audit, None, cached)
         frames, _, _ = fixed.observed_context(source, audit, None, cached)
         frames = frames[:args.limit] if args.limit else frames
         predictions = reconstruct(world.tok, frames, batch=12)
@@ -66,7 +70,7 @@ def main():
             pred = objects(prediction, t)
             for o, (expected, guessed) in enumerate(zip(truth, pred, strict=True)):
                 reconstruction[o] += score(expected, guessed)
-            error += np.square((prediction.astype(np.float32) - frame) / 255).mean()
+            error += float(np.square((prediction.astype(np.float32) - frame) / 255).mean())
         frame_count += len(frames)
         print(f"reconstructed {recording}: {len(frames)} frames", flush=True)
     if args.limit:
