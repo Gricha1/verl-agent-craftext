@@ -1,3 +1,4 @@
+import os
 
 from transformers import AutoModel, AutoTokenizer
 import torch
@@ -5,18 +6,16 @@ import numpy as np
 from craftext.environment.encoders.craftext_base_model_encoder import EncodeForm
 
 class DistilBertEncode:
-    def __init__(self, form_to_use=EncodeForm.EMBED_CONCAT_ALL, n_splits=1):
+    def __init__(self, form_to_use=EncodeForm.EMBED_CONCAT_ALL, n_splits=1, device=None):
         """
         Unified implementation of DistilBERT encoder with multiple embedding options.
         """
         self.form_to_use = form_to_use
-        model_name = "distilbert-base-uncased"
+        model_name = os.environ.get("CRAFTEXT_DISTILBERT_PATH", "distilbert-base-uncased")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=".")
-        # Проверяем доступность CUDA перед использованием
-        if torch.cuda.is_available():
-            self.model = AutoModel.from_pretrained(model_name, cache_dir=".").cuda()
-        else:
-            self.model = AutoModel.from_pretrained(model_name, cache_dir=".")
+        device = device or os.environ.get("CRAFTEXT_ENCODER_DEVICE")
+        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = AutoModel.from_pretrained(model_name, cache_dir=".").eval().to(device)
         self.n_splits=n_splits
         if self.n_splits>1:
             exit()
@@ -65,24 +64,9 @@ class DistilBertEncode:
         return token_embeddings.view(-1).numpy()
     
     def get_cls_embeddings(self, instructions):
-        batch_embeddings = []
-        # print("Encode...")
-        if torch.cuda.is_available():
-            inputs = self.tokenizer(
-                instructions, 
-                return_tensors='pt', 
-                truncation=True, 
-                padding=True, 
-                max_length=50
-            ).to("cuda")
-        else:
-            inputs = self.tokenizer(
-                instructions, 
-                return_tensors='pt', 
-                truncation=True, 
-                padding=True, 
-                max_length=50
-            )
+        inputs = self.tokenizer(
+            instructions, return_tensors="pt", truncation=True, padding=True, max_length=50
+        ).to(self.model.device)
         with torch.no_grad():
                 outputs = self.model(**inputs)
         # print("Finish.")

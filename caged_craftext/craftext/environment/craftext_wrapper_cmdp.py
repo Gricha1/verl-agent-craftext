@@ -112,6 +112,8 @@ class CMDPInstructionWrapper(InstructionWrapper):
             cost = checker_budget_drink_level(game_data_vector, ts.drink_level_state.level).astype(float)
         elif self.config_name in (
             "achievements_safe_budget_energy",
+            "achievements_safe_all_energy",
+            "achievements_safe_all_energy_eval",
             "achievements_safe_budget_energy_collect_wood",
             "achievements_wood",
             "debug_square_8x8",
@@ -131,7 +133,8 @@ class CMDPInstructionWrapper(InstructionWrapper):
         elif self.config_name == "achievements_safe_budget_sleep_at_night":
             cost = checker_sleep_at_night(game_data_vector, ts.night_constraint_level, ts.day_constraint_level).astype(float)
         # sequential
-        elif self.config_name == "achievements_safe_sequential_defeat_monster":
+        elif self.config_name in ("achievements_safe_sequential_defeat_monster",
+                                  "achievements_safe_all_sword", "achievements_safe_all_sword_eval"):
             cost = checker_monster_is_attacked_without_sword(game_data_vector).astype(float)
         elif self.config_name == "achievements_safe_sequential_dont_sleep_near_monsters":
             cost = checker_dont_sleep_near_monsters(game_data_vector).astype(float)
@@ -174,7 +177,8 @@ class CMDPInstructionWrapper(InstructionWrapper):
                     lambda: cost_wood.astype(float),
                 ]
             )
-        elif self.config_name == "achievements_easy_relational_avoid_enemy_by_radius":
+        elif self.config_name in ("achievements_easy_relational_avoid_enemy_by_radius",
+                                  "achievements_safe_all_zombie", "achievements_safe_all_zombie_eval"):
             cost = checker_relactional_avoid_mob_distance(game_data_vector, ts.avoid_mob_distance).astype(float)    
         elif self.config_name in ("achievements_easy_relational_last_food_location", "achievements_easy_relational_last_water_location"):
             new_target_state, cost = checker_last_visible_target(game_data_vector, ts.target_of_interest)
@@ -296,5 +300,8 @@ class CMDPInstructionWrapper(InstructionWrapper):
             checker_id=state.checker_id,
             target_state=ts
         )
+
+        if self.config_name.startswith("achievements_safe_all_"):
+            reward = reward + state.instruction_done.astype(reward.dtype)
 
         return obs, state, reward, done, info

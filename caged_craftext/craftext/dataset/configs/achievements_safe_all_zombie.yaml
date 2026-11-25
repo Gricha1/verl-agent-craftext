@@ -1,0 +1,4 @@
+dataset_key: jax_achievements_safe_all
+subset_key: zombie
+base_environment: Craftax-Classic-Pixels-v1-Text
+use_parafrases: True

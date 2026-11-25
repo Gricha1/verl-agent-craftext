@@ -206,6 +206,7 @@ class LogWrapper(GymnaxWrapper):
         info["returned_episode_lengths"] = state.returned_episode_lengths
         info["timestep"] = state.timestep
         info["returned_episode"] = done
+        info["instruction_done"] = env_state.instruction_done
         info["episode_cost"] = env_state.episode_cost
         info["cost"] = env_state.cost
 

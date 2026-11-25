@@ -4,7 +4,7 @@ from craftext.environment.scenarious.checkers.target_state import TargetState
 
 @struct.dataclass
 class AvoidMobDistance:
-    mob: MobType = struct.field(default_factory=MobType.ZOMBIE)
+    mob: MobType = MobType.ZOMBIE
     distance: int = struct.field(default_factory=int)
     
 @struct.dataclass

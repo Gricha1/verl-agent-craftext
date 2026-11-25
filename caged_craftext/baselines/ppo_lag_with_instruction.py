@@ -4,6 +4,8 @@ import sys
 import time
 
 import logging
+import json
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -12,7 +14,6 @@ import optax
 from craftax.craftax_env import make_craftax_env_from_name
 
 #import wandb
-import comet_ml
 from typing import NamedTuple
 
 from flax.training import orbax_utils
@@ -72,6 +73,8 @@ def make_train(config, network_params, experiment=None):
         env_name, not config["USE_OPTIMISTIC_RESETS"]
     )
     env_params = env.default_params
+    if config.get("MAX_EPISODE_LENGTH"):
+        env_params = env_params.replace(max_timesteps=config["MAX_EPISODE_LENGTH"])
     env = CMDPInstructionWrapper(env, config["CRAFTEXT_SETTINGS"])
     env = LogWrapper(env)
     env = OptimisticResetVecEnvWrapper(
@@ -95,7 +98,8 @@ def make_train(config, network_params, experiment=None):
         os.makedirs(new_dir)
         return new_dir
 
-    checkpoint_dir = create_unique_checkpoint_dir()
+    output_dir = Path(config["OUTPUT_DIR"]).resolve() if config.get("OUTPUT_DIR") else None
+    checkpoint_dir = str(output_dir / "checkpoints") if output_dir else create_unique_checkpoint_dir()
     config["PATH_TO_CHECKPOINT"] = checkpoint_dir
     orbax_checkpointer = PyTreeCheckpointer()
     checkpoint_manager = CheckpointManager(
@@ -104,7 +108,8 @@ def make_train(config, network_params, experiment=None):
         CheckpointManagerOptions(max_to_keep=2),
     )
     #wandb.config.update({"PATH_TO_CHECKPOINT": checkpoint_dir}, allow_val_change=True) 
-    experiment.log_parameter("PATH_TO_CHECKPOINT", checkpoint_dir)
+    if experiment is not None:
+        experiment.log_parameter("PATH_TO_CHECKPOINT", checkpoint_dir)
     
     def linear_schedule(count):
         frac = (
@@ -196,7 +201,6 @@ def make_train(config, network_params, experiment=None):
         # TRAIN LOOP
         def _update_step(runner_state, unused):
             # COLLECT TRAJECTORIES
-            print("HII")
             def _env_step(runner_state, unused):
                 (
                     train_state,
@@ -211,7 +215,6 @@ def make_train(config, network_params, experiment=None):
 
                 # SELECT ACTION
                 rng, _rng = jax.random.split(rng)
-                print("!!! OBS !!!!", last_obs.shape)
                 pi, value, cost_value = network.apply(train_state.params, last_obs, 
                                           env_state.env_state.instruction,
                                           env_state.env_state.textual_constraint)
@@ -221,7 +224,8 @@ def make_train(config, network_params, experiment=None):
                 log_prob = pi.log_prob(action)
     
                 rng, _rng = jax.random.split(rng)
-                obsv, env_state, reward_e, done, info = env.step(
+                policy_input = env_state.env_state
+                obsv, env_state, reward_e, done, info, _ = env.step(
                     _rng, env_state, action, env_params
                 )
 
@@ -251,8 +255,8 @@ def make_train(config, network_params, experiment=None):
                     obs=last_obs,
                     next_obs=obsv,
                     info=info,
-                    instruction=env_state.env_state.instruction, # env.encoded_instruction[0]
-                    textual_constraint=env_state.env_state.textual_constraint
+                    instruction=policy_input.instruction,
+                    textual_constraint=policy_input.textual_constraint
                 )
                 runner_state = (
                     train_state,
@@ -270,7 +274,10 @@ def make_train(config, network_params, experiment=None):
                 _env_step, runner_state, None, config["NUM_STEPS"]
             )
 
-            mean_episode_cost = (traj_batch.episode_cost * traj_batch.info["returned_episode"]).sum() / traj_batch.info["returned_episode"].sum()
+            completed = traj_batch.info["returned_episode"]
+            num_completed = completed.sum()
+            denominator = jnp.maximum(num_completed, 1)
+            mean_episode_cost = (traj_batch.episode_cost * completed).sum() / denominator
 
             # CALCULATE ADVANTAGE
             (
@@ -352,7 +359,12 @@ def make_train(config, network_params, experiment=None):
                         return -current_lambda * cost_violation
                     
                     lambda_grad = jax.grad(lambda_loss)(lambda_state.params['lambda'])
-                    lambda_state = lambda_state.apply_gradients(grads={'lambda': lambda_grad})
+                    lambda_state = jax.lax.cond(
+                        num_completed > 0,
+                        lambda state: state.apply_gradients(grads={"lambda": lambda_grad}),
+                        lambda state: state,
+                        lambda_state,
+                    )
 
                     # Policy/value network
                     def _loss_fn(params, traj_batch, gae, targets, cost_gae, cost_targets):
@@ -465,13 +477,13 @@ def make_train(config, network_params, experiment=None):
 
                 print(traj_batch.instruction.shape)
                 print(traj_batch.textual_constraint.shape)
-                batch = jax.tree_map(
+                batch = jax.tree_util.tree_map(
                     lambda x: x.reshape((batch_size,) + x.shape[2:]), batch
                 )
-                shuffled_batch = jax.tree_map(
+                shuffled_batch = jax.tree_util.tree_map(
                     lambda x: jnp.take(x, permutation, axis=0), batch
                 )
-                minibatches = jax.tree_map(
+                minibatches = jax.tree_util.tree_map(
                     lambda x: jnp.reshape(
                         x, [config["NUM_MINIBATCHES"], -1] + list(x.shape[1:])
                     ),
@@ -510,9 +522,8 @@ def make_train(config, network_params, experiment=None):
 
             train_state = update_state[0]
             lambda_state = update_state[1]
-            metric = jax.tree_map(
-                lambda x: (x * traj_batch.info["returned_episode"]).sum()
-                / traj_batch.info["returned_episode"].sum(),
+            metric = jax.tree_util.tree_map(
+                lambda x: (x * completed).sum() / denominator,
                 traj_batch.info,
             )
 
@@ -520,10 +531,29 @@ def make_train(config, network_params, experiment=None):
 
             metric["episode_cost"] = mean_episode_cost
             metric["global_steps"] = global_steps
-            metric["lambda"] = lambda_state.params['lambda']
+            metric["lambda"] = jax.nn.softplus(lambda_state.params["lambda"])
+            metric["completed_episodes"] = num_completed
+            metric["violation_free_rate"] = (completed & (traj_batch.episode_cost == 0)).sum() / denominator
+            metric["safe_success_rate"] = (
+                completed & traj_batch.info["instruction_done"] & (traj_batch.episode_cost == 0)
+            ).sum() / denominator
 
             # wandb logging
-            if config["DEBUG"] and config["USE_WANDB"]:
+            if output_dir:
+                def append_metrics(row):
+                    with (output_dir / "metrics.jsonl").open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps({k: v.item() for k, v in row.items()}) + "\n")
+
+                jax.debug.callback(
+                    append_metrics,
+                    {k: metric[k] for k in (
+                        "global_steps", "lambda", "completed_episodes", "episode_cost",
+                        "returned_episode_returns", "instruction_done", "violation_free_rate",
+                        "safe_success_rate",
+                    )},
+                    ordered=True,
+                )
+            elif experiment is not None and config["DEBUG"] and config["USE_WANDB"]:
 
                 def callback(metric, update_step):
                     to_log = create_log_dict(metric, config)
@@ -563,23 +593,26 @@ def make_train(config, network_params, experiment=None):
         def _maybe_save(runner_state):
             train_state, lambda_state, env_state, last_obs, ex_state, rng, update_step, global_steps = runner_state
             
-            def _save_callback(train_state, global_steps):
-                current_step = jax.device_get(global_steps)
-                print(f"Saving weights at step {current_step}")
-                save_args = orbax_utils.save_args_from_target(train_state)
+            def _save_callback(state):
+                step = int(state["global_steps"])
+                print(f"Saving PPO-Lag state at step {step}", flush=True)
                 checkpoint_manager.save(
-                    int(current_step),
-                    {"train_state": train_state},
-                    save_kwargs={"save_args": {"train_state": save_args}},
+                    step, state, save_kwargs={"save_args": orbax_utils.save_args_from_target(state)}
                 )
-            
-            should_save = update_step % config["SAVE_FREQ"] == 0
+                checkpoint_manager.wait_until_finished()
+
+            complete_state = {
+                "train_state": train_state, "lambda_state": lambda_state,
+                "env_state": env_state, "last_obs": last_obs, "rng": rng,
+                "update_step": update_step, "global_steps": global_steps,
+            }
+            should_save = (update_step % config["SAVE_FREQ"] == 0) | (update_step == config["NUM_UPDATES"])
             jax.lax.cond(
                 should_save,
-                lambda: jax.debug.callback(_save_callback, train_state, global_steps) or (),
-                lambda: ()
+                lambda: jax.debug.callback(_save_callback, complete_state, ordered=True) or (),
+                lambda: (),
             )
-                
+
             return runner_state
 
         def _scan_update(runner_state, unused):
@@ -602,6 +635,19 @@ def run_ppo(config):
     # Convert config keys to uppercase for consistency
     config = {k.upper(): v for k, v in config.__dict__.items()}
     config["PATH_TO_CHECKPOINT"] = 'None'# base_checkpoint_path  # Initialize with no checkpoint
+    if config.get("OUTPUT_DIR"):
+        output_dir = Path(config["OUTPUT_DIR"]).resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        with (output_dir / "config.json").open("x", encoding="utf-8") as stream:
+            json.dump(config, stream, indent=2)
+        print(f"Training {config['CRAFTEXT_SETTINGS']} with PPO-Lag", flush=True)
+        key = jax.random.PRNGKey(config["SEED"])
+        jax.block_until_ready(jax.jit(make_train(config, None))(key))
+        jax.effects_barrier()
+        print("PPO-Lag training completed.", flush=True)
+        return
+
+    experiment = None
     base_timestamps = config['TOTAL_TIMESTEPS']
     # Initialize WandB if enabled
     #if config["USE_WANDB"]:
@@ -615,6 +661,8 @@ def run_ppo(config):
     #        + "M",
     #    )
     if config["USE_COMET"]:
+        import comet_ml
+
         comet_ml.login()
         experiment = comet_ml.start(project_name="ppo_lag_craftext")
         experiment.log_parameters(config)
@@ -699,6 +747,8 @@ def run_ppo(config):
 if __name__ == "__main__":
     #--env_name "Craftax-Pixels-v1-Text"
     parser = argparse.ArgumentParser()
+    parser.add_argument("--max-episode-length", type=int, default=None)
+    parser.add_argument("--output-dir", help="Write a new offline run with full PPO-Lag checkpoints.")
     parser.add_argument("--dir_path", type=str, default="/usr/home/workspace")
     parser.add_argument("--algo_name", type=str, default="PPO_LAG")
     parser.add_argument("--env_name", type=str, default="Craftax-Pixels-v1-Text")
